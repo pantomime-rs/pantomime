@@ -9,9 +9,8 @@ highly concurrent and performant systems.
 
 ## Examples
 
-We've put together a number of example programs using Pantomime. These include
-simple ping/pong style scenarios, reception patterns, and integration with Rust
-futures.
+We've put together a number of [example programs](examples/) using Pantomime. These include
+simple ping/pong style scenarios, futures-rs integration, Hyper integration, and FSM modeling.
 
 ## Prior Art
 
