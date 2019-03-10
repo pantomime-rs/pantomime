@@ -721,7 +721,7 @@ impl<M: 'static + Send> ActorRef<M> {
     pub(in crate::actor) fn tell_system(&self, msg: SystemMsg) {
         self.inner.enqueue_system(msg);
 
-        self.shard_execute(ActorShardEvent::Messaged, None);
+        self.shard_execute(ActorShardEvent::Messaged, self.shard().custom_dispatcher());
     }
 
     /// Creates an actor ref that can be used to
