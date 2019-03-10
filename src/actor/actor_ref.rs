@@ -205,6 +205,15 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         }
     }
 
+    #[cfg(feature = "posix-signals-support")]
+    pub fn watch_posix_signals(&mut self) {
+        if let Some(ref watcher_ref) = self.actor_ref().inner.system_context().watcher_ref {
+            watcher_ref.tell(ActorWatcherMessage::SubscribePosixSignals(
+                self.actor_ref().system_ref(),
+            ));
+        }
+    }
+
     /// Schedule a Future for immediate execution. Usually this
     /// is used in conjunction with pipe_result, but can be
     /// used for any arbitrary futures.

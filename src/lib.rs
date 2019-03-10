@@ -5,7 +5,6 @@
 //! abstraction that elevates the realities of distributed systems to empower you to build
 //! highly concurrent and performant systems.
 
-extern crate atom;
 extern crate atty;
 extern crate chrono;
 extern crate crossbeam;
@@ -21,6 +20,9 @@ extern crate log;
 
 #[cfg(feature = "futures-support")]
 extern crate futures;
+
+#[cfg(feature = "posix-signals-support")]
+extern crate signal_hook;
 
 #[cfg(feature = "tokio-support")]
 extern crate tokio as ext_tokio;
@@ -45,6 +47,9 @@ pub mod pattern;
 pub mod prelude;
 pub mod timer;
 pub mod util;
+
+#[cfg(feature = "posix-signals-support")]
+pub mod posix_signals;
 
 #[cfg(feature = "testkit")]
 pub mod testkit;

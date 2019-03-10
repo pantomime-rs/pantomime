@@ -1,9 +1,8 @@
 [package]
-name = "http-hyper"
+name = "posix-signals"
 version = "0.1.0"
 authors = ["Jason Longshore <hello@jasonlongshore.com>"]
 edition = "2018"
 
 [dependencies]
-hyper = { version = "0.12" }
-pantomime = { path = "../../", features = ["tokio-support"] }
+pantomime = { path = "../../" }

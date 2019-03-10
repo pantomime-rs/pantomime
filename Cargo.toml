@@ -1,11 +1,10 @@
 [package]
 name = "pantomime"
 version = "0.1.0"
-authors = ["Jason Longshore <longshorej@gmail.com>"]
+authors = ["Jason Longshore <hello@jasonlongshore.com>"]
 edition = "2018"
 
 [dependencies]
-atom = "0.3"
 atty = "0.2"
 chrono = "0.4.6"
 crossbeam = "0.7.1"
@@ -16,6 +15,7 @@ log = "0.4"
 num_cpus = "1.0"
 parking_lot = "0.7"
 rand = "0.6"
+signal-hook = { version = "0.1.8", optional = true }
 tokio = { version = "0.1.15", optional = true }
 tokio-executor = { version = "0.1", optional = true }
 tokio-threadpool = { version = "0.1.11", optional = true }
@@ -23,7 +23,8 @@ tokio-reactor = { version = "0.1", optional = true }
 tokio-timer = { version = "0.2", optional = true }
 
 [features]
-default = []
+default = ["posix-signals-support"]
 futures-support = ["futures"]
+posix-signals-support = ["signal-hook"]
 testkit = []
 tokio-support = ["futures", "futures-support", "tokio", "tokio-executor", "tokio-threadpool", "tokio-reactor", "tokio-timer"]

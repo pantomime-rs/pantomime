@@ -1,7 +1,7 @@
 [package]
 name = "fsm"
 version = "0.1.0"
-authors = ["Jason Longshore <longshorej@gmail.com>"]
+authors = ["Jason Longshore <hello@jasonlongshore.com>"]
 edition = "2018"
 
 [dependencies]
