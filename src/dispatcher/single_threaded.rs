@@ -70,10 +70,9 @@ impl SingleThreadedDispatcher {
 
 impl Dispatcher for SingleThreadedDispatcher {
     fn execute(&self, thunk: Thunk) {
-        // @TODO unwrap no good
-        self.sender
-            .send(SingleThreadedDispatcherMessage::Execute(thunk))
-            .unwrap();
+        let _ = self
+            .sender
+            .send(SingleThreadedDispatcherMessage::Execute(thunk));
     }
 
     fn safe_clone(&self) -> Box<Dispatcher + Send + Sync> {
@@ -103,8 +102,7 @@ mod tests {
     use crate::testkit::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     #[test]
     fn simple_test_fifo() {

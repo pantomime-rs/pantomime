@@ -1,6 +1,5 @@
 mod test_actor_convert {
     use crate::actor::*;
-    use crate::testkit::*;
     use std::time::Duration;
 
     struct MyActor;
@@ -57,8 +56,10 @@ mod test_actor_convert {
         actor_send.tell(false);
         assert!(!probe.receive(Duration::from_secs(10)));
 
-        // Cleanup
+        // Dispatch shutdown
+        system.context.stop();
 
-        system.stop_system();
+        // Ensure that system messages (e.g. shutdown) are handled
+        system.join();
     }
 }

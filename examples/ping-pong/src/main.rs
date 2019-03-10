@@ -17,7 +17,7 @@ impl Finisher {
 }
 
 impl Actor<()> for Finisher {
-    fn receive(&mut self, message: (), context: &mut ActorContext<()>) {
+    fn receive(&mut self, _message: (), _context: &mut ActorContext<()>) {
         self.count += 1;
 
         info!("{} actors have finished", self.count);

@@ -331,7 +331,6 @@ mod tests {
     use crate::dispatcher::WorkStealingDispatcher;
     use crate::testkit::*;
     use crate::timer::timer_wheel::*;
-    use crate::timer::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::thread;
@@ -366,47 +365,6 @@ mod tests {
 
                     executed.store(true, Ordering::SeqCst);
                 })),
-            );
-        }
-
-        // two ticks are needed because sometimes the scheduling
-        // can end up on a boundary
-        wheel.current_tick += 1;
-        wheel.ticked();
-        wheel.current_tick += 1;
-        wheel.ticked();
-
-        // if the custom dispatcher wasn't used, we wouldn't get here as
-        // we'd be in an infinite loop
-
-        scheduled.store(true, Ordering::SeqCst);
-
-        eventually(Duration::from_secs(10), || executed.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn test_thunk_dispatcher() {
-        let mut wheel = TimerWheel::new(Duration::from_millis(10));
-
-        let dispatcher = WorkStealingDispatcher::new(8, true);
-
-        let scheduled = Arc::new(AtomicBool::new(false));
-        let executed = Arc::new(AtomicBool::new(false));
-
-        {
-            let executed = executed.clone();
-            let scheduled = scheduled.clone();
-
-            wheel.register_thunk(
-                Duration::from_nanos(0),
-                TimerThunk::new(Box::new(move || {
-                    while !scheduled.load(Ordering::SeqCst) {
-                        thread::sleep(Duration::from_millis(1));
-                    }
-
-                    executed.store(true, Ordering::SeqCst);
-                }))
-                .with_dispatcher(Box::new(dispatcher)),
             );
         }
 

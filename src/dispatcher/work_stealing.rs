@@ -107,22 +107,16 @@ impl WorkStealingDispatcher {
             fn drop(&mut self) {
                 if thread::panicking() {
                     WorkStealingDispatcher::WORKER.with(|w| {
-                        match w.replace(None) {
-                            Some(worker) => {
-                                let mut stealers = Vec::new();
+                        if let Some(worker) = w.replace(None) {
+                            let mut stealers = Vec::new();
 
-                                for stealer in self.stealers.pop() {
-                                    stealers.push(stealer);
-                                }
-
-                                let injector = self.injector.clone();
-
-                                WorkStealingDispatcher::spawn_worker(worker, stealers, injector);
+                            for stealer in self.stealers.pop() {
+                                stealers.push(stealer);
                             }
 
-                            None => {
-                                // @TODO
-                            }
+                            let injector = self.injector.clone();
+
+                            WorkStealingDispatcher::spawn_worker(worker, stealers, injector);
                         }
                     });
                 }
@@ -424,10 +418,9 @@ impl AsRef<Dispatcher + Send + Sync> for WorkStealingDispatcher {
 mod tests {
     use super::*;
     use crate::testkit::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     #[test]
     fn simple_test_fifo() {

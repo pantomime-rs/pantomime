@@ -47,7 +47,7 @@ impl<M: Send + Sync + 'static> Mailbox<M> for NoopMailbox<M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mailbox::{Mailbox, MailboxAppender, NoopMailbox, NoopMailboxAppender};
+    use crate::mailbox::{Mailbox, NoopMailbox};
 
     #[test]
     fn simple_test() {

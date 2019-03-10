@@ -90,7 +90,6 @@ impl<M: 'static + Send> Actor<M> for ProbeActor<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::*;
     use std::{thread, time};
 
     struct Doubler;

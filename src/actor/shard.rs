@@ -118,9 +118,6 @@ impl ActorShard {
                     break;
                 }
 
-                // @TODO optimization: mailbox.retrieve() should return
-                //       a status that indicates if the system mailbox
-                //       needs to be checked
                 while let Some(system_msg) = kernel.system_mailbox.retrieve() {
                     system_msg.apply();
 

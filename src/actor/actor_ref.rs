@@ -186,8 +186,8 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     ///
     /// If the supplied actor has already failed or stopped, a signal will
     /// still be delivered, but the reason will be unknown.
-    pub fn watch<N: 'static + Send>(&mut self, actor_ref: ActorRef<N>) {
-        // @TODO use AsRef for parameter
+    pub fn watch<N: 'static + Send, A: AsRef<ActorRef<N>>>(&mut self, actor_ref: A) {
+        let actor_ref = actor_ref.as_ref();
 
         match self.actor_ref().inner.system_context().watcher_ref.as_ref() {
             Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
