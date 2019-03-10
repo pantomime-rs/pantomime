@@ -662,7 +662,6 @@ impl<M: 'static + Send> ActorRef<M> {
     /// drain, they are sent to dead letters.
     pub fn drain(&self) {
         self.tell_system(SystemMsg::Drain);
-        self.tell_done();
     }
 
     // @TODO not sure about this method's need to exist
