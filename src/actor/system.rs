@@ -211,8 +211,49 @@ impl ActiveActorSystem {
     /// (e.g. some graphics libraries), this should be called in its own
     /// thread instead.
     pub fn join(self) {
+        #[allow(unused_mut)]
+        let mut exit_code = 0;
+
+        #[cfg(feature = "posix-signals-support")]
+        use signal_hook::iterator::Signals;
+
+        #[cfg(feature = "posix-signals-support")]
+        let signals = Signals::new(&self.context.config.posix_signals)
+            .expect("pantomime bug: cannot setup POSIX signal handling");
+
+        // this provides a mechanism to occasionally check for signals that
+        // have arrived (if posix signal support is enabled). alternatively,
+        // an extra thread could be spawned, but that doesn't seem worth it
+        // at the moment
+        //
+        // it's not currently configurable as there shouldn't really be
+        // a desire to do so. if lower resolution latency is required,
+        // please open an issue explaining the use-case
+
+        let time_duration = time::Duration::from_millis(100);
+
         loop {
-            match self.receiver.recv() {
+            #[cfg(feature = "posix-signals-support")]
+            for signal in signals.pending() {
+                if let Some(ref watcher_ref) = self.context.watcher_ref {
+                    watcher_ref.tell(ActorWatcherMessage::ReceivedPosixSignal(signal));
+                }
+
+                if self.context.config.posix_shutdown_signals.contains(&signal) {
+                    let _ = self.sender.send(ActorSystemMsg::Drain);
+                    exit_code = 128 + signal;
+                }
+            }
+
+            match self.receiver.recv_timeout(time_duration) {
+                Err(channel::RecvTimeoutError::Timeout) => {
+                    // nothing to do
+                }
+
+                Err(channel::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+
                 Ok(ActorSystemMsg::Drain) => {
                     if let Some(ref watcher_ref) = self.context.watcher_ref {
                         let sender = self.sender.clone();
@@ -261,12 +302,18 @@ impl ActiveActorSystem {
 
                     break;
                 }
-
-                Err(channel::RecvError) => {
-                    break;
-                }
             }
         }
+
+        #[cfg(test)]
+        let _ = exit_code;
+
+        #[cfg(not(test))]
+        let _ = {
+            if self.context.config.process_exit {
+                ::std::process::exit(exit_code);
+            }
+        };
     }
 
     pub fn spawn<M: 'static + Send, A: 'static + Send>(&mut self, actor: A) -> ActorRef<M>

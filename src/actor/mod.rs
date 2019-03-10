@@ -42,6 +42,9 @@ pub enum Signal {
     Stopped,
     Failed,
     ActorStopped(SystemActorRef, StopReason),
+
+    #[cfg(feature = "posix-signals-support")]
+    PosixSignal(i32),
 }
 
 /// Describes the reason that an actor has stopped.
