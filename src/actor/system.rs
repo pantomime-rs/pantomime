@@ -67,15 +67,11 @@ impl ActorSystemContext {
     }
 
     pub fn drain(&self) {
-        if let Err(_e) = self.sender.send(ActorSystemMsg::Drain) {
-            // @TODO handle failure
-        }
+        let _ = self.sender.send(ActorSystemMsg::Drain);
     }
 
     pub fn stop(&self) {
-        if let Err(_e) = self.sender.send(ActorSystemMsg::Stop) {
-            // @TODO handle failure
-        }
+        let _ = self.sender.send(ActorSystemMsg::Stop);
     }
 
     /// Schedule a function to be invoked after the timeout has elapsed.
@@ -94,7 +90,7 @@ impl ActorSystemContext {
                 thunk: TimerThunk::new(Box::new(move || f())),
             });
         } else {
-            // @TODO
+            panic!("pantomime bug: schedule_thunk called on internal context");
         }
     }
 
@@ -285,20 +281,6 @@ impl ActiveActorSystem {
         };
 
         ActorSystemContext::spawn_actor(&self.context, ActorType::Root, actor, parent_ref)
-    }
-
-    pub fn stop_system(self) {
-        // @TODO fix stopping
-        /*
-        let mut stopping_shards = Vec::with_capacity(self.context.scheduler_shards.len());
-        for s in self.context.scheduler_shards {
-            stopping_shards.push(s.stop());
-        }
-
-        for s in stopping_shards {
-            s.wait();
-        }*/
-
     }
 }
 

@@ -86,8 +86,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::*;
-    use std::{thread, time};
+    use std::time;
 
     struct Divider;
 

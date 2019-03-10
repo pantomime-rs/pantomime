@@ -1,10 +1,8 @@
 use super::*;
-use futures::{future::lazy, Future};
+use futures::Future;
 use std::io;
-use std::sync::Arc;
 use tokio_executor::{Executor, SpawnError};
 use tokio_reactor::Reactor;
-use tokio_threadpool::ThreadPool;
 use tokio_timer::timer::{self, Timer};
 
 pub trait RunTokioFuture {
@@ -40,7 +38,7 @@ impl RunTokioFuture for WorkStealingDispatcher {
                 let mut d1 = self.clone();
                 let d2 = self.clone();
 
-                tokio_executor::with_default(&mut d1, enter, |enter| {
+                tokio_executor::with_default(&mut d1, enter, |_enter| {
                     d2.spawn_future(f);
                 });
             });
