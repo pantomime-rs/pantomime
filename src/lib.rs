@@ -45,6 +45,7 @@ pub mod dispatcher;
 pub mod mailbox;
 pub mod pattern;
 pub mod prelude;
+pub mod stream;
 pub mod timer;
 pub mod util;
 
