@@ -1,5 +1,6 @@
 pub mod disconnected;
 pub mod filter;
+pub mod filter_map;
 pub mod flow;
 pub mod for_each;
 pub mod identity;
@@ -9,6 +10,7 @@ pub mod sink;
 pub mod source;
 
 pub use disconnected::Disconnected;
+pub use filter_map::FilterMap;
 pub use flow::Flow;
 pub use map::Map;
 pub use sink::Sink;
@@ -117,6 +119,17 @@ where
         Filter::new(filter)(self)
     }
 
+    fn filter_map<B, F: FnMut(A) -> Option<B>>(
+        self,
+        filter_map: F,
+    ) -> FilterMap<A, B, F, Self, Disconnected>
+    where
+        B: 'static + Send,
+        F: 'static + Send,
+    {
+        FilterMap::new(filter_map)(self)
+    }
+
     fn map<B, F: FnMut(A) -> B>(self, map: F) -> Map<A, B, F, Self, Disconnected>
     where
         B: 'static + Send,
@@ -198,6 +211,7 @@ mod temp_tests {
             upstream
                 .filter(|&n| n % 3 == 0)
                 .filter(|&n| n % 5 == 0)
+                .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
                 .map(|n| n * 2)
         }
 
