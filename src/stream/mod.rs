@@ -4,11 +4,13 @@ pub mod flow;
 pub mod for_each;
 pub mod identity;
 pub mod iter;
+pub mod map;
 pub mod sink;
 pub mod source;
 
 pub use disconnected::Disconnected;
 pub use flow::Flow;
+pub use map::Map;
 pub use sink::Sink;
 pub use source::Source;
 
@@ -115,6 +117,14 @@ where
         Filter::new(filter)(self)
     }
 
+    fn map<B, F: FnMut(A) -> B>(self, map: F) -> Map<A, B, F, Self, Disconnected>
+    where
+        B: 'static + Send,
+        F: 'static + Send,
+    {
+        Map::new(map)(self)
+    }
+
     fn via<B, Down: Consumer<A> + Producer<B>, F: FnOnce(Self) -> Down>(self, f: F) -> Down
     where
         B: 'static + Send,
@@ -185,7 +195,10 @@ mod temp_tests {
         let my_source = Source::iterator(0..10_000);
 
         fn my_flow<Up: Producer<usize>>(upstream: Up) -> impl Consumer<usize> + Producer<usize> {
-            upstream.filter(|&n| n % 3 == 0).filter(|&n| n % 5 == 0)
+            upstream
+                .filter(|&n| n % 3 == 0)
+                .filter(|&n| n % 5 == 0)
+                .map(|n| n * 2)
         }
 
         let my_sink = Sink::for_each(|n: usize| println!("sink received {}", n));

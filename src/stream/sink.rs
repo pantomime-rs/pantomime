@@ -1,5 +1,4 @@
 use crate::stream::for_each::ForEach;
-use crate::stream::*;
 
 pub struct Sink;
 
