@@ -1,21 +1,12 @@
 pub mod disconnected;
-pub mod filter;
-pub mod filter_map;
 pub mod flow;
-pub mod for_each;
-pub mod identity;
-pub mod ignore;
-pub mod iter;
-pub mod map;
 pub mod sink;
 pub mod source;
 
 pub use disconnected::Disconnected;
-pub use filter_map::FilterMap;
-pub use flow::Flow;
-pub use map::Map;
-pub use sink::Sink;
-pub use source::Source;
+pub use flow::*;
+pub use sink::*;
+pub use source::*;
 
 use crate::dispatcher::Dispatcher;
 use filter::Filter;
