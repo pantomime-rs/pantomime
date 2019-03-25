@@ -1,5 +1,8 @@
-use crate::stream::*;
+pub mod iter;
+
 use std::iter as std_iter;
+
+pub use iter::Iter;
 
 /// A `Source` is a convention for `Publish`ers that are not
 /// `Subscriber`s, i.e. they have no input but one output.

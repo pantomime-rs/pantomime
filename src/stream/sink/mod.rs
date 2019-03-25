@@ -1,5 +1,8 @@
-use crate::stream::for_each::ForEach;
-use crate::stream::ignore::Ignore;
+pub mod for_each;
+pub mod ignore;
+
+pub use for_each::ForEach;
+pub use ignore::Ignore;
 
 /// A `Sink` is a convention for a `Subscriber` that is
 /// not a `Publisher`, i.e. it has one input and zero
