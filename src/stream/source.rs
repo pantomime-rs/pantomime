@@ -1,6 +1,11 @@
 use crate::stream::*;
 use std::iter as std_iter;
 
+/// A `Source` is a convention for `Publish`ers that are not
+/// `Subscriber`s, i.e. they have no input but one output.
+///
+/// This provides convenience functions for creating common
+/// sources.
 pub struct Source;
 
 impl Source {
