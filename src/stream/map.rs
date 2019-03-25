@@ -1,23 +1,29 @@
 use crate::stream::*;
 use std::marker::PhantomData;
 
-pub struct Identity<A, Up: Producer<A>, Down: Consumer<A>>
+pub struct Map<A, B, F: FnMut(A) -> B, Up: Producer<A>, Down: Consumer<B>>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    F: 'static + Send,
 {
+    map: F,
     upstream: Up,
     downstream: Down,
     runtime: ProducerRuntime,
     phantom: PhantomData<A>,
 }
 
-impl<A, Up> Identity<A, Up, Disconnected>
+impl<A, B, F: FnMut(A) -> B, Up> Map<A, B, F, Up, Disconnected>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    F: 'static + Send,
     Up: Producer<A>,
 {
-    pub fn new() -> impl FnOnce(Up) -> Self {
+    pub fn new(func: F) -> impl FnOnce(Up) -> Self {
         move |upstream| Self {
+            map: func,
             upstream: upstream,
             downstream: Disconnected,
             phantom: PhantomData,
@@ -26,19 +32,23 @@ where
     }
 }
 
-impl<A, U, D> Producer<A> for Identity<A, U, D>
+impl<A, B, F: FnMut(A) -> B, Up: Producer<A>, Down: Consumer<B>> Producer<B>
+    for Map<A, B, F, Up, Down>
 where
     A: 'static + Send,
-    U: Producer<A>,
-    D: Consumer<A>,
+    B: 'static + Send,
+    F: 'static + Send,
+    Up: 'static + Send,
+    Down: 'static + Send,
 {
-    fn receive<Consume: Consumer<A>>(mut self, command: ProducerCommand<A, Consume>) -> Completed {
+    fn receive<Consume: Consumer<B>>(mut self, command: ProducerCommand<B, Consume>) -> Completed {
         match command {
             ProducerCommand::Attach(consumer, dispatcher) => {
                 self.runtime.setup(dispatcher.safe_clone());
 
                 self.upstream.tell(ProducerCommand::Attach(
-                    Identity {
+                    Map {
+                        map: self.map,
                         upstream: Disconnected,
                         downstream: consumer,
                         runtime: self.runtime,
@@ -50,7 +60,8 @@ where
 
             ProducerCommand::Cancel(consumer, _) => {
                 self.upstream.tell(ProducerCommand::Cancel(
-                    Identity {
+                    Map {
+                        map: self.map,
                         upstream: Disconnected,
                         downstream: consumer,
                         runtime: self.runtime,
@@ -62,7 +73,8 @@ where
 
             ProducerCommand::Request(consumer, demand) => {
                 self.upstream.tell(ProducerCommand::Request(
-                    Identity {
+                    Map {
+                        map: self.map,
                         upstream: Disconnected,
                         downstream: consumer,
                         runtime: self.runtime,
@@ -81,17 +93,23 @@ where
     }
 }
 
-impl<A, U, D> Consumer<A> for Identity<A, U, D>
+impl<A, B, F: FnMut(A) -> B, Up: Producer<A>, Down: Consumer<B>> Consumer<A>
+    for Map<A, B, F, Up, Down>
 where
     A: 'static + Send,
-    U: Producer<A>,
-    D: Consumer<A>,
+    B: 'static + Send,
+    F: 'static + Send,
+    Up: 'static + Send,
+    Down: 'static + Send,
 {
-    fn receive<Produce: Producer<A>>(self, event: ProducerEvent<A, Produce>) -> Completed {
+    fn receive<Produce: Producer<A>>(mut self, event: ProducerEvent<A, Produce>) -> Completed {
         match event {
             ProducerEvent::Produced(producer, element) => {
+                let element = (self.map)(element);
+
                 self.downstream.tell(ProducerEvent::Produced(
-                    Identity {
+                    Map {
+                        map: self.map,
                         upstream: producer,
                         downstream: Disconnected,
                         runtime: self.runtime,
@@ -102,7 +120,8 @@ where
             }
 
             ProducerEvent::Started(producer) => {
-                self.downstream.tell(ProducerEvent::Started(Identity {
+                self.downstream.tell(ProducerEvent::Started(Map {
+                    map: self.map,
                     upstream: producer,
                     downstream: Disconnected,
                     runtime: self.runtime,
