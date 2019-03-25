@@ -1,12 +1,21 @@
 pub mod disconnected;
 pub mod filter;
+pub mod flow;
 pub mod for_each;
+pub mod identity;
 pub mod iter;
+pub mod sink;
+pub mod source;
 
 pub use disconnected::Disconnected;
+pub use flow::Flow;
+pub use sink::Sink;
+pub use source::Source;
 
 use crate::dispatcher::Dispatcher;
 use filter::Filter;
+
+const MAX_STACK_SIZE: usize = 10; // @TODO configurable?
 
 pub struct Error; // TODO
 pub type BoxedDispatcher = Box<Dispatcher + Send + Sync>; // @TODO
@@ -68,24 +77,19 @@ where
     #[must_use]
     fn receive<Consume: Consumer<A>>(self, command: ProducerCommand<A, Consume>) -> Completed;
 
-    fn tell_reset<Consume: Consumer<A>>(mut self, command: ProducerCommand<A, Consume>) {
-        if let Some(runtime) = self.runtime() {
-            runtime.reset();
-        }
-
-        self.tell(command);
-    }
-
     fn tell<Consume: Consumer<A>>(mut self, command: ProducerCommand<A, Consume>) {
         match self.runtime() {
             Some(runtime) => {
                 match (runtime.invoke(), &runtime.dispatcher) {
-                    (n, Some(d)) if n >= 10 => {
-                        // @TODO 10 configurable?
+                    (n, Some(d)) if n >= MAX_STACK_SIZE => {
                         let d = d.safe_clone();
 
                         d.execute(Box::new(move || {
-                            self.tell_reset(command);
+                            if let Some(runtime) = self.runtime() {
+                                runtime.reset();
+                            }
+
+                            self.tell(command);
                         }));
                     }
 
@@ -111,7 +115,7 @@ where
         Filter::new(filter)(self)
     }
 
-    fn via<B, Down: Flow<A, B>, F: FnOnce(Self) -> Down>(self, f: F) -> Down
+    fn via<B, Down: Consumer<A> + Producer<B>, F: FnOnce(Self) -> Down>(self, f: F) -> Down
     where
         B: 'static + Send,
     {
@@ -141,13 +145,6 @@ where
     }
 }
 
-pub trait Flow<A, B>: Sized + 'static + Send + Producer<B> + Consumer<A>
-where
-    A: 'static + Send,
-    B: 'static + Send,
-{
-}
-
 ///
 /// Pantomime streams types (Akka-streams inspired)
 ///
@@ -155,12 +152,15 @@ where
 #[cfg(test)]
 mod temp_tests {
     use crate::stream::for_each::ForEach;
+    use crate::stream::identity::Identity;
     use crate::stream::iter::Iter;
     use crate::stream::*;
 
     #[test]
     fn test() {
-        let dispatcher = crate::dispatcher::WorkStealingDispatcher::new(4, true); // @TODO integrate with actor system instead
+        return;
+
+        let dispatcher = crate::dispatcher::WorkStealingDispatcher::new(4, true).safe_clone(); // @TODO integrate with actor system instead
 
         let iterator = 0..usize::max_value();
 
@@ -169,12 +169,42 @@ mod temp_tests {
             .filter(|n: &usize| n % 5 == 0)
             .run_with(
                 ForEach::new(|n| println!("sink received {}", n)),
-                dispatcher.safe_clone(),
+                dispatcher,
             );
 
         loop {
             // @TODO remove
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }
+    }
+
+    #[test]
+    fn test2() {
+        let dispatcher = crate::dispatcher::WorkStealingDispatcher::new(4, true).safe_clone(); // @TODO integrate with actor system instead
+
+        let my_source = Source::iterator(0..10_000);
+
+        fn my_flow<Up: Producer<usize>>(upstream: Up) -> impl Consumer<usize> + Producer<usize> {
+            upstream.filter(|&n| n % 3 == 0).filter(|&n| n % 5 == 0)
+        }
+
+        let my_sink = Sink::for_each(|n: usize| println!("sink received {}", n));
+
+        my_source.via(my_flow).run_with(my_sink, dispatcher);
+
+        loop {
+            // @TODO remove
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+
+        /*
+        fn my_flow<Up: Producer<usize>, F: 'static + FnMut(&usize) -> bool + Send,>() -> impl Fn(Up) -> usize {
+            move |upstream: Up| upstream.filter(|&a| a % 7 == 0)
+        }*/
+
+        //let flow =
+        //  Flow::filter(|n: &usize| n % 7 == 0);
+
+        //let flow =
     }
 }

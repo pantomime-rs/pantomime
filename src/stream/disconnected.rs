@@ -53,10 +53,3 @@ where
         Completed
     }
 }
-
-impl<A, B> Flow<A, B> for Disconnected
-where
-    A: 'static + Send,
-    B: 'static + Send,
-{
-}
