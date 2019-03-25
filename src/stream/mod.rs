@@ -4,6 +4,7 @@ pub mod filter_map;
 pub mod flow;
 pub mod for_each;
 pub mod identity;
+pub mod ignore;
 pub mod iter;
 pub mod map;
 pub mod sink;
@@ -175,13 +176,14 @@ where
 #[cfg(test)]
 mod temp_tests {
     use crate::stream::for_each::ForEach;
-    use crate::stream::identity::Identity;
     use crate::stream::iter::Iter;
     use crate::stream::*;
 
     #[test]
     fn test() {
-        return;
+        if true {
+            return;
+        };
 
         let dispatcher = crate::dispatcher::WorkStealingDispatcher::new(4, true).safe_clone(); // @TODO integrate with actor system instead
 
@@ -203,6 +205,10 @@ mod temp_tests {
 
     #[test]
     fn test2() {
+        if true {
+            return;
+        };
+
         let dispatcher = crate::dispatcher::WorkStealingDispatcher::new(4, true).safe_clone(); // @TODO integrate with actor system instead
 
         let my_source = Source::iterator(0..10_000);
@@ -223,15 +229,30 @@ mod temp_tests {
             // @TODO remove
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }
+    }
 
-        /*
-        fn my_flow<Up: Producer<usize>, F: 'static + FnMut(&usize) -> bool + Send,>() -> impl Fn(Up) -> usize {
-            move |upstream: Up| upstream.filter(|&a| a % 7 == 0)
-        }*/
+    #[test]
+    fn test3() {
+        let dispatcher = crate::dispatcher::WorkStealingDispatcher::new(4, true).safe_clone(); // @TODO integrate with actor system instead
 
-        //let flow =
-        //  Flow::filter(|n: &usize| n % 7 == 0);
+        let my_source = Source::iterator(0..10_000);
 
-        //let flow =
+        fn my_flow<Up: Producer<usize>>(upstream: Up) -> impl Consumer<usize> + Producer<()> {
+            upstream
+                .filter(|&n| n % 3 == 0)
+                .filter(|&n| n % 5 == 0)
+                .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
+                .map(|n| n * 2)
+                .map(|n| println!("n: {}", n))
+        }
+
+        let my_sink = Sink::ignore();
+
+        my_source.via(my_flow).run_with(my_sink, dispatcher);
+
+        loop {
+            // @TODO remove
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
     }
 }
