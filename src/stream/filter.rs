@@ -1,13 +1,13 @@
 use crate::stream::*;
 use std::marker::PhantomData;
 
-pub struct Filter<A, F: FnMut(&A) -> bool, U: Producer<A>, D: Consumer<A>>
+pub struct Filter<A, F: FnMut(&A) -> bool, Up: Producer<A>, Down: Consumer<A>>
 where
     A: 'static + Send,
 {
     filter: F,
-    upstream: Option<U>,
-    downstream: Option<D>,
+    upstream: Up,
+    downstream: Down,
     runtime: ProducerRuntime,
     phantom: PhantomData<A>,
 }
@@ -21,8 +21,8 @@ where
     pub fn new(filter: F) -> impl FnOnce(Up) -> Self {
         move |upstream| Self {
             filter,
-            upstream: Some(upstream),
-            downstream: None,
+            upstream: upstream,
+            downstream: Disconnected,
             phantom: PhantomData,
             runtime: ProducerRuntime::new(),
         }
@@ -41,11 +41,11 @@ where
             ProducerCommand::Attach(consumer, dispatcher) => {
                 self.runtime.setup(dispatcher.safe_clone());
 
-                self.upstream.unwrap().tell(ProducerCommand::Attach(
+                self.upstream.tell(ProducerCommand::Attach(
                     Filter {
                         filter: self.filter,
-                        upstream: None::<Disconnected>,
-                        downstream: Some(consumer),
+                        upstream: Disconnected,
+                        downstream: consumer,
                         runtime: self.runtime,
                         phantom: PhantomData,
                     },
@@ -54,11 +54,11 @@ where
             }
 
             ProducerCommand::Cancel(consumer, _) => {
-                self.upstream.unwrap().tell(ProducerCommand::Cancel(
+                self.upstream.tell(ProducerCommand::Cancel(
                     Filter {
                         filter: self.filter,
-                        upstream: None::<Disconnected>,
-                        downstream: Some(consumer),
+                        upstream: Disconnected,
+                        downstream: consumer,
                         runtime: self.runtime,
                         phantom: PhantomData,
                     },
@@ -67,11 +67,11 @@ where
             }
 
             ProducerCommand::Request(consumer, demand) => {
-                self.upstream.unwrap().tell(ProducerCommand::Request(
+                self.upstream.tell(ProducerCommand::Request(
                     Filter {
                         filter: self.filter,
-                        upstream: None::<Disconnected>,
-                        downstream: Some(consumer),
+                        upstream: Disconnected,
+                        downstream: consumer,
                         runtime: self.runtime,
                         phantom: PhantomData,
                     },
@@ -99,11 +99,11 @@ where
         match event {
             ProducerEvent::Produced(producer, element) => {
                 if (self.filter)(&element) {
-                    self.downstream.unwrap().tell(ProducerEvent::Produced(
+                    self.downstream.tell(ProducerEvent::Produced(
                         Filter {
                             filter: self.filter,
-                            upstream: Some(producer),
-                            downstream: None::<Disconnected>,
+                            upstream: producer,
+                            downstream: Disconnected,
                             runtime: self.runtime,
                             phantom: PhantomData,
                         },
@@ -115,27 +115,21 @@ where
             }
 
             ProducerEvent::Started(producer) => {
-                self.downstream
-                    .unwrap()
-                    .tell(ProducerEvent::Started(Filter {
-                        filter: self.filter,
-                        upstream: Some(producer),
-                        downstream: None::<Disconnected>,
-                        runtime: self.runtime,
-                        phantom: PhantomData,
-                    }));
+                self.downstream.tell(ProducerEvent::Started(Filter {
+                    filter: self.filter,
+                    upstream: producer,
+                    downstream: Disconnected,
+                    runtime: self.runtime,
+                    phantom: PhantomData,
+                }));
             }
 
             ProducerEvent::Completed => {
-                self.downstream
-                    .unwrap()
-                    .tell::<Self>(ProducerEvent::Completed);
+                self.downstream.tell::<Self>(ProducerEvent::Completed);
             }
 
             ProducerEvent::Failed(e) => {
-                self.downstream
-                    .unwrap()
-                    .tell::<Self>(ProducerEvent::Failed(e));
+                self.downstream.tell::<Self>(ProducerEvent::Failed(e));
             }
         }
 
