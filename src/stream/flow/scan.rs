@@ -1,24 +1,32 @@
-/*use crate::dispatcher::Dispatcher;
+/*use crate::actor::ActorSystemContext;
+
+use crate::dispatcher::Dispatcher;
 use crate::stream::*;
 use std::marker::PhantomData;
 
-pub struct Identity<A, Up: Producer<A>, Down: Consumer<A>>
+pub struct Scan<A, B, F: FnMut(A) -> B, Up: Producer<A>, Down: Consumer<B>>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    F: 'static + Send,
 {
+    map: F,
     upstream: Up,
     downstream: Down,
     runtime: ProducerRuntime,
     phantom: PhantomData<A>,
 }
 
-impl<A, Up> Identity<A, Up, Disconnected>
+impl<A, B, F: FnMut(A) -> B, Up> Scan<A, B, F, Up, Disconnected>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    F: 'static + Send,
     Up: Producer<A>,
 {
-    pub fn new() -> impl FnOnce(Up) -> Self {
+    pub fn new(func: F) -> impl FnOnce(Up) -> Self {
         move |upstream| Self {
+            map: func,
             upstream: upstream,
             downstream: Disconnected,
             phantom: PhantomData,
@@ -27,43 +35,36 @@ where
     }
 }
 
-impl<A, U, D> Producer<A> for Identity<A, U, D>
+impl<A, B, F: FnMut(A) -> B, Up: Producer<A>, Down: Consumer<B>> Producer<B>
+    for Scan<A, B, F, Up, Down>
 where
     A: 'static + Send,
-    U: Producer<A>,
-    D: Consumer<A>,
+    B: 'static + Send,
+    F: 'static + Send,
+    Up: 'static + Send,
+    Down: 'static + Send,
 {
-    fn attach<Consume: Consumer<A>>(self, consumer: Consume, system: ActorSystemContext) -> Bounce<Completed> {
-        self.runtime.setup(context.dispatcher.safe_clone());
-
-        self.upstream.tell(ProducerCommand::Attach(
-            Identity {
-                upstream: Disconnected,
-                downstream: consumer,
-                runtime: self.runtime,
-                phantom: PhantomData,
-            },
-            context.clone(),
-        ));
-    }
-
-    fn request<Consume: Consumer<A>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
-
-    }
-
-    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Bounce<Completed> {
-
-    }
-
-    fn receive<Consume: Consumer<A>>(mut self, command: ProducerCommand<A, Consume>) -> Bounce<Completed> {
+    fn receive<Consume: Consumer<B>>(mut self, command: ProducerCommand<B, Consume>) -> Bounce<Completed> {
         match command {
             ProducerCommand::Attach(consumer, context) => {
+                self.runtime.setup(context.dispatcher.safe_clone());
 
+                self.upstream.tell(ProducerCommand::Attach(
+                    Scan {
+                        map: self.map,
+                        upstream: Disconnected,
+                        downstream: consumer,
+                        runtime: self.runtime,
+                        phantom: PhantomData,
+                    },
+                    context.clone(),
+                ));
             }
 
             ProducerCommand::Cancel(consumer, _) => {
                 self.upstream.tell(ProducerCommand::Cancel(
-                    Identity {
+                    Scan {
+                        map: self.map,
                         upstream: Disconnected,
                         downstream: consumer,
                         runtime: self.runtime,
@@ -75,7 +76,8 @@ where
 
             ProducerCommand::Request(consumer, demand) => {
                 self.upstream.tell(ProducerCommand::Request(
-                    Identity {
+                    Scan {
+                        map: self.map,
                         upstream: Disconnected,
                         downstream: consumer,
                         runtime: self.runtime,
@@ -94,17 +96,23 @@ where
     }
 }
 
-impl<A, U, D> Consumer<A> for Identity<A, U, D>
+impl<A, B, F: FnMut(A) -> B, Up: Producer<A>, Down: Consumer<B>> Consumer<A>
+    for Scan<A, B, F, Up, Down>
 where
     A: 'static + Send,
-    U: Producer<A>,
-    D: Consumer<A>,
+    B: 'static + Send,
+    F: 'static + Send,
+    Up: 'static + Send,
+    Down: 'static + Send,
 {
-    fn receive<Produce: Producer<A>>(self, event: ProducerEvent<A, Produce>) -> Bounce<Completed> {
+    fn receive<Produce: Producer<A>>(mut self, event: ProducerEvent<A, Produce>) -> Bounce<Completed> {
         match event {
             ProducerEvent::Produced(producer, element) => {
+                let element = (self.map)(element);
+
                 self.downstream.tell(ProducerEvent::Produced(
-                    Identity {
+                    Scan {
+                        map: self.map,
                         upstream: producer,
                         downstream: Disconnected,
                         runtime: self.runtime,
@@ -115,7 +123,8 @@ where
             }
 
             ProducerEvent::Started(producer) => {
-                self.downstream.tell(ProducerEvent::Started(Identity {
+                self.downstream.tell(ProducerEvent::Started(Scan {
+                    map: self.map,
                     upstream: producer,
                     downstream: Disconnected,
                     runtime: self.runtime,
@@ -135,4 +144,5 @@ where
         Bounce::Done(Completed)
     }
 }
+
 */
