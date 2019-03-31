@@ -1,7 +1,9 @@
 use super::*;
+use std::sync::{Arc, Weak};
 
 enum SingleThreadedDispatcherMessage {
     Execute(Thunk),
+    ExecuteTrampoline(Trampoline),
     Shutdown,
 }
 
@@ -22,20 +24,24 @@ impl SingleThreadedDispatcher {
     pub fn new() -> Self {
         let (sender, receiver) = unbounded::<SingleThreadedDispatcherMessage>();
 
-        Self::spawn(receiver);
+        Self::spawn(sender.clone(), receiver);
 
         Self { sender }
     }
 
-    fn spawn(receiver: Receiver<SingleThreadedDispatcherMessage>) {
+    fn spawn(
+        sender: Sender<SingleThreadedDispatcherMessage>,
+        receiver: Receiver<SingleThreadedDispatcherMessage>,
+    ) {
         struct Panicking {
             receiver: Receiver<SingleThreadedDispatcherMessage>,
+            sender: Sender<SingleThreadedDispatcherMessage>,
         }
 
         impl Drop for Panicking {
             fn drop(&mut self) {
                 if thread::panicking() {
-                    SingleThreadedDispatcher::spawn(self.receiver.clone());
+                    SingleThreadedDispatcher::spawn(self.sender.clone(), self.receiver.clone());
                 }
             }
         }
@@ -43,12 +49,27 @@ impl SingleThreadedDispatcher {
         thread::spawn(move || {
             let p = Panicking {
                 receiver: receiver.clone(),
+                sender: sender.clone(),
             };
 
             loop {
                 match receiver.recv() {
                     Ok(SingleThreadedDispatcherMessage::Execute(work)) => {
                         work.apply();
+                    }
+
+                    Ok(SingleThreadedDispatcherMessage::ExecuteTrampoline(trampoline)) => {
+                        // @TODO this can be improved a bit, probably should run serially a few times
+
+                        match trampoline.step {
+                            TrampolineStep::Bounce(produce) => {
+                                sender.send(SingleThreadedDispatcherMessage::ExecuteTrampoline(
+                                    produce.apply(),
+                                ));
+                            }
+
+                            TrampolineStep::Done => (),
+                        }
                     }
 
                     Ok(SingleThreadedDispatcherMessage::Shutdown) => {
@@ -73,6 +94,14 @@ impl Dispatcher for SingleThreadedDispatcher {
         let _ = self
             .sender
             .send(SingleThreadedDispatcherMessage::Execute(thunk));
+    }
+
+    fn execute_trampoline(&self, trampoline: Trampoline) {
+        let _ = self
+            .sender
+            .send(SingleThreadedDispatcherMessage::ExecuteTrampoline(
+                trampoline,
+            ));
     }
 
     fn safe_clone(&self) -> Box<Dispatcher + Send + Sync> {

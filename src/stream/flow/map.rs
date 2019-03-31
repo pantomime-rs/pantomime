@@ -1,5 +1,5 @@
 use crate::actor::ActorSystemContext;
-use crate::dispatcher::Dispatcher;
+use crate::dispatcher::{Dispatcher, Trampoline};
 use crate::stream::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -13,7 +13,6 @@ where
     map: F,
     upstream: Up,
     downstream: Down,
-    runtime: ProducerRuntime,
     phantom: PhantomData<A>,
 }
 
@@ -30,7 +29,6 @@ where
             upstream: upstream,
             downstream: Disconnected,
             phantom: PhantomData,
-            runtime: ProducerRuntime::new(),
         }
     }
 }
@@ -48,40 +46,32 @@ where
         mut self,
         consumer: Consume,
         context: Arc<ActorSystemContext>,
-    ) -> Bounce<Completed> {
-        self.runtime.setup(context.dispatcher.safe_clone());
-
+    ) -> Trampoline {
         self.upstream.attach(
             Map {
                 map: self.map,
                 upstream: Disconnected,
                 downstream: consumer,
-                runtime: self.runtime,
                 phantom: PhantomData,
             },
             context.clone(),
         )
     }
 
-    fn request<Consume: Consumer<B>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
-        self.upstream.request(
-            Map {
-                map: self.map,
-                upstream: Disconnected,
-                downstream: consumer,
-                runtime: self.runtime,
-                phantom: PhantomData,
-            },
-            demand,
-        )
+    fn pull<Consume: Consumer<B>>(self, consumer: Consume) -> Trampoline {
+        self.upstream.pull(Map {
+            map: self.map,
+            upstream: Disconnected,
+            downstream: consumer,
+            phantom: PhantomData,
+        })
     }
 
-    fn cancel<Consume: Consumer<B>>(self, consumer: Consume) -> Bounce<Completed> {
+    fn cancel<Consume: Consumer<B>>(self, consumer: Consume) -> Trampoline {
         self.upstream.cancel(Map {
             map: self.map,
             upstream: Disconnected,
             downstream: consumer,
-            runtime: self.runtime,
             phantom: PhantomData,
         })
     }
@@ -96,21 +86,16 @@ where
     Up: 'static + Send,
     Down: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
         self.downstream.started(Map {
             map: self.map,
             upstream: producer,
             downstream: Disconnected,
-            runtime: self.runtime,
             phantom: PhantomData,
         })
     }
 
-    fn produced<Produce: Producer<A>>(
-        mut self,
-        producer: Produce,
-        element: A,
-    ) -> Bounce<Completed> {
+    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
         let element = (self.map)(element);
 
         self.downstream.produced(
@@ -118,18 +103,17 @@ where
                 map: self.map,
                 upstream: producer,
                 downstream: Disconnected,
-                runtime: self.runtime,
                 phantom: PhantomData,
             },
             element,
         )
     }
 
-    fn completed(self) -> Bounce<Completed> {
+    fn completed(self) -> Trampoline {
         self.downstream.completed()
     }
 
-    fn failed(self, error: Error) -> Bounce<Completed> {
+    fn failed(self, error: Error) -> Trampoline {
         self.downstream.failed(error)
     }
 }

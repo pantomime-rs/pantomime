@@ -1,4 +1,5 @@
 use crate::actor::ActorSystemContext;
+use crate::dispatcher::Trampoline;
 use crate::stream::*;
 use std::sync::Arc;
 
@@ -12,15 +13,15 @@ where
         self,
         consumer: Consume,
         context: Arc<ActorSystemContext>,
-    ) -> Bounce<Completed> {
+    ) -> Trampoline {
         consumer.started(self)
     }
 
-    fn request<Consume: Consumer<A>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
+    fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
         consumer.completed()
     }
 
-    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Bounce<Completed> {
+    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
         consumer.completed()
     }
 }
@@ -29,24 +30,21 @@ impl<A> Consumer<A> for Disconnected
 where
     A: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
         producer.cancel(self)
     }
 
-    fn produced<Produce: Producer<A>>(
-        mut self,
-        producer: Produce,
-        element: A,
-    ) -> Bounce<Completed> {
+    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
         producer.cancel(self)
     }
 
-    fn completed(self) -> Bounce<Completed> {
-        Bounce::Done(Completed)
+    fn completed(self) -> Trampoline {
+        Trampoline::done()
     }
 
-    fn failed(self, error: Error) -> Bounce<Completed> {
+    fn failed(self, error: Error) -> Trampoline {
         // @TODO
-        Bounce::Done(Completed)
+
+        Trampoline::done()
     }
 }

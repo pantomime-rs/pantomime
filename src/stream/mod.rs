@@ -9,11 +9,9 @@ pub use sink::*;
 pub use source::*;
 
 use crate::actor::ActorSystemContext;
-use crate::dispatcher::{BoxedFn1, Dispatcher};
+use crate::dispatcher::{BoxedFn1, Dispatcher, Trampoline};
 use filter::Filter;
 use std::sync::Arc;
-
-const MAX_STACK_SIZE: usize = 10; // @TODO configurable?
 
 pub struct Error; // TODO
 pub type BoxedDispatcher = Box<Dispatcher + Send + Sync>; // @TODO
@@ -66,64 +64,22 @@ impl ProducerRuntime {
     }
 }
 
-pub enum Bounce<A> {
-    Done(A),
-    Bounce(Box<BoxedFn1<Bounce<A>> + 'static + Send>),
-}
-
-pub struct Completed;
-
-pub(crate) struct Trampoline;
-
-impl Trampoline {
-    pub fn bounce<A, F: FnOnce() -> Bounce<A>>(f: F) -> Bounce<A>
-    where
-        F: 'static + Send,
-    {
-        Bounce::Bounce(Box::new(f))
-    }
-}
-
-pub(crate) fn run_fair_trampoline(mut result: Bounce<Completed>, dispatcher: BoxedDispatcher) {
-    let mut i = 0;
-
-    loop {
-        i += 1;
-
-        match result {
-            Bounce::Bounce(next) => {
-                if i == 2 {
-                    let inner_dispatcher = dispatcher.safe_clone();
-
-                    dispatcher.execute(Box::new(move || {
-                        run_fair_trampoline(Bounce::Bounce(next), inner_dispatcher);
-                    }));
-                    return;
-                } else {
-                    result = next.apply();
-                }
-            }
-
-            Bounce::Done(Completed) => {
-                return;
-            }
-        }
-    }
-}
-
 pub trait Producer<A>: Sized + 'static + Send
 where
     A: 'static + Send,
 {
+    #[must_use]
     fn attach<Consume: Consumer<A>>(
         self,
         consumer: Consume,
         system: Arc<ActorSystemContext>,
-    ) -> Bounce<Completed>;
+    ) -> Trampoline;
 
-    fn request<Consume: Consumer<A>>(self, consumer: Consume, demand: usize) -> Bounce<Completed>;
+    #[must_use]
+    fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline;
 
-    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Bounce<Completed>;
+    #[must_use]
+    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline;
 
     fn filter<F: FnMut(&A) -> bool>(self, filter: F) -> Filter<A, F, Self, Disconnected>
     where
@@ -167,9 +123,7 @@ where
         let inner_context = context.clone();
 
         context.dispatcher.execute(Box::new(move || {
-            let next_inner_dispatcher = inner_dispatcher.safe_clone();
-
-            run_fair_trampoline(self.attach(consumer, inner_context), next_inner_dispatcher);
+            inner_dispatcher.execute_trampoline(self.attach(consumer, inner_context));
         }));
     }
 }
@@ -178,13 +132,17 @@ pub trait Consumer<A>: 'static + Send + Sized
 where
     A: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed>;
+    #[must_use]
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline;
 
-    fn produced<Produce: Producer<A>>(self, producer: Produce, element: A) -> Bounce<Completed>;
+    #[must_use]
+    fn produced<Produce: Producer<A>>(self, producer: Produce, element: A) -> Trampoline;
 
-    fn completed(self) -> Bounce<Completed>;
+    #[must_use]
+    fn completed(self) -> Trampoline;
 
-    fn failed(self, error: Error) -> Bounce<Completed>;
+    #[must_use]
+    fn failed(self, error: Error) -> Trampoline;
 }
 
 #[cfg(test)]
