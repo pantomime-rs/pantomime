@@ -431,6 +431,43 @@ pub(in crate::actor) struct ActorRefInner<M: 'static + Send> {
         Option<Box<'static + MailboxAppender<M> + Send + Sync>>,
 }
 
+struct EmptyActorRefInner;
+
+impl<M: 'static + Send> ActorRefInnerShim<M> for EmptyActorRefInner {
+    fn actor_type(&self) -> ActorType {
+        ActorType::Root
+    }
+
+    fn enqueue(&self, msg: M) {}
+
+    fn enqueue_cancellable(&self, cancellable: Cancellable, msg: M, thunk: Option<Thunk>) {}
+
+    fn enqueue_done(&self) {}
+
+    fn enqueue_system(&self, msg: SystemMsg) {}
+
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn initialize(&mut self, cell: Weak<ActorCell<M>>) {}
+
+    fn parent_ref(&self) -> SystemActorRef {
+        SystemActorRef {
+            id: 1,
+            scheduler: Box::new(NoopActorRefScheduler),
+        }
+    }
+
+    fn shard(&self) -> &Arc<ActorShard> {
+        panic!("pantomime bug: shard called on empty ActorRef")
+    }
+
+    fn system_context(&self) -> &Arc<ActorSystemContext> {
+        panic!("pantomime bug: shard called on empty ActorRef")
+    }
+}
+
 impl<M: 'static + Send> ActorRefInnerShim<M> for ActorRefInner<M> {
     fn actor_type(&self) -> ActorType {
         self.actor_type
@@ -555,6 +592,15 @@ impl<M: 'static + Send> ActorRefInnerShim<M> for ActorRefInner<M> {
 impl<M: 'static + Send> ActorRef<M> {
     pub(in crate::actor) fn new(inner: Arc<ActorRefInnerShim<M> + 'static + Send + Sync>) -> Self {
         Self { inner }
+    }
+
+    /// Returns an empty ActorRef that can't receive messages. This is useful
+    /// as a placeholder that will at some later point be replaced with a
+    /// real actor.
+    pub fn empty() -> Self {
+        Self {
+            inner: Arc::new(EmptyActorRefInner),
+        }
     }
 
     pub(in crate::actor) fn actor_type(&self) -> ActorType {

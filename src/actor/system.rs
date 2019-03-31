@@ -171,6 +171,24 @@ impl ActorSystemContext {
 
         actor_ref
     }
+
+    // @TODO remove this
+    pub(crate) fn spawn<M: 'static + Send, A: 'static + Send>(
+        myself: &Arc<ActorSystemContext>,
+        actor: A,
+    ) -> ActorRef<M>
+    where
+        A: Actor<M>,
+    {
+        // @TODO use a real parent
+
+        let parent_ref = SystemActorRef {
+            id: 0,
+            scheduler: Box::new(NoopActorRefScheduler),
+        };
+
+        ActorSystemContext::spawn_actor(myself, ActorType::Root, actor, parent_ref)
+    }
 }
 
 // @TODO signaled

@@ -1,5 +1,7 @@
+use crate::actor::ActorSystemContext;
 use crate::stream::*;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 pub struct FilterMap<A, B, F: FnMut(A) -> Option<B>, Up: Producer<A>, Down: Consumer<B>>
 where
@@ -10,7 +12,6 @@ where
     map: F,
     upstream: Up,
     downstream: Down,
-    runtime: ProducerRuntime,
     phantom: PhantomData<A>,
 }
 
@@ -27,8 +28,46 @@ where
             upstream: upstream,
             downstream: Disconnected,
             phantom: PhantomData,
-            runtime: ProducerRuntime::new(),
         }
+    }
+}
+
+impl<A, B, F: FnMut(A) -> Option<B>, Up, Down> FilterMap<A, B, F, Up, Down>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    F: 'static + Send,
+    Up: Producer<A>,
+    Down: Consumer<B>,
+{
+    fn disconnect_downstream<Produce: Producer<A>>(
+        self,
+        producer: Produce,
+    ) -> (FilterMap<A, B, F, Produce, Disconnected>, Down) {
+        (
+            FilterMap {
+                map: self.map,
+                upstream: producer,
+                downstream: Disconnected,
+                phantom: PhantomData,
+            },
+            self.downstream,
+        )
+    }
+
+    fn disconnect_upstream<Consume: Consumer<B>>(
+        self,
+        consumer: Consume,
+    ) -> (FilterMap<A, B, F, Disconnected, Consume>, Up) {
+        (
+            FilterMap {
+                map: self.map,
+                upstream: Disconnected,
+                downstream: consumer,
+                phantom: PhantomData,
+            },
+            self.upstream,
+        )
     }
 }
 
@@ -41,55 +80,23 @@ where
     Up: 'static + Send,
     Down: 'static + Send,
 {
-    fn receive<Consume: Consumer<B>>(mut self, command: ProducerCommand<B, Consume>) -> Completed {
-        match command {
-            ProducerCommand::Attach(consumer, dispatcher) => {
-                self.runtime.setup(dispatcher.safe_clone());
-
-                self.upstream.tell(ProducerCommand::Attach(
-                    FilterMap {
-                        map: self.map,
-                        upstream: Disconnected,
-                        downstream: consumer,
-                        runtime: self.runtime,
-                        phantom: PhantomData,
-                    },
-                    dispatcher,
-                ));
-            }
-
-            ProducerCommand::Cancel(consumer, _) => {
-                self.upstream.tell(ProducerCommand::Cancel(
-                    FilterMap {
-                        map: self.map,
-                        upstream: Disconnected,
-                        downstream: consumer,
-                        runtime: self.runtime,
-                        phantom: PhantomData,
-                    },
-                    None,
-                ));
-            }
-
-            ProducerCommand::Request(consumer, demand) => {
-                self.upstream.tell(ProducerCommand::Request(
-                    FilterMap {
-                        map: self.map,
-                        upstream: Disconnected,
-                        downstream: consumer,
-                        runtime: self.runtime,
-                        phantom: PhantomData,
-                    },
-                    demand,
-                ));
-            }
-        }
-
-        Completed
+    fn attach<Consume: Consumer<B>>(
+        self,
+        consumer: Consume,
+        context: Arc<ActorSystemContext>,
+    ) -> Bounce<Completed> {
+        let (filter_map, upstream) = self.disconnect_upstream(consumer);
+        upstream.attach(filter_map, context)
     }
 
-    fn runtime(&mut self) -> Option<&mut ProducerRuntime> {
-        Some(&mut self.runtime)
+    fn request<Consume: Consumer<B>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
+        let (filter_map, upstream) = self.disconnect_upstream(consumer);
+        upstream.request(filter_map, demand)
+    }
+
+    fn cancel<Consume: Consumer<B>>(self, consumer: Consume) -> Bounce<Completed> {
+        let (filter_map, upstream) = self.disconnect_upstream(consumer);
+        upstream.cancel(filter_map)
     }
 }
 
@@ -102,46 +109,31 @@ where
     Up: 'static + Send,
     Down: 'static + Send,
 {
-    fn receive<Produce: Producer<A>>(mut self, event: ProducerEvent<A, Produce>) -> Completed {
-        match event {
-            ProducerEvent::Produced(producer, element) => match (self.map)(element) {
-                Some(element) => {
-                    self.downstream.tell(ProducerEvent::Produced(
-                        FilterMap {
-                            map: self.map,
-                            upstream: producer,
-                            downstream: Disconnected,
-                            runtime: self.runtime,
-                            phantom: PhantomData,
-                        },
-                        element,
-                    ));
-                }
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+        let (filter_map, downstream) = self.disconnect_downstream(producer);
+        downstream.started(filter_map)
+    }
 
-                None => {
-                    producer.tell(ProducerCommand::Request(self, 1));
-                }
-            },
-
-            ProducerEvent::Started(producer) => {
-                self.downstream.tell(ProducerEvent::Started(FilterMap {
-                    map: self.map,
-                    upstream: producer,
-                    downstream: Disconnected,
-                    runtime: self.runtime,
-                    phantom: PhantomData,
-                }));
+    fn produced<Produce: Producer<A>>(
+        mut self,
+        producer: Produce,
+        element: A,
+    ) -> Bounce<Completed> {
+        match (self.map)(element) {
+            Some(element) => {
+                let (filter_map, downstream) = self.disconnect_downstream(producer);
+                downstream.produced(filter_map, element)
             }
 
-            ProducerEvent::Completed => {
-                self.downstream.tell::<Self>(ProducerEvent::Completed);
-            }
-
-            ProducerEvent::Failed(e) => {
-                self.downstream.tell::<Self>(ProducerEvent::Failed(e));
-            }
+            None => Trampoline::bounce(|| producer.request(self, 1)),
         }
+    }
 
-        Completed
+    fn completed(self) -> Bounce<Completed> {
+        self.downstream.completed()
+    }
+
+    fn failed(self, error: Error) -> Bounce<Completed> {
+        self.downstream.failed(error)
     }
 }

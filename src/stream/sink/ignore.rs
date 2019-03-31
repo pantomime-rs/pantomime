@@ -28,23 +28,25 @@ impl<A> Consumer<A> for Ignore<A>
 where
     A: 'static + Send,
 {
-    fn receive<Produce: Producer<A>>(self, event: ProducerEvent<A, Produce>) -> Completed {
-        match event {
-            ProducerEvent::Produced(producer, _) => {
-                producer.tell(ProducerCommand::Request(self, 1));
-            }
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+        Bounce::Bounce(Box::new(move || producer.request(self, 1)))
+    }
 
-            ProducerEvent::Started(producer) => {
-                producer.tell(ProducerCommand::Request(self, 1));
-            }
+    fn produced<Produce: Producer<A>>(
+        mut self,
+        producer: Produce,
+        element: A,
+    ) -> Bounce<Completed> {
+        Bounce::Bounce(Box::new(move || producer.request(self, 1)))
+    }
 
-            ProducerEvent::Completed => {}
+    fn completed(self) -> Bounce<Completed> {
+        std::process::exit(0); // @TODO temp
+        Bounce::Done(Completed)
+    }
 
-            ProducerEvent::Failed(_e) => {
-                // @TODO
-            }
-        }
-
-        Completed
+    fn failed(self, error: Error) -> Bounce<Completed> {
+        Bounce::Done(Completed)
+        // @TODO
     }
 }
