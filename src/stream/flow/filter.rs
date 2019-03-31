@@ -1,4 +1,5 @@
 use crate::actor::ActorSystemContext;
+use crate::dispatcher::Trampoline;
 use crate::stream::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -78,19 +79,19 @@ where
         self,
         consumer: Consume,
         context: Arc<ActorSystemContext>,
-    ) -> Bounce<Completed> {
+    ) -> Trampoline {
         let (upstream, filter) = self.disconnect_upstream(consumer);
 
         upstream.attach(filter, context.clone())
     }
 
-    fn request<Consume: Consumer<A>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
+    fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
         let (upstream, filter) = self.disconnect_upstream(consumer);
 
-        upstream.request(filter, demand)
+        upstream.pull(filter)
     }
 
-    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Bounce<Completed> {
+    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
         let (upstream, filter) = self.disconnect_upstream(consumer);
 
         upstream.cancel(filter)
@@ -104,30 +105,26 @@ where
     P: Producer<A>,
     D: Consumer<A>,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
         let (downstream, filter) = self.disconnect_downstream(producer);
 
         downstream.started(filter)
     }
 
-    fn produced<Produce: Producer<A>>(
-        mut self,
-        producer: Produce,
-        element: A,
-    ) -> Bounce<Completed> {
+    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
         if (self.filter)(&element) {
             let (downstream, filter) = self.disconnect_downstream(producer);
             downstream.produced(filter, element)
         } else {
-            Trampoline::bounce(|| producer.request(self, 1))
+            Trampoline::bounce(|| producer.pull(self))
         }
     }
 
-    fn completed(self) -> Bounce<Completed> {
+    fn completed(self) -> Trampoline {
         self.downstream.completed()
     }
 
-    fn failed(self, error: Error) -> Bounce<Completed> {
+    fn failed(self, error: Error) -> Trampoline {
         self.downstream.failed(error)
     }
 }

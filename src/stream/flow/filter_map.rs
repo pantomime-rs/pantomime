@@ -1,4 +1,5 @@
 use crate::actor::ActorSystemContext;
+use crate::dispatcher::Trampoline;
 use crate::stream::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -25,7 +26,7 @@ where
     pub fn new(func: F) -> impl FnOnce(Up) -> Self {
         move |upstream| Self {
             map: func,
-            upstream: upstream,
+            upstream,
             downstream: Disconnected,
             phantom: PhantomData,
         }
@@ -84,18 +85,21 @@ where
         self,
         consumer: Consume,
         context: Arc<ActorSystemContext>,
-    ) -> Bounce<Completed> {
+    ) -> Trampoline {
         let (filter_map, upstream) = self.disconnect_upstream(consumer);
+
         upstream.attach(filter_map, context)
     }
 
-    fn request<Consume: Consumer<B>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
+    fn pull<Consume: Consumer<B>>(self, consumer: Consume) -> Trampoline {
         let (filter_map, upstream) = self.disconnect_upstream(consumer);
-        upstream.request(filter_map, demand)
+
+        upstream.pull(filter_map)
     }
 
-    fn cancel<Consume: Consumer<B>>(self, consumer: Consume) -> Bounce<Completed> {
+    fn cancel<Consume: Consumer<B>>(self, consumer: Consume) -> Trampoline {
         let (filter_map, upstream) = self.disconnect_upstream(consumer);
+
         upstream.cancel(filter_map)
     }
 }
@@ -109,31 +113,27 @@ where
     Up: 'static + Send,
     Down: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
         let (filter_map, downstream) = self.disconnect_downstream(producer);
         downstream.started(filter_map)
     }
 
-    fn produced<Produce: Producer<A>>(
-        mut self,
-        producer: Produce,
-        element: A,
-    ) -> Bounce<Completed> {
+    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
         match (self.map)(element) {
             Some(element) => {
                 let (filter_map, downstream) = self.disconnect_downstream(producer);
                 downstream.produced(filter_map, element)
             }
 
-            None => Trampoline::bounce(|| producer.request(self, 1)),
+            None => Trampoline::bounce(|| producer.pull(self)),
         }
     }
 
-    fn completed(self) -> Bounce<Completed> {
+    fn completed(self) -> Trampoline {
         self.downstream.completed()
     }
 
-    fn failed(self, error: Error) -> Bounce<Completed> {
+    fn failed(self, error: Error) -> Trampoline {
         self.downstream.failed(error)
     }
 }
