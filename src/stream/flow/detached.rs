@@ -1,5 +1,5 @@
 use crate::actor::*;
-use crate::dispatcher::Dispatcher;
+use crate::dispatcher::{Dispatcher, Trampoline};
 use crate::stream::disconnected::Disconnected;
 use crate::stream::*;
 use std::collections::VecDeque;
@@ -9,21 +9,21 @@ use std::sync::Arc;
 const BUFFER_SIZE: usize = 2; // @TODO config
 
 trait GenProducer {
-    fn attach(self: Box<Self>, context: Arc<ActorSystemContext>) -> Bounce<Completed>;
+    fn attach(self: Box<Self>, context: Arc<ActorSystemContext>) -> Trampoline;
 
-    fn request(self: Box<Self>, demand: usize) -> Bounce<Completed>;
+    fn pull(self: Box<Self>) -> Trampoline;
 
-    fn cancel(self: Box<Self>) -> Bounce<Completed>;
+    fn cancel(self: Box<Self>) -> Trampoline;
 }
 
 trait GenConsumer<A> {
-    fn started(self: Box<Self>) -> Bounce<Completed>;
+    fn started(self: Box<Self>) -> Trampoline;
 
-    fn produced(self: Box<Self>, element: A) -> Bounce<Completed>;
+    fn produced(self: Box<Self>, element: A) -> Trampoline;
 
-    fn completed(self: Box<Self>) -> Bounce<Completed>;
+    fn completed(self: Box<Self>) -> Trampoline;
 
-    fn failed(self: Box<Self>, error: Error) -> Bounce<Completed>;
+    fn failed(self: Box<Self>, error: Error) -> Trampoline;
 }
 
 enum DetachedActorMsg<A> {
@@ -31,7 +31,7 @@ enum DetachedActorMsg<A> {
     Produced(Box<GenProducer + 'static + Send>, A),
     Completed,
     Failed(Error),
-    Requested(Box<GenConsumer<A> + 'static + Send>, usize),
+    Pulled(Box<GenConsumer<A> + 'static + Send>),
     Cancelled(Box<GenConsumer<A> + 'static + Send>),
     Attached(Box<GenConsumer<A> + 'static + Send>),
 }
@@ -41,7 +41,6 @@ struct DetachedActor<A> {
     buffer: VecDeque<A>,
     producer: Option<Box<GenProducer + 'static + Send>>,
     consumer: Option<Box<GenConsumer<A> + 'static + Send>>,
-    demand: usize,
     cancelled: bool,
     completed: bool,
     failed: Option<Error>,
@@ -54,7 +53,6 @@ impl<A> DetachedActor<A> {
             buffer: VecDeque::new(),
             producer: None,
             consumer: None,
-            demand: 0,
             cancelled: false,
             completed: false,
             failed: None,
@@ -74,15 +72,13 @@ where
         match msg {
             DetachedActorMsg::Started(producer) => {
                 if self.cancelled {
-                    run_fair_trampoline(
-                        producer.cancel(),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(producer.cancel());
                 } else {
-                    run_fair_trampoline(
-                        producer.request(1),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(producer.pull());
                 }
             }
 
@@ -90,24 +86,24 @@ where
                 self.buffer.push_back(el);
 
                 if self.cancelled {
-                    run_fair_trampoline(
-                        producer.cancel(),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(producer.cancel());
                 } else if self.buffer.len() < BUFFER_SIZE {
                     let next_dispatcher = context.system_dispatcher().safe_clone();
 
+                    let dispatcher = context.system_dispatcher();
+                    let inner_dispatcher = dispatcher.clone();
+
                     context.system_dispatcher().execute(Box::new(move || {
-                        run_fair_trampoline(producer.request(1), next_dispatcher);
+                        inner_dispatcher.execute_trampoline(producer.pull());
                     }));
                 } else {
                     self.producer = Some(producer);
                 }
 
                 if let Some(consumer) = self.consumer.take() {
-                    context
-                        .actor_ref()
-                        .tell(DetachedActorMsg::Requested(consumer, 0));
+                    context.actor_ref().tell(DetachedActorMsg::Pulled(consumer));
                 }
             }
 
@@ -115,19 +111,17 @@ where
                 self.completed = true;
 
                 if let Some(consumer) = self.consumer.take() {
-                    run_fair_trampoline(
-                        consumer.completed(),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(consumer.completed());
                 }
             }
 
             DetachedActorMsg::Failed(error) => match self.consumer.take() {
                 Some(consumer) => {
-                    run_fair_trampoline(
-                        consumer.failed(error),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(consumer.failed(error));
                 }
 
                 None => {
@@ -135,52 +129,40 @@ where
                 }
             },
 
-            DetachedActorMsg::Requested(consumer, demand) => {
+            DetachedActorMsg::Pulled(consumer) => {
                 if self.completed {
-                    run_fair_trampoline(
-                        consumer.completed(),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(consumer.completed());
                 } else if let Some(error) = self.failed.take() {
-                    run_fair_trampoline(
-                        consumer.failed(error),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(consumer.failed(error));
                 } else {
-                    self.demand += demand;
+                    match self.buffer.pop_front() {
+                        Some(elem) => {
+                            let dispatcher = context.system_dispatcher();
 
-                    if self.demand > 0 {
-                        match self.buffer.pop_front() {
-                            Some(elem) => {
-                                self.demand -= 1;
+                            if self.buffer.len() < BUFFER_SIZE {
+                                if let Some(producer) = self.producer.take() {
+                                    let inner_dispatcher = dispatcher.clone();
 
-                                if self.buffer.len() < BUFFER_SIZE {
-                                    if let Some(producer) = self.producer.take() {
-                                        let next_dispatcher =
-                                            context.system_dispatcher().safe_clone();
-
-                                        context.system_dispatcher().execute(Box::new(move || {
-                                            run_fair_trampoline(
-                                                producer.request(1),
-                                                next_dispatcher,
-                                            );
-                                        }));
-                                    }
+                                    dispatcher.execute(Box::new(move || {
+                                        inner_dispatcher.execute_trampoline(producer.pull());
+                                    }));
                                 }
-
-                                let next_dispatcher = context.system_dispatcher().safe_clone();
-
-                                context.system_dispatcher().execute(Box::new(move || {
-                                    run_fair_trampoline(consumer.produced(elem), next_dispatcher);
-                                }));
                             }
 
-                            None => {
-                                self.consumer = Some(consumer);
-                            }
+                            let inner_dispatcher = dispatcher.clone();
+
+                            dispatcher.execute(Box::new(move || {
+                                inner_dispatcher.execute_trampoline(consumer.produced(elem));
+                            }));
                         }
-                    } else {
-                        self.consumer = Some(consumer);
+
+                        None => {
+                            self.consumer = Some(consumer);
+                        }
                     }
                 }
             }
@@ -189,17 +171,18 @@ where
                 self.consumer = Some(consumer);
 
                 if let Some(producer) = self.producer.take() {
-                    run_fair_trampoline(
-                        producer.cancel(),
-                        context.system_dispatcher().safe_clone(),
-                    );
+                    context
+                        .system_dispatcher()
+                        .execute_trampoline(producer.cancel());
                 } else {
                     self.cancelled = true;
                 }
             }
 
             DetachedActorMsg::Attached(consumer) => {
-                run_fair_trampoline(consumer.started(), context.system_dispatcher().safe_clone());
+                context
+                    .system_dispatcher()
+                    .execute_trampoline(consumer.started());
             }
         }
     }
@@ -287,7 +270,7 @@ where
         mut self,
         consumer: Consume,
         context: Arc<ActorSystemContext>,
-    ) -> Bounce<Completed> {
+    ) -> Trampoline {
         let actor_ref = ActorSystemContext::spawn(&context, DetachedActor::<A>::new());
 
         let upstream = Detached {
@@ -311,24 +294,24 @@ where
         self.upstream.attach(upstream, context)
     }
 
-    fn request<Consume: Consumer<A>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
+    fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
         let (_, detached) = self.disconnect_upstream(consumer);
 
-        actor_ref.tell(DetachedActorMsg::Requested(Box::new(detached), demand));
+        actor_ref.tell(DetachedActorMsg::Pulled(Box::new(detached)));
 
-        Bounce::Done(Completed)
+        Trampoline::done()
     }
 
-    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Bounce<Completed> {
+    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
         let (_, detached) = self.disconnect_upstream(consumer);
 
         actor_ref.tell(DetachedActorMsg::Cancelled(Box::new(detached)));
 
-        Bounce::Done(Completed)
+        Trampoline::done()
     }
 }
 
@@ -337,40 +320,36 @@ where
     A: 'static + Send,
     Up: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
         let (_, detached) = self.disconnect_downstream(producer);
 
         actor_ref.tell(DetachedActorMsg::Started(Box::new(detached)));
 
-        Bounce::Done(Completed)
+        Trampoline::done()
     }
 
-    fn produced<Produce: Producer<A>>(
-        mut self,
-        producer: Produce,
-        element: A,
-    ) -> Bounce<Completed> {
+    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
         let (_, detached) = self.disconnect_downstream(producer);
 
         actor_ref.tell(DetachedActorMsg::Produced(Box::new(detached), element));
 
-        Bounce::Done(Completed)
+        Trampoline::done()
     }
 
-    fn completed(self) -> Bounce<Completed> {
+    fn completed(self) -> Trampoline {
         self.actor_ref.tell(DetachedActorMsg::Completed);
 
-        Bounce::Done(Completed)
+        Trampoline::done()
     }
 
-    fn failed(self, error: Error) -> Bounce<Completed> {
+    fn failed(self, error: Error) -> Trampoline {
         self.actor_ref.tell(DetachedActorMsg::Failed(error));
 
-        Bounce::Done(Completed)
+        Trampoline::done()
     }
 }
 
@@ -378,25 +357,25 @@ impl<A, Up: Producer<A>, Down: Consumer<A>> GenConsumer<A> for Detached<A, Up, D
 where
     A: 'static + Send,
 {
-    fn started(self: Box<Self>) -> Bounce<Completed> {
+    fn started(self: Box<Self>) -> Trampoline {
         let (downstream, detached) = self.disconnect_downstream(Disconnected);
 
         downstream.started(detached)
     }
 
-    fn produced(self: Box<Self>, element: A) -> Bounce<Completed> {
+    fn produced(self: Box<Self>, element: A) -> Trampoline {
         let (downstream, detached) = self.disconnect_downstream(Disconnected);
 
         downstream.produced(detached, element)
     }
 
-    fn completed(self: Box<Self>) -> Bounce<Completed> {
+    fn completed(self: Box<Self>) -> Trampoline {
         let (downstream, detached) = self.disconnect_downstream(Disconnected);
 
         downstream.completed()
     }
 
-    fn failed(self: Box<Self>, error: Error) -> Bounce<Completed> {
+    fn failed(self: Box<Self>, error: Error) -> Trampoline {
         let (downstream, detached) = self.disconnect_downstream(Disconnected);
 
         downstream.failed(error)
@@ -407,19 +386,19 @@ impl<A, Up: Producer<A>, Down: Consumer<A>> GenProducer for Detached<A, Up, Down
 where
     A: 'static + Send,
 {
-    fn attach(self: Box<Self>, context: Arc<ActorSystemContext>) -> Bounce<Completed> {
+    fn attach(self: Box<Self>, context: Arc<ActorSystemContext>) -> Trampoline {
         let (upstream, detached) = self.disconnect_upstream(Disconnected);
 
         upstream.attach(Disconnected, context)
     }
 
-    fn request(self: Box<Self>, demand: usize) -> Bounce<Completed> {
+    fn pull(self: Box<Self>) -> Trampoline {
         let (upstream, detached) = self.disconnect_upstream(Disconnected);
 
-        upstream.request(detached, demand)
+        upstream.pull(detached)
     }
 
-    fn cancel(self: Box<Self>) -> Bounce<Completed> {
+    fn cancel(self: Box<Self>) -> Trampoline {
         let (upstream, detached) = self.disconnect_upstream(Disconnected);
 
         upstream.cancel(Disconnected)

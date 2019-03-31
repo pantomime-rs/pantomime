@@ -20,6 +20,13 @@ impl Source {
         iter::Iter::new(iterator)
     }
 
+    pub fn empty<A>() -> iter::Iter<A, std_iter::Empty<A>>
+    where
+        A: Send + Clone,
+    {
+        iter::Iter::new(std_iter::empty())
+    }
+
     pub fn repeat<A>(element: A) -> iter::Iter<A, std_iter::Repeat<A>>
     where
         A: Send + Clone,

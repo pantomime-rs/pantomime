@@ -43,13 +43,16 @@ pub trait Dispatcher {
     /// Execute the thunk on this dispatcher
     fn execute(&self, thunk: Thunk);
 
+    /// Execute the trampoline on this dispatcher. Implementations
+    /// are free to implement their own calling semantics.
+    fn execute_trampoline(&self, trampoline: Trampoline);
+
     fn safe_clone(&self) -> Box<Dispatcher + Send + Sync>;
 
     fn shutdown(self);
 
     fn throughput(&self) -> usize;
 }
-
 // @TODO generalize?
 pub trait BoxedFn1<A> {
     fn apply(self: Box<Self>) -> A;
@@ -76,3 +79,29 @@ impl<F: FnOnce()> BoxedFn for F {
 pub type Thunk = Box<BoxedFn + Send + 'static>;
 
 pub type ThunkWithSync = Box<BoxedFn + Send + Sync + 'static>;
+
+pub enum TrampolineStep {
+    Done,
+    Bounce(Box<BoxedFn1<Trampoline> + 'static + Send>),
+}
+
+pub struct Trampoline {
+    step: TrampolineStep,
+}
+
+impl Trampoline {
+    pub fn done() -> Trampoline {
+        Self {
+            step: TrampolineStep::Done,
+        }
+    }
+
+    pub fn bounce<F: FnOnce() -> Trampoline>(f: F) -> Self
+    where
+        F: 'static + Send,
+    {
+        Self {
+            step: TrampolineStep::Bounce(Box::new(f)),
+        }
+    }
+}
