@@ -28,25 +28,28 @@ where
     A: 'static + Send,
     F: 'static + Send,
 {
-    fn receive<Produce: Producer<A>>(mut self, event: ProducerEvent<A, Produce>) -> Completed {
-        match event {
-            ProducerEvent::Produced(producer, element) => {
-                (self.func)(element);
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+        println!("started, request 1");
 
-                producer.tell(ProducerCommand::Request(self, 1));
-            }
+        Bounce::Bounce(Box::new(move || producer.request(self, 1)))
+    }
 
-            ProducerEvent::Started(producer) => {
-                producer.tell(ProducerCommand::Request(self, 1));
-            }
+    fn produced<Produce: Producer<A>>(
+        mut self,
+        producer: Produce,
+        element: A,
+    ) -> Bounce<Completed> {
+        (self.func)(element);
 
-            ProducerEvent::Completed => {}
+        Bounce::Bounce(Box::new(move || producer.request(self, 1)))
+    }
 
-            ProducerEvent::Failed(_e) => {
-                // @TODO
-            }
-        }
+    fn completed(self) -> Bounce<Completed> {
+        Bounce::Done(Completed)
+    }
 
-        Completed
+    fn failed(self, error: Error) -> Bounce<Completed> {
+        Bounce::Done(Completed)
+        // @TODO
     }
 }

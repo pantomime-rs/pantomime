@@ -1,4 +1,6 @@
+use crate::actor::ActorSystemContext;
 use crate::stream::*;
+use std::sync::Arc;
 
 pub struct Disconnected;
 
@@ -6,26 +8,20 @@ impl<A> Producer<A> for Disconnected
 where
     A: 'static + Send,
 {
-    fn receive<Consume: Consumer<A>>(self, command: ProducerCommand<A, Consume>) -> Completed {
-        match command {
-            ProducerCommand::Attach(consumer, _) => {
-                consumer.tell(ProducerEvent::Started(self));
-            }
-
-            ProducerCommand::Request(consumer, _) => {
-                consumer.tell::<Self>(ProducerEvent::Completed);
-            }
-
-            ProducerCommand::Cancel(consumer, _) => {
-                consumer.tell::<Self>(ProducerEvent::Completed);
-            }
-        }
-
-        Completed
+    fn attach<Consume: Consumer<A>>(
+        self,
+        consumer: Consume,
+        context: Arc<ActorSystemContext>,
+    ) -> Bounce<Completed> {
+        consumer.started(self)
     }
 
-    fn runtime(&mut self) -> Option<&mut ProducerRuntime> {
-        None
+    fn request<Consume: Consumer<A>>(self, consumer: Consume, demand: usize) -> Bounce<Completed> {
+        consumer.completed()
+    }
+
+    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Bounce<Completed> {
+        consumer.completed()
     }
 }
 
@@ -33,23 +29,24 @@ impl<A> Consumer<A> for Disconnected
 where
     A: 'static + Send,
 {
-    fn receive<Produce: Producer<A>>(self, event: ProducerEvent<A, Produce>) -> Completed {
-        match event {
-            ProducerEvent::Produced(producer, _) => {
-                producer.tell(ProducerCommand::Cancel(self, None));
-            }
+    fn started<Produce: Producer<A>>(self, producer: Produce) -> Bounce<Completed> {
+        producer.cancel(self)
+    }
 
-            ProducerEvent::Started(producer) => {
-                producer.tell(ProducerCommand::Cancel(self, None));
-            }
+    fn produced<Produce: Producer<A>>(
+        mut self,
+        producer: Produce,
+        element: A,
+    ) -> Bounce<Completed> {
+        producer.cancel(self)
+    }
 
-            ProducerEvent::Completed => {}
+    fn completed(self) -> Bounce<Completed> {
+        Bounce::Done(Completed)
+    }
 
-            ProducerEvent::Failed(_e) => {
-                // @TODO
-            }
-        }
-
-        Completed
+    fn failed(self, error: Error) -> Bounce<Completed> {
+        // @TODO
+        Bounce::Done(Completed)
     }
 }
