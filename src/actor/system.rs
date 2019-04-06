@@ -19,9 +19,141 @@ static INITIALIZE_ONCE: Once = Once::new();
 /// various datastructures that support the execution of its actors.
 pub struct ActorSystem {}
 
+#[derive(Clone)]
+pub struct ActorSystemContext {
+    inner: Arc<ActorSystemContextInner>,
+}
+
+impl ActorSystemContext {
+    fn new(
+        config: ActorSystemConfig,
+        dispatcher: WorkStealingDispatcher,
+        initial_id: usize,
+        timer_ref: Option<ActorRef<TimerMsg>>,
+        watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
+        sender: channel::Sender<ActorSystemMsg>,
+        shards: Option<usize>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(ActorSystemContextInner::new(
+                config,
+                dispatcher,
+                initial_id,
+                timer_ref,
+                watcher_ref,
+                sender,
+                shards,
+            )),
+        }
+    }
+
+    pub fn dispatcher(&self) -> &WorkStealingDispatcher {
+        &self.inner.dispatcher
+    }
+
+    pub fn drain(&self) {
+        self.inner.drain();
+    }
+
+    pub fn stop(&self) {
+        self.inner.stop();
+    }
+
+    /// Schedule a function to be invoked after the timeout has elapsed.
+    ///
+    /// The supplied function will be executed on the system dispatcher.
+    ///
+    /// Internally, this uses a wheel-based timer that by default can
+    /// schedule tasks upto a granularity of 10 milliseconds (by default).
+    pub fn schedule_thunk<F: FnOnce()>(&self, timeout: time::Duration, f: F)
+    where
+        F: 'static + Send + Sync,
+    {
+        self.inner.schedule_thunk(timeout, f);
+    }
+
+    pub(in crate::actor) fn spawn_actor<M: 'static + Send, A: 'static + Send>(
+        &self,
+        actor_type: ActorType,
+        actor: A,
+        parent_ref: SystemActorRef,
+    ) -> ActorRef<M>
+    where
+        A: Actor<M>,
+    {
+        let actor_id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
+
+        let custom_dispatcher = actor.config_dispatcher(self);
+
+        let mut custom_mailbox = actor.config_mailbox(self);
+
+        let custom_mailbox_appender = match custom_mailbox {
+            None => None,
+            Some(ref mut m) => Some(m.appender()),
+        };
+
+        let shard = match custom_dispatcher {
+            None => {
+                let s = self.inner.shards.len();
+
+                if s == 0 {
+                    self.inner.system_shard.clone()
+                } else {
+                    self.inner.shards[actor_id % s].clone()
+                }
+            }
+
+            Some(d) => Arc::new(ActorShard::new().with_dispatcher(d)),
+        };
+
+        let actor_context = ActorContext::new();
+
+        let cell = Arc::new(ActorCell::new(
+            actor,
+            parent_ref,
+            actor_context,
+            custom_mailbox,
+        ));
+
+        let actor_ref = ActorRef::new(Arc::new(ActorRefInner {
+            actor_type,
+            id: actor_id,
+            new_cell: Arc::downgrade(&cell),
+            shard,
+            system_context: self.clone(),
+            custom_mailbox_appender,
+        }));
+
+        let mut contents = cell.contents.lock();
+
+        contents.store(cell.clone());
+
+        contents.initialize(actor_ref.clone());
+
+        actor_ref
+    }
+
+    pub(crate) fn spawn<M: 'static + Send, A: 'static + Send>(&self, actor: A) -> ActorRef<M>
+    where
+        A: Actor<M>,
+    {
+        // @TODO doesnt seem right
+        let parent_ref = SystemActorRef {
+            id: 0,
+            scheduler: Box::new(NoopActorRefScheduler),
+        };
+
+        self.spawn_actor(ActorType::Root, actor, parent_ref)
+    }
+
+    pub(in crate::actor) fn watcher_ref(&self) -> Option<&ActorRef<ActorWatcherMessage>> {
+        self.inner.watcher_ref.as_ref()
+    }
+}
+
 /// Holds references to the system's configuration, global dispatcher,
 /// and various internal data structures.
-pub struct ActorSystemContext {
+pub struct ActorSystemContextInner {
     pub config: ActorSystemConfig,
     pub dispatcher: WorkStealingDispatcher,
     next_id: AtomicUsize,
@@ -32,7 +164,7 @@ pub struct ActorSystemContext {
     sender: channel::Sender<ActorSystemMsg>,
 }
 
-impl ActorSystemContext {
+impl ActorSystemContextInner {
     fn new(
         config: ActorSystemConfig,
         dispatcher: WorkStealingDispatcher,
@@ -66,11 +198,11 @@ impl ActorSystemContext {
         }
     }
 
-    pub fn drain(&self) {
+    fn drain(&self) {
         let _ = self.sender.send(ActorSystemMsg::Drain);
     }
 
-    pub fn stop(&self) {
+    fn stop(&self) {
         let _ = self.sender.send(ActorSystemMsg::Stop);
     }
 
@@ -93,102 +225,6 @@ impl ActorSystemContext {
             panic!("pantomime bug: schedule_thunk called on internal context");
         }
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn spawn_anonymous_actor<M: 'static + Send, A: 'static + Send>(
-        context: &Arc<Self>,
-        actor: A,
-    ) -> ActorRef<M>
-    where
-        A: Actor<M>,
-    {
-        // @TODO doesnt seem right
-        let parent_ref = SystemActorRef {
-            id: 0,
-            scheduler: Box::new(NoopActorRefScheduler),
-        };
-
-        Self::spawn_actor(context, ActorType::Root, actor, parent_ref)
-    }
-
-    pub(in crate::actor) fn spawn_actor<M: 'static + Send, A: 'static + Send>(
-        context: &Arc<Self>,
-        actor_type: ActorType,
-        actor: A,
-        parent_ref: SystemActorRef,
-    ) -> ActorRef<M>
-    where
-        A: Actor<M>,
-    {
-        let actor_id = context.next_id.fetch_add(1, Ordering::SeqCst);
-
-        let custom_dispatcher = actor.config_dispatcher(context);
-
-        let mut custom_mailbox = actor.config_mailbox(context);
-
-        let custom_mailbox_appender = match custom_mailbox {
-            None => None,
-            Some(ref mut m) => Some(m.appender()),
-        };
-
-        let shard = match custom_dispatcher {
-            None => {
-                let s = context.shards.len();
-
-                if s == 0 {
-                    context.system_shard.clone()
-                } else {
-                    context.shards[actor_id % s].clone()
-                }
-            }
-
-            Some(d) => Arc::new(ActorShard::new().with_dispatcher(d)),
-        };
-
-        let actor_context = ActorContext::new();
-
-        let cell = Arc::new(ActorCell::new(
-            actor,
-            parent_ref,
-            actor_context,
-            custom_mailbox,
-        ));
-
-        let actor_ref = ActorRef::new(Arc::new(ActorRefInner {
-            actor_type,
-            id: actor_id,
-            new_cell: Arc::downgrade(&cell),
-            shard,
-            system_context: context.clone(),
-            custom_mailbox_appender,
-        }));
-
-        let mut contents = cell.contents.lock();
-
-        contents.store(cell.clone());
-
-        contents.initialize(actor_ref.clone());
-
-        actor_ref
-    }
-
-    // @TODO remove this
-    pub(crate) fn spawn<M: 'static + Send, A: 'static + Send>(
-        myself: &Arc<ActorSystemContext>,
-        actor: A,
-    ) -> ActorRef<M>
-    where
-        A: Actor<M>,
-    {
-        // @TODO use a real parent
-
-        let parent_ref = SystemActorRef {
-            id: 0,
-            scheduler: Box::new(NoopActorRefScheduler),
-        };
-
-        ActorSystemContext::spawn_actor(myself, ActorType::Root, actor, parent_ref)
-    }
 }
 
 // @TODO signaled
@@ -199,14 +235,14 @@ enum ActorSystemMsg {
 }
 
 pub struct ActiveActorSystem {
-    pub context: Arc<ActorSystemContext>,
+    pub context: ActorSystemContext,
     receiver: channel::Receiver<ActorSystemMsg>,
     sender: channel::Sender<ActorSystemMsg>,
 }
 
 impl ActiveActorSystem {
     fn new(
-        context: Arc<ActorSystemContext>,
+        context: ActorSystemContext,
         receiver: channel::Receiver<ActorSystemMsg>,
         sender: channel::Sender<ActorSystemMsg>,
     ) -> Self {
@@ -236,7 +272,7 @@ impl ActiveActorSystem {
         use signal_hook::iterator::Signals;
 
         #[cfg(feature = "posix-signals-support")]
-        let signals = Signals::new(&self.context.config.posix_signals)
+        let signals = Signals::new(&self.context.inner.config.posix_signals)
             .expect("pantomime bug: cannot setup POSIX signal handling");
 
         // this provides a mechanism to occasionally check for signals that
@@ -253,11 +289,17 @@ impl ActiveActorSystem {
         loop {
             #[cfg(feature = "posix-signals-support")]
             for signal in signals.pending() {
-                if let Some(ref watcher_ref) = self.context.watcher_ref {
+                if let Some(ref watcher_ref) = self.context.inner.watcher_ref {
                     watcher_ref.tell(ActorWatcherMessage::ReceivedPosixSignal(signal));
                 }
 
-                if self.context.config.posix_shutdown_signals.contains(&signal) {
+                if self
+                    .context
+                    .inner
+                    .config
+                    .posix_shutdown_signals
+                    .contains(&signal)
+                {
                     let _ = self.sender.send(ActorSystemMsg::Drain);
                     exit_code = 128 + signal;
                 }
@@ -273,7 +315,7 @@ impl ActiveActorSystem {
                 }
 
                 Ok(ActorSystemMsg::Drain) => {
-                    if let Some(ref watcher_ref) = self.context.watcher_ref {
+                    if let Some(ref watcher_ref) = self.context.inner.watcher_ref {
                         let sender = self.sender.clone();
 
                         watcher_ref.tell(ActorWatcherMessage::DrainSystem(Box::new(move || {
@@ -289,7 +331,7 @@ impl ActiveActorSystem {
                 }
 
                 Ok(ActorSystemMsg::Stop) => {
-                    if let Some(ref watcher_ref) = self.context.watcher_ref {
+                    if let Some(ref watcher_ref) = self.context.inner.watcher_ref {
                         let sender = self.sender.clone();
 
                         watcher_ref.tell(ActorWatcherMessage::StopSystem(Box::new(move || {
@@ -314,7 +356,7 @@ impl ActiveActorSystem {
                     // "special" actors are added in the future, they should be stopped here
                     // too. stopping is on a best-effort basis but should usually succeed
 
-                    if let Some(ref timer_ref) = self.context.timer_ref {
+                    if let Some(ref timer_ref) = self.context.inner.timer_ref {
                         timer_ref.tell(TimerMsg::Stop);
                     }
 
@@ -328,7 +370,7 @@ impl ActiveActorSystem {
 
         #[cfg(not(test))]
         let _ = {
-            if self.context.config.process_exit {
+            if self.context.inner.config.process_exit {
                 ::std::process::exit(exit_code);
             }
         };
@@ -373,7 +415,7 @@ impl ActorSystem {
         let system_context = Arc::new(ActorSystemContext::new(
             config.clone(),
             dispatcher.clone(),
-            usize::MIN + 100, // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
+            1,
             None,
             None,
             sender.clone(),
@@ -385,7 +427,8 @@ impl ActorSystem {
             scheduler: Box::new(NoopActorRefScheduler),
         };
 
-        let ticker_interval = time::Duration::from_millis(system_context.config.ticker_interval_ms);
+        let ticker_interval =
+            time::Duration::from_millis(system_context.inner.config.ticker_interval_ms);
 
         let timer_ref = ActorSystemContext::spawn_actor(
             &system_context,
@@ -401,18 +444,18 @@ impl ActorSystem {
             parent_ref,
         );
 
-        let context = Arc::new(ActorSystemContext::new(
+        let context = ActorSystemContext::new(
             config.clone(),
             dispatcher.clone(),
-            1,
+            usize::MIN + 100, // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
             Some(timer_ref.clone()),
             Some(actor_watcher_ref),
             sender.clone(),
             None,
-        ));
+        );
 
-        if context.config.log_config_on_start {
-            info!("configuration: {:?}", context.config);
+        if context.inner.config.log_config_on_start {
+            info!("configuration: {:?}", context.inner.config);
         }
 
         // @TODO use a real parent

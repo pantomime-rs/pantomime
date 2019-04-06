@@ -122,7 +122,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
     pub(in crate::actor) fn initialize(&mut self, actor_ref: ActorRef<M>) {
         self.context.actor_ref = Some(actor_ref);
 
-        if let Some(ref watcher_ref) = self.context.actor_ref().system_context().watcher_ref {
+        if let Some(ref watcher_ref) = self.context.actor_ref().system_context().watcher_ref() {
             let actor_ref = self.context.actor_ref();
 
             watcher_ref.tell(ActorWatcherMessage::Started(
@@ -348,13 +348,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
     }
 
     fn tell_watcher(&self, message: ActorWatcherMessage) {
-        if let Some(watcher_ref) = self
-            .context
-            .actor_ref()
-            .system_context()
-            .watcher_ref
-            .as_ref()
-        {
+        if let Some(watcher_ref) = self.context.actor_ref().system_context().watcher_ref() {
             watcher_ref.tell(message);
         } else {
             // @TODO

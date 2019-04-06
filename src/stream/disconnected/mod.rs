@@ -1,7 +1,6 @@
 use crate::actor::ActorSystemContext;
 use crate::dispatcher::Trampoline;
 use crate::stream::*;
-use std::sync::Arc;
 
 pub struct Disconnected;
 
@@ -12,7 +11,7 @@ where
     fn attach<Consume: Consumer<A>>(
         self,
         consumer: Consume,
-        context: Arc<ActorSystemContext>,
+        context: ActorSystemContext,
     ) -> Trampoline {
         consumer.started(self)
     }
