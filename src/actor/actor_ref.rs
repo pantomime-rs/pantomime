@@ -27,6 +27,8 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         }
     }
 
+    /// Obtain a reference to the ActorRef that this context
+    /// is attached to.
     pub fn actor_ref(&self) -> &ActorRef<M> {
         self.actor_ref
             .as_ref()
@@ -66,7 +68,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
             let cancellable = cancellable.clone();
 
             Self::periodic_delivery(
-                &self.actor_ref().inner.system_context(),
+                self.system_context().clone(),
                 self.actor_ref().clone(),
                 msg,
                 interval,
@@ -83,7 +85,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     }
 
     fn periodic_delivery<F: Fn() -> M>(
-        context: &Arc<ActorSystemContext>,
+        context: ActorSystemContext,
         actor_ref: ActorRef<M>,
         msg: F,
         interval: Duration,
@@ -109,7 +111,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
                         // messages
 
                         Self::periodic_delivery(
-                            &next_context,
+                            next_context,
                             actor_ref,
                             msg,
                             interval,
@@ -173,10 +175,13 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     where
         F: 'static + Send + Sync,
     {
-        self.actor_ref()
-            .inner
-            .system_context()
-            .schedule_thunk(timeout, f);
+        self.system_context().schedule_thunk(timeout, f);
+    }
+
+    /// Obtain a reference to the ActorSystemContext that this
+    /// ActorContext is attached to.
+    pub fn system_context(&self) -> &ActorSystemContext {
+        self.actor_ref().inner.system_context()
     }
 
     /// Subscribe to lifecycle events for the supplied actor.
@@ -189,13 +194,14 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     pub fn watch<N: 'static + Send, A: AsRef<ActorRef<N>>>(&mut self, actor_ref: A) {
         let actor_ref = actor_ref.as_ref();
 
-        match self.actor_ref().inner.system_context().watcher_ref.as_ref() {
+        match self.system_context().watcher_ref() {
             Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
                 self.actor_ref().system_ref(),
                 actor_ref.system_ref(),
             )),
 
             None => {
+                // @TODO panic instead
                 error!(
                         "#[{watcher}] attempted to watch #[{watching}] but it does not have a reference to ActorWatcher; this is unexpected",
                         watcher = self.actor_ref().id(),
@@ -207,7 +213,8 @@ impl<'a, M: 'static + Send> ActorContext<M> {
 
     #[cfg(feature = "posix-signals-support")]
     pub fn watch_posix_signals(&mut self) {
-        if let Some(ref watcher_ref) = self.actor_ref().inner.system_context().watcher_ref {
+        // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
+        if let Some(ref watcher_ref) = self.actor_ref().inner.system_context().watcher_ref() {
             watcher_ref.tell(ActorWatcherMessage::SubscribePosixSignals(
                 self.actor_ref().system_ref(),
             ));
@@ -248,12 +255,6 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         self.children.insert(child.id(), child.system_ref());
 
         child
-    }
-
-    /// Returns a reference to the dispatcher for the system, which is not
-    /// configurable.
-    pub fn system_dispatcher(&self) -> WorkStealingDispatcher {
-        self.actor_ref().inner.system_context().dispatcher.clone()
     }
 }
 
@@ -352,7 +353,7 @@ pub(in crate::actor) trait ActorRefInnerShim<M: 'static + Send> {
     fn initialize(&mut self, cell: Weak<ActorCell<M>>);
     fn parent_ref(&self) -> SystemActorRef;
     fn shard(&self) -> &Arc<ActorShard>;
-    fn system_context(&self) -> &Arc<ActorSystemContext>;
+    fn system_context(&self) -> &ActorSystemContext;
 }
 
 /// A reference to an underlying actor through which messages can be sent.
@@ -416,7 +417,7 @@ impl<F: 'static + Send, M: 'static + Send> ActorRefInnerShim<F> for WrappedActor
         self.inner.shard()
     }
 
-    fn system_context(&self) -> &Arc<ActorSystemContext> {
+    fn system_context(&self) -> &ActorSystemContext {
         self.inner.system_context()
     }
 }
@@ -426,7 +427,7 @@ pub(in crate::actor) struct ActorRefInner<M: 'static + Send> {
     pub(in crate::actor) id: usize,
     pub(in crate::actor) new_cell: Weak<ActorCell<M>>,
     pub(in crate::actor) shard: Arc<ActorShard>,
-    pub(in crate::actor) system_context: Arc<ActorSystemContext>,
+    pub(in crate::actor) system_context: ActorSystemContext,
     pub(in crate::actor) custom_mailbox_appender:
         Option<Box<'static + MailboxAppender<M> + Send + Sync>>,
 }
@@ -463,7 +464,7 @@ impl<M: 'static + Send> ActorRefInnerShim<M> for EmptyActorRefInner {
         panic!("pantomime bug: shard called on empty ActorRef")
     }
 
-    fn system_context(&self) -> &Arc<ActorSystemContext> {
+    fn system_context(&self) -> &ActorSystemContext {
         panic!("pantomime bug: shard called on empty ActorRef")
     }
 }
@@ -584,7 +585,7 @@ impl<M: 'static + Send> ActorRefInnerShim<M> for ActorRefInner<M> {
         &self.shard
     }
 
-    fn system_context(&self) -> &Arc<ActorSystemContext> {
+    fn system_context(&self) -> &ActorSystemContext {
         &self.system_context
     }
 }
@@ -649,9 +650,11 @@ impl<M: 'static + Send> ActorRef<M> {
 
             match dispatcher {
                 None => {
-                    self.system_context().dispatcher.execute(Box::new(move || {
-                        next_self.shard_execute(follow_up, None);
-                    }));
+                    self.system_context()
+                        .dispatcher()
+                        .execute(Box::new(move || {
+                            next_self.shard_execute(follow_up, None);
+                        }));
                 }
 
                 Some(ref d) => {
@@ -722,7 +725,7 @@ impl<M: 'static + Send> ActorRef<M> {
     }
 
     #[inline(always)]
-    pub(crate) fn system_context(&self) -> &Arc<ActorSystemContext> {
+    pub(crate) fn system_context(&self) -> &ActorSystemContext {
         &self.inner.system_context()
     }
 
