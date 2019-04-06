@@ -28,7 +28,7 @@ where
     fn attach<Consume: Consumer<A>>(
         mut self,
         consumer: Consume,
-        context: Arc<ActorSystemContext>,
+        context: ActorSystemContext,
     ) -> Trampoline {
         consumer.started(self)
     }

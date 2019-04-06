@@ -4,12 +4,46 @@ use crate::stream::disconnected::Disconnected;
 use crate::stream::*;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-const BUFFER_SIZE: usize = 2; // @TODO config
+const BUFFER_SIZE: usize = 16; // @TODO config
+
+pub enum AsyncAction<B, Msg> {
+    Cancel,
+    Complete,
+    Fail(Error),
+    Forward(Msg),
+    Pull,
+    Push(B),
+}
+
+pub enum CompletingAsyncAction<B, Msg> {
+    Done(Option<B>),
+    Forward(Msg),
+}
+
+pub trait DetachedFlowLogic<A, B, Msg>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    Msg: 'static + Send,
+{
+    fn attach(&mut self, context: ActorSystemContext);
+
+    fn forwarded(&mut self, msg: Msg, actor_ref: ActorRef<AsyncAction<B, Msg>>);
+
+    fn produced(&mut self, elem: A, actor_ref: ActorRef<AsyncAction<B, Msg>>);
+
+    fn pulled(&mut self, actor_ref: ActorRef<AsyncAction<B, Msg>>);
+
+    fn completed(&mut self, actor_ref: ActorRef<CompletingAsyncAction<B, Msg>>);
+
+    fn failed(error: &Error, actor_ref: ActorRef<CompletingAsyncAction<B, Msg>>);
+}
 
 trait GenProducer {
-    fn attach(self: Box<Self>, context: Arc<ActorSystemContext>) -> Trampoline;
+    fn attach(self: Box<Self>, context: ActorSystemContext) -> Trampoline;
 
     fn pull(self: Box<Self>) -> Trampoline;
 
@@ -28,7 +62,8 @@ trait GenConsumer<A> {
 
 enum DetachedActorMsg<A> {
     Started(Box<GenProducer + 'static + Send>),
-    Produced(Box<GenProducer + 'static + Send>, A),
+    Produced(A),
+    DoneProducing(Box<GenProducer + 'static + Send>),
     Completed,
     Failed(Error),
     Pulled(Box<GenConsumer<A> + 'static + Send>),
@@ -44,10 +79,18 @@ struct DetachedActor<A> {
     cancelled: bool,
     completed: bool,
     failed: Option<Error>,
+
+    /// Tracks demand and is shared with the upstream producer
+    /// which continues to consume from its upstream if there
+    /// is a demand.
+    ///
+    /// It's important that demand is only ever added to from
+    /// the actor, and only ever subtracted from the upstream.
+    demand: Arc<AtomicUsize>,
 }
 
 impl<A> DetachedActor<A> {
-    fn new() -> Self {
+    fn new(demand: Arc<AtomicUsize>) -> Self {
         Self {
             phantom: PhantomData,
             buffer: VecDeque::new(),
@@ -56,6 +99,7 @@ impl<A> DetachedActor<A> {
             cancelled: false,
             completed: false,
             failed: None,
+            demand,
         }
     }
 }
@@ -71,39 +115,47 @@ where
     ) {
         match msg {
             DetachedActorMsg::Started(producer) => {
+                self.demand.fetch_add(BUFFER_SIZE, Ordering::SeqCst);
+
                 if self.cancelled {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(producer.cancel());
                 } else {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(producer.pull());
                 }
             }
 
-            DetachedActorMsg::Produced(producer, el) => {
+            DetachedActorMsg::Produced(el) => {
                 self.buffer.push_back(el);
 
+                if let Some(consumer) = self.consumer.take() {
+                    self.receive(DetachedActorMsg::Pulled(consumer), context);
+                }
+            }
+
+            DetachedActorMsg::DoneProducing(producer) => {
                 if self.cancelled {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(producer.cancel());
                 } else if self.buffer.len() < BUFFER_SIZE {
-                    let next_dispatcher = context.system_dispatcher().safe_clone();
-
-                    let dispatcher = context.system_dispatcher();
+                    let dispatcher = context.system_context().dispatcher();
                     let inner_dispatcher = dispatcher.clone();
 
-                    context.system_dispatcher().execute(Box::new(move || {
-                        inner_dispatcher.execute_trampoline(producer.pull());
-                    }));
+                    context
+                        .system_context()
+                        .dispatcher()
+                        .execute(Box::new(move || {
+                            inner_dispatcher.execute_trampoline(producer.pull());
+                        }));
                 } else {
                     self.producer = Some(producer);
-                }
-
-                if let Some(consumer) = self.consumer.take() {
-                    context.actor_ref().tell(DetachedActorMsg::Pulled(consumer));
                 }
             }
 
@@ -112,7 +164,8 @@ where
 
                 if let Some(consumer) = self.consumer.take() {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(consumer.completed());
                 }
             }
@@ -120,7 +173,8 @@ where
             DetachedActorMsg::Failed(error) => match self.consumer.take() {
                 Some(consumer) => {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(consumer.failed(error));
                 }
 
@@ -132,32 +186,40 @@ where
             DetachedActorMsg::Pulled(consumer) => {
                 if self.completed {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(consumer.completed());
                 } else if let Some(error) = self.failed.take() {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(consumer.failed(error));
                 } else {
                     match self.buffer.pop_front() {
                         Some(elem) => {
-                            let dispatcher = context.system_dispatcher();
+                            let dispatcher = context.system_context().dispatcher();
 
-                            if self.buffer.len() < BUFFER_SIZE {
-                                if let Some(producer) = self.producer.take() {
-                                    let inner_dispatcher = dispatcher.clone();
+                            self.demand.fetch_add(1, Ordering::SeqCst);
 
-                                    dispatcher.execute(Box::new(move || {
-                                        inner_dispatcher.execute_trampoline(producer.pull());
-                                    }));
-                                }
+                            if let Some(producer) = self.producer.take() {
+                                dispatcher.execute_trampoline(producer.pull());
                             }
 
-                            let inner_dispatcher = dispatcher.clone();
+                            // in general, the streaming model expressed in this library is driven
+                            // from downstream demand, i.e. it's a pull-based model. there are
+                            // some optimizations taken to turn it into a "push-pull" model
+                            // but fundamentally this is always driven from downstream demand,
+                            // so it still remains pull based. i feel this is also true for the effort
+                            // that inspired this library, reactive streams.
+                            //
+                            // because of this, we can reason that a LIFO model for execution is
+                            // the best, because it biases execution towards downstream which is
+                            // pulling demand through the system. therefore, pantomime streams
+                            // runs its streams on a LIFO dispatcher. this is contrary to the
+                            // default system dispatcher, which uses a FIFO scheme for fairness
+                            // between disparate actors
 
-                            dispatcher.execute(Box::new(move || {
-                                inner_dispatcher.execute_trampoline(consumer.produced(elem));
-                            }));
+                            dispatcher.execute_trampoline(consumer.produced(elem));
                         }
 
                         None => {
@@ -172,7 +234,8 @@ where
 
                 if let Some(producer) = self.producer.take() {
                     context
-                        .system_dispatcher()
+                        .system_context()
+                        .dispatcher()
                         .execute_trampoline(producer.cancel());
                 } else {
                     self.cancelled = true;
@@ -181,26 +244,14 @@ where
 
             DetachedActorMsg::Attached(consumer) => {
                 context
-                    .system_dispatcher()
+                    .system_context()
+                    .dispatcher()
                     .execute_trampoline(consumer.started());
             }
         }
     }
 }
 
-/// Detached inserts a boundary, allowing upstream and downstream to make progress
-/// simultaneously.
-///
-/// Detached always tries to keep a buffer full, typically 16 elements, to reduce
-/// the overhead of asynchronous communication.
-///
-/// When it receives a demand request from downstream, it requests `bufferSize`
-/// elements from upstream, and schedules a thunk to message itself a push
-/// message.
-///
-/// When receiving a push message, detached takes all of the buffered messages
-/// and puts them in a new publisher, and sends that downstream. Once the buffer
-/// is empty, more demand comes from downstream.
 pub struct Detached<A, Up: Producer<A>, Down: Consumer<A>>
 where
     A: 'static + Send,
@@ -208,6 +259,7 @@ where
     upstream: Up,
     downstream: Down,
     actor_ref: ActorRef<DetachedActorMsg<A>>,
+    demand: Arc<AtomicUsize>,
     phantom: PhantomData<A>,
 }
 
@@ -221,6 +273,7 @@ where
             upstream,
             downstream: Disconnected,
             actor_ref: ActorRef::empty(),
+            demand: Arc::new(AtomicUsize::new(0)),
             phantom: PhantomData,
         }
     }
@@ -240,6 +293,7 @@ where
                 upstream: producer,
                 downstream: Disconnected,
                 actor_ref: self.actor_ref,
+                demand: self.demand,
                 phantom: PhantomData,
             },
         )
@@ -255,6 +309,7 @@ where
                 upstream: Disconnected,
                 downstream: consumer,
                 actor_ref: self.actor_ref,
+                demand: self.demand,
                 phantom: PhantomData,
             },
         )
@@ -267,16 +322,17 @@ where
     Up: 'static + Send,
 {
     fn attach<Consume: Consumer<A>>(
-        mut self,
+        self,
         consumer: Consume,
-        context: Arc<ActorSystemContext>,
+        context: ActorSystemContext,
     ) -> Trampoline {
-        let actor_ref = ActorSystemContext::spawn(&context, DetachedActor::<A>::new());
+        let actor_ref = context.spawn(DetachedActor::<A>::new(self.demand.clone()));
 
         let upstream = Detached {
             upstream: Disconnected,
             downstream: Disconnected,
             actor_ref: actor_ref.clone(),
+            demand: self.demand.clone(),
             phantom: PhantomData,
         };
 
@@ -284,6 +340,7 @@ where
             upstream: Disconnected,
             downstream: consumer,
             actor_ref,
+            demand: self.demand,
             phantom: PhantomData,
         };
 
@@ -330,14 +387,22 @@ where
         Trampoline::done()
     }
 
-    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
+    fn produced<Produce: Producer<A>>(self, producer: Produce, element: A) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
-        let (_, detached) = self.disconnect_downstream(producer);
+        actor_ref.tell(DetachedActorMsg::Produced(element));
 
-        actor_ref.tell(DetachedActorMsg::Produced(Box::new(detached), element));
+        let demand = self.demand.fetch_sub(1, Ordering::SeqCst);
 
-        Trampoline::done()
+        if demand == 1 {
+            let (_, detached) = self.disconnect_downstream(producer);
+
+            actor_ref.tell(DetachedActorMsg::DoneProducing(Box::new(detached)));
+
+            Trampoline::done()
+        } else {
+            Trampoline::bounce(|| producer.pull(self))
+        }
     }
 
     fn completed(self) -> Trampoline {
@@ -386,7 +451,7 @@ impl<A, Up: Producer<A>, Down: Consumer<A>> GenProducer for Detached<A, Up, Down
 where
     A: 'static + Send,
 {
-    fn attach(self: Box<Self>, context: Arc<ActorSystemContext>) -> Trampoline {
+    fn attach(self: Box<Self>, context: ActorSystemContext) -> Trampoline {
         let (upstream, detached) = self.disconnect_upstream(Disconnected);
 
         upstream.attach(Disconnected, context)

@@ -9,104 +9,95 @@ pub use sink::*;
 pub use source::*;
 
 use crate::actor::ActorSystemContext;
-use crate::dispatcher::{BoxedFn1, Dispatcher, Trampoline};
+use crate::dispatcher::{Dispatcher, Trampoline, WorkStealingDispatcher};
 use filter::Filter;
 use std::sync::Arc;
+
+struct StreamContext {
+    dispatcher: WorkStealingDispatcher,
+    system_context: ActorSystemContext,
+}
 
 pub struct Error; // TODO
 pub type BoxedDispatcher = Box<Dispatcher + Send + Sync>; // @TODO
 
-pub enum ProducerCommand<A, Consume: Consumer<A>>
-where
-    A: 'static + Send,
-{
-    Attach(Consume, Arc<ActorSystemContext>),
-    Request(Consume, usize),
-    Cancel(Consume, Option<A>),
-}
-
-pub enum ProducerEvent<A, Produce: Producer<A>>
-where
-    A: 'static + Send,
-{
-    Started(Produce),
-    Produced(Produce, A),
-    Completed,
-    Failed(Error),
-}
-
-pub struct ProducerRuntime {
-    dispatcher: Option<BoxedDispatcher>,
-    invocations: usize,
-}
-
-impl ProducerRuntime {
-    pub fn new() -> Self {
-        Self {
-            dispatcher: None,
-            invocations: 0,
-        }
-    }
-}
-
-impl ProducerRuntime {
-    fn invoke(&mut self) -> usize {
-        self.invocations += 1;
-        self.invocations
-    }
-
-    fn reset(&mut self) {
-        self.invocations = 0;
-    }
-
-    fn setup(&mut self, dispatcher: BoxedDispatcher) {
-        self.dispatcher = Some(dispatcher);
-    }
-}
-
+/// A Producer produces elements when requested, often asynchronously.
+///
+/// This is an implementation detail of Pantomime streams and should
+/// not be used directly.
 pub trait Producer<A>: Sized + 'static + Send
 where
     A: 'static + Send,
 {
+    /// Attach this producer to the provided consumer. The producer must
+    /// transfer ownership of itself back to the consumer at some point
+    /// in the future via its `started` method.
     #[must_use]
     fn attach<Consume: Consumer<A>>(
         self,
         consumer: Consume,
-        system: Arc<ActorSystemContext>,
+        system: ActorSystemContext,
     ) -> Trampoline;
 
+    /// Pull in an element. At some time in the future, the producer must
+    /// transfer ownership of itself back to the consumer at some point
+    /// in the future via one of the following methods:
+    ///
+    /// - produced
+    /// - completed
+    /// - failed
     #[must_use]
     fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline;
 
+    /// A request to cancel this producer (within the context of the
+    /// provided consumer)
+    ///
+    /// The consumer will eventually receive a completed or failed
+    /// invocation, but may receive additional publishes as well.
     #[must_use]
     fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline;
 
-    fn filter<F: FnMut(&A) -> bool>(self, filter: F) -> Filter<A, F, Self, Disconnected>
+    fn filter<F: FnMut(&A) -> bool>(
+        self,
+        filter: F,
+    ) -> Attached<A, A, Filter<A, F>, Self, Disconnected>
     where
         F: 'static + Send,
     {
-        Filter::new(filter)(self)
+        Attached::new(Filter::new(filter))(self)
     }
 
     fn filter_map<B, F: FnMut(A) -> Option<B>>(
         self,
         filter_map: F,
-    ) -> FilterMap<A, B, F, Self, Disconnected>
+    ) -> Attached<A, B, FilterMap<A, B, F>, Self, Disconnected>
     where
         B: 'static + Send,
         F: 'static + Send,
     {
-        FilterMap::new(filter_map)(self)
+        Attached::new(FilterMap::new(filter_map))(self)
     }
 
-    fn map<B, F: FnMut(A) -> B>(self, map: F) -> Map<A, B, F, Self, Disconnected>
+    /// Inserts a stage that converts incoming elements using
+    /// the provided function and emits them downstream,
+    /// 1 to 1.
+    fn map<B, F: FnMut(A) -> B>(self, map: F) -> Attached<A, B, Map<A, B, F>, Self, Disconnected>
     where
         B: 'static + Send,
         F: 'static + Send,
     {
-        Map::new(map)(self)
+        Attached::new(Map::new(map))(self)
     }
 
+    /// Inserts a stage that decouples upstream and downstream,
+    /// allowing them to execute concurrently. This is similar
+    /// to an asynchronous boundary in other streaming
+    /// abstractions.
+    ///
+    /// To do this, a `Detached` flow is created which buffers
+    /// elements from upstream and sends them downstream in
+    /// batches. This work is coordinated by an actor to manage
+    /// signals from both directions.
     fn detach(self) -> Detached<A, Self, Disconnected> {
         self.via(Detached::new())
     }
@@ -118,11 +109,35 @@ where
         f(self)
     }
 
-    fn run_with<Down: Consumer<A>>(self, consumer: Down, context: Arc<ActorSystemContext>) {
-        let inner_dispatcher = context.dispatcher.safe_clone();
+    /// Run this producer with the provided actor system context
+    /// and consumer.
+    ///
+    /// A thunk is executed by the system dispatcher that uses
+    /// fair (yielding) trampolines to run the various stages.
+    ///
+    /// This producer's attach method is called with the provided
+    /// consumer. Contractually, this producer will then eventually
+    /// call started on the consumer, giving it the opportunity to
+    /// pull elements.
+    ///
+    /// If this producer has "upstream" producers, i.e. it is itself
+    /// a consumer, it should first call the producer's attach method
+    /// with itself, and upon receiving the started signal then
+    /// forward it downstream. In essence, running a stream consists
+    /// of a sequence of attach signals from downstream to upstream,
+    /// followed by a sequence of started signals from upstream to
+    /// downstream.
+    ///
+    /// This is intended to be used with so called "Sink" consumers,
+    /// those that have a single input and no outputs.
+    ///
+    /// T
+    /// @TODO provide a run_with_dispatcher
+    fn run_with<Down: Consumer<A>>(self, consumer: Down, context: ActorSystemContext) {
+        let inner_dispatcher = context.dispatcher().safe_clone();
         let inner_context = context.clone();
 
-        context.dispatcher.execute(Box::new(move || {
+        context.dispatcher().execute(Box::new(move || {
             inner_dispatcher.execute_trampoline(self.attach(consumer, inner_context));
         }));
     }
@@ -132,15 +147,29 @@ pub trait Consumer<A>: 'static + Send + Sized
 where
     A: 'static + Send,
 {
+    /// Signals that a producer has started. The consumer must then at some
+    /// point in the future call one of the following:
+    ///
+    /// - pull
+    /// - cancel
     #[must_use]
     fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline;
 
+    /// Indicates that the producer has produced an element. The consumer must
+    /// then at some point in the future call one of the following:
+    ///
+    /// - pull
+    /// - cancel
     #[must_use]
     fn produced<Produce: Producer<A>>(self, producer: Produce, element: A) -> Trampoline;
 
+    /// Indicates that the producer has completed, i.e. it will not produce
+    /// any more elements.
     #[must_use]
     fn completed(self) -> Trampoline;
 
+    /// Indicates that the producer has failed, i.e. it has produced an
+    /// error.
     #[must_use]
     fn failed(self, error: Error) -> Trampoline;
 }
@@ -171,23 +200,15 @@ mod temp_tests {
 
         let iterator = 0..usize::max_value();
 
-        Iter::new(iterator)
-            //.via(Detached::new())
-            .map(spin)
-            .detach()
-            .map(spin)
-            //.via(Detached::new())
-            //.filter(|n: &usize| n % 3 == 0)
-            //.filter(|n: &usize| n % 5 == 0)
-            .run_with(
-                ForEach::new(|n| {
-                    println!("sink received {}", n);
-                    if n == 5500 {
-                        std::process::exit(0);
-                    }
-                }),
-                system.context.clone(),
-            );
+        Iter::new(iterator).map(spin).detach().map(spin).run_with(
+            ForEach::new(|n| {
+                println!("sink received {}", n);
+                if n == 2000 {
+                    std::process::exit(0);
+                }
+            }),
+            system.context.clone(),
+        );
 
         loop {
             // @TODO remove
@@ -241,8 +262,10 @@ mod temp_tests {
                 .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
                 .map(|n| n * 2)
                 .map(|n| {
-                    if n % 500_000 == 0 {
+                    if false && n % 1_000_000 == 0 {
                         println!("n: {}", n)
+                    } else if n == 399999960 {
+                        std::process::exit(0);
                     }
                 })
         }

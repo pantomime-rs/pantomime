@@ -1,8 +1,10 @@
+pub mod attached;
 pub mod detached;
 pub mod filter;
 pub mod filter_map;
 pub mod map;
 
+pub use attached::Attached;
 pub use detached::Detached;
 pub use filter::Filter;
 pub use filter_map::FilterMap;
