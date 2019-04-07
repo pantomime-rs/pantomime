@@ -1,4 +1,5 @@
 use crate::dispatcher::Trampoline;
+use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
 
@@ -47,3 +48,5 @@ where
         Trampoline::done()
     }
 }
+
+impl<A> Sink<A> for Ignore<A> where A: 'static + Send {}

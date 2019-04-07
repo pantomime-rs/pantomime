@@ -30,7 +30,7 @@ where
     A: 'static + Send,
     F: 'static + Send,
 {
-    fn attach(&mut self, context: ActorSystemContext) {}
+    fn attach(&mut self, _: &ActorSystemContext) {}
 
     fn produced(&mut self, elem: A) -> Action<A> {
         if (self.filter)(&elem) {
