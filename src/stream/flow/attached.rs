@@ -30,8 +30,14 @@ pub enum Action<B> {
 /// progress, however a detached stage may be inserted afterwards to enable
 /// this behavior.
 ///
-/// A string of attached flows is similar to the concept of operator fusion
-/// in other prominent streaming libraries.
+/// Logic must not panic. If logic depends on the user supplying a function,
+/// e.g. `map`, the logic should ensure that it is `UnwindSafe`. Helper
+/// functions are provided to allow translation of a panic into a stream
+/// failure.
+///
+/// A string of attached flows that are proceeded by a detached stage is
+/// similar to the concept of operator fusion in other prominent streaming
+/// libraries.
 pub trait AttachedLogic<A, B>
 where
     A: 'static + Send,

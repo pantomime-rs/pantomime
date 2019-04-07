@@ -58,6 +58,17 @@ pub trait BoxedFn1<A> {
     fn apply(self: Box<Self>) -> A;
 }
 
+pub(crate) trait BoxedFn1In0Out<A> {
+    fn apply(self: Box<Self>, a: A);
+}
+
+impl<A, F: FnOnce(A)> BoxedFn1In0Out<A> for F {
+    #[inline(always)]
+    fn apply(self: Box<F>, a: A) {
+        (*self)(a)
+    }
+}
+
 impl<A, F: FnOnce() -> A> BoxedFn1<A> for F {
     #[inline(always)]
     fn apply(self: Box<F>) -> A {
