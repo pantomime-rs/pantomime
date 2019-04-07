@@ -1,4 +1,5 @@
 use crate::actor::ActorSystemContext;
+use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
 
@@ -39,7 +40,7 @@ where
 {
     /// Invoked when the flow is first started. This can be useful to setup
     /// some state.
-    fn attach(&mut self, context: ActorSystemContext);
+    fn attach(&mut self, context: &ActorSystemContext);
 
     /// Upstream has produced an element, so now the flow must decide what
     /// action to take.
@@ -101,7 +102,7 @@ where
         consumer: Consume,
         context: ActorSystemContext,
     ) -> Trampoline {
-        self.logic.attach(context.clone());
+        self.logic.attach(&context);
 
         self.upstream.attach(
             Attached {
@@ -237,6 +238,24 @@ where
             None => self.downstream.failed(error),
         }
     }
+}
+
+impl<A, B, Logic: AttachedLogic<A, B>, Up: Producer<A>, Down: Consumer<B>> Stage<B>
+    for Attached<A, B, Logic, Up, Down>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    Logic: 'static + Send,
+{
+}
+
+impl<A, B, Logic: AttachedLogic<A, B>, Up: Producer<A>, Down: Consumer<B>> Flow<A, B>
+    for Attached<A, B, Logic, Up, Down>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    Logic: 'static + Send,
+{
 }
 
 struct PendingFinish<A, B, Down: Consumer<B>>

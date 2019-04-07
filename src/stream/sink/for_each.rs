@@ -1,4 +1,5 @@
 use crate::dispatcher::Trampoline;
+use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
 
@@ -47,4 +48,11 @@ where
         Trampoline::done()
         // @TODO
     }
+}
+
+impl<A, F: FnMut(A)> Sink<A> for ForEach<A, F>
+where
+    A: 'static + Send,
+    F: 'static + Send,
+{
 }

@@ -1,5 +1,6 @@
 pub mod disconnected;
 pub mod flow;
+pub mod oxidized;
 pub mod sink;
 pub mod source;
 
@@ -11,6 +12,7 @@ pub use source::*;
 use crate::actor::ActorSystemContext;
 use crate::dispatcher::{Dispatcher, Trampoline, WorkStealingDispatcher};
 use filter::Filter;
+use oxidized::{Consumer, Producer};
 use std::sync::Arc;
 
 struct StreamContext {
@@ -21,42 +23,10 @@ struct StreamContext {
 pub struct Error; // TODO
 pub type BoxedDispatcher = Box<Dispatcher + Send + Sync>; // @TODO
 
-/// A Producer produces elements when requested, often asynchronously.
-///
-/// This is an implementation detail of Pantomime streams and should
-/// not be used directly.
-pub trait Producer<A>: Sized + 'static + Send
+pub trait Stage<A>: Producer<A>
 where
     A: 'static + Send,
 {
-    /// Attach this producer to the provided consumer. The producer must
-    /// transfer ownership of itself back to the consumer at some point
-    /// in the future via its `started` method.
-    #[must_use]
-    fn attach<Consume: Consumer<A>>(
-        self,
-        consumer: Consume,
-        system: ActorSystemContext,
-    ) -> Trampoline;
-
-    /// Pull in an element. At some time in the future, the producer must
-    /// transfer ownership of itself back to the consumer at some point
-    /// in the future via one of the following methods:
-    ///
-    /// - produced
-    /// - completed
-    /// - failed
-    #[must_use]
-    fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline;
-
-    /// A request to cancel this producer (within the context of the
-    /// provided consumer)
-    ///
-    /// The consumer will eventually receive a completed or failed
-    /// invocation, but may receive additional publishes as well.
-    #[must_use]
-    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline;
-
     fn filter<F: FnMut(&A) -> bool>(
         self,
         filter: F,
@@ -72,6 +42,7 @@ where
         filter_map: F,
     ) -> Attached<A, B, FilterMap<A, B, F>, Self, Disconnected>
     where
+        A: 'static + Send,
         B: 'static + Send,
         F: 'static + Send,
     {
@@ -83,6 +54,7 @@ where
     /// 1 to 1.
     fn map<B, F: FnMut(A) -> B>(self, map: F) -> Attached<A, B, Map<A, B, F>, Self, Disconnected>
     where
+        A: 'static + Send,
         B: 'static + Send,
         F: 'static + Send,
     {
@@ -98,11 +70,11 @@ where
     /// elements from upstream and sends them downstream in
     /// batches. This work is coordinated by an actor to manage
     /// signals from both directions.
-    fn detach(self) -> Detached<A, Self, Disconnected> {
-        self.via(Detached::new())
+    fn detach(self) -> Detached<A, A, (), Identity, Self, Disconnected> {
+        self.via(Detached::new(Identity))
     }
 
-    fn via<B, Down: Consumer<A> + Producer<B>, F: FnOnce(Self) -> Down>(self, f: F) -> Down
+    fn via<B, Down: Flow<A, B>, F: FnOnce(Self) -> Down>(self, f: F) -> Down
     where
         B: 'static + Send,
     {
@@ -133,7 +105,7 @@ where
     ///
     /// T
     /// @TODO provide a run_with_dispatcher
-    fn run_with<Down: Consumer<A>>(self, consumer: Down, context: ActorSystemContext) {
+    fn run_with<Down: Sink<A>>(self, consumer: Down, context: ActorSystemContext) {
         let inner_dispatcher = context.dispatcher().safe_clone();
         let inner_context = context.clone();
 
@@ -143,35 +115,23 @@ where
     }
 }
 
-pub trait Consumer<A>: 'static + Send + Sized
+pub trait Source<A>: Stage<A>
 where
     A: 'static + Send,
 {
-    /// Signals that a producer has started. The consumer must then at some
-    /// point in the future call one of the following:
-    ///
-    /// - pull
-    /// - cancel
-    #[must_use]
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline;
+}
 
-    /// Indicates that the producer has produced an element. The consumer must
-    /// then at some point in the future call one of the following:
-    ///
-    /// - pull
-    /// - cancel
-    #[must_use]
-    fn produced<Produce: Producer<A>>(self, producer: Produce, element: A) -> Trampoline;
+pub trait Sink<A>: Consumer<A>
+where
+    A: 'static + Send,
+{
+}
 
-    /// Indicates that the producer has completed, i.e. it will not produce
-    /// any more elements.
-    #[must_use]
-    fn completed(self) -> Trampoline;
-
-    /// Indicates that the producer has failed, i.e. it has produced an
-    /// error.
-    #[must_use]
-    fn failed(self, error: Error) -> Trampoline;
+pub trait Flow<A, B>: Consumer<A> + Stage<B>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+{
 }
 
 #[cfg(test)]
@@ -224,9 +184,9 @@ mod temp_tests {
 
         let mut system = ActorSystem::new().start();
 
-        let my_source = Source::iterator(0..10_000);
+        let my_source = Sources::iterator(0..10_000);
 
-        fn my_flow<Up: Producer<usize>>(upstream: Up) -> impl Consumer<usize> + Producer<usize> {
+        fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, usize> {
             upstream
                 .filter(|&n| n % 3 == 0)
                 .filter(|&n| n % 5 == 0)
@@ -234,7 +194,7 @@ mod temp_tests {
                 .map(|n| n * 2)
         }
 
-        let my_sink = Sink::for_each(|n: usize| println!("sink received {}", n));
+        let my_sink = Sinks::for_each(|n: usize| println!("sink received {}", n));
 
         my_source
             .via(my_flow)
@@ -253,9 +213,9 @@ mod temp_tests {
         }
         let mut system = ActorSystem::new().start();
 
-        let my_source = Source::iterator(0..100_000_000);
+        let my_source = Sources::iterator(0..100_000_000);
 
-        fn my_flow<Up: Producer<usize>>(upstream: Up) -> impl Consumer<usize> + Producer<()> {
+        fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, ()> {
             upstream
                 .filter(|&n| n % 3 == 0)
                 .filter(|&n| n % 5 == 0)
@@ -270,7 +230,7 @@ mod temp_tests {
                 })
         }
 
-        let my_sink = Sink::ignore();
+        let my_sink = Sinks::ignore();
 
         my_source
             .via(my_flow)

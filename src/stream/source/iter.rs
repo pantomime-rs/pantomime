@@ -1,5 +1,6 @@
 use crate::actor::ActorSystemContext;
 use crate::dispatcher::{Dispatcher, Trampoline};
+use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::sync::Arc;
 
@@ -44,4 +45,18 @@ where
     fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
         consumer.completed()
     }
+}
+
+impl<A, I: Iterator<Item = A>> Source<A> for Iter<A, I>
+where
+    A: 'static + Send,
+    I: 'static + Send,
+{
+}
+
+impl<A, I: Iterator<Item = A>> Stage<A> for Iter<A, I>
+where
+    A: 'static + Send,
+    I: 'static + Send,
+{
 }

@@ -1,5 +1,8 @@
-use crate::actor::ActorSystemContext;
+use crate::actor::{ActorRef, ActorSystemContext};
 use crate::dispatcher::Trampoline;
+use crate::stream::attached::*;
+use crate::stream::detached::*;
+use crate::stream::oxidized::*;
 use crate::stream::*;
 
 pub struct Disconnected;
@@ -45,5 +48,58 @@ where
         // @TODO
 
         Trampoline::done()
+    }
+}
+
+impl<A, B> AttachedLogic<A, B> for Disconnected
+where
+    A: 'static + Send,
+    B: 'static + Send,
+{
+    fn attach(&mut self, _: &ActorSystemContext) {}
+
+    fn produced(&mut self, elem: A) -> Action<B> {
+        Action::Cancel
+    }
+
+    fn pulled(&mut self) -> Action<B> {
+        Action::Cancel
+    }
+
+    fn completed(self) -> Option<B> {
+        None
+    }
+
+    fn failed(self, _: &Error) -> Option<B> {
+        None
+    }
+}
+
+impl<A, B, M> DetachedLogic<A, B, M> for Disconnected
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+{
+    fn attach(&mut self, _: &ActorSystemContext) {}
+
+    fn forwarded(&mut self, _: M, actor_ref: ActorRef<AsyncAction<B, M>>) {
+        actor_ref.tell(AsyncAction::Complete);
+    }
+
+    fn produced(&mut self, elem: A, actor_ref: ActorRef<AsyncAction<B, M>>) {
+        actor_ref.tell(AsyncAction::Complete);
+    }
+
+    fn pulled(&mut self, actor_ref: ActorRef<AsyncAction<B, M>>) {
+        actor_ref.tell(AsyncAction::Complete);
+    }
+
+    fn completed(&mut self, actor_ref: ActorRef<AsyncAction<B, M>>) {
+        actor_ref.tell(AsyncAction::Complete);
+    }
+
+    fn failed(&mut self, error: Error, actor_ref: ActorRef<AsyncAction<B, M>>) {
+        actor_ref.tell(AsyncAction::Fail(error));
     }
 }

@@ -9,9 +9,9 @@ pub use iter::Iter;
 ///
 /// This provides convenience functions for creating common
 /// sources.
-pub struct Source;
+pub struct Sources;
 
-impl Source {
+impl Sources {
     pub fn iterator<A, I: Iterator<Item = A>>(iterator: I) -> iter::Iter<A, I>
     where
         A: 'static + Send,
