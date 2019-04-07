@@ -1,6 +1,18 @@
+// @TODO TODO TODO
+// @TODO TODO TODO
+// @TODO TODO TODO
+
+// this is nearly complete, but some details need to be figured on
+// wrt DetachedLogic and buffering.
+//
+// I *think* that the buffer should be for upstream, to keep demand
+// hot, but then how does that complicate the logic implementations
+// which are meant to be quite minimal?
+
 use crate::actor::*;
 use crate::dispatcher::{Dispatcher, Trampoline};
 use crate::stream::disconnected::Disconnected;
+use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -10,7 +22,6 @@ use std::sync::Arc;
 const BUFFER_SIZE: usize = 16; // @TODO config
 
 pub enum AsyncAction<B, Msg> {
-    Cancel,
     Complete,
     Fail(Error),
     Forward(Msg),
@@ -18,18 +29,13 @@ pub enum AsyncAction<B, Msg> {
     Push(B),
 }
 
-pub enum CompletingAsyncAction<B, Msg> {
-    Done(Option<B>),
-    Forward(Msg),
-}
-
-pub trait DetachedFlowLogic<A, B, Msg>
+pub trait DetachedLogic<A, B, Msg>
 where
     A: 'static + Send,
     B: 'static + Send,
     Msg: 'static + Send,
 {
-    fn attach(&mut self, context: ActorSystemContext);
+    fn attach(&mut self, context: &ActorSystemContext);
 
     fn forwarded(&mut self, msg: Msg, actor_ref: ActorRef<AsyncAction<B, Msg>>);
 
@@ -37,9 +43,9 @@ where
 
     fn pulled(&mut self, actor_ref: ActorRef<AsyncAction<B, Msg>>);
 
-    fn completed(&mut self, actor_ref: ActorRef<CompletingAsyncAction<B, Msg>>);
+    fn completed(&mut self, actor_ref: ActorRef<AsyncAction<B, Msg>>);
 
-    fn failed(error: &Error, actor_ref: ActorRef<CompletingAsyncAction<B, Msg>>);
+    fn failed(&mut self, error: Error, actor_ref: ActorRef<AsyncAction<B, Msg>>);
 }
 
 trait GenProducer {
@@ -60,26 +66,28 @@ trait GenConsumer<A> {
     fn failed(self: Box<Self>, error: Error) -> Trampoline;
 }
 
-enum DetachedActorMsg<A> {
+enum DetachedActorMsg<A, B, Msg> {
+    ReceivedAsyncAction(AsyncAction<B, Msg>),
+
     Started(Box<GenProducer + 'static + Send>),
     Produced(A),
     DoneProducing(Box<GenProducer + 'static + Send>),
     Completed,
     Failed(Error),
-    Pulled(Box<GenConsumer<A> + 'static + Send>),
-    Cancelled(Box<GenConsumer<A> + 'static + Send>),
-    Attached(Box<GenConsumer<A> + 'static + Send>),
+    Pulled(Box<GenConsumer<B> + 'static + Send>),
+    Cancelled(Box<GenConsumer<B> + 'static + Send>),
+    Attached(Box<GenConsumer<B> + 'static + Send>),
 }
 
-struct DetachedActor<A> {
-    phantom: PhantomData<A>,
+struct DetachedActor<A, B, Msg, Logic: DetachedLogic<A, B, Msg>>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    Msg: 'static + Send,
+    Logic: 'static + Send,
+{
     buffer: VecDeque<A>,
-    producer: Option<Box<GenProducer + 'static + Send>>,
-    consumer: Option<Box<GenConsumer<A> + 'static + Send>>,
-    cancelled: bool,
-    completed: bool,
-    failed: Option<Error>,
-
+    logic: Logic,
     /// Tracks demand and is shared with the upstream producer
     /// which continues to consume from its upstream if there
     /// is a demand.
@@ -87,33 +95,105 @@ struct DetachedActor<A> {
     /// It's important that demand is only ever added to from
     /// the actor, and only ever subtracted from the upstream.
     demand: Arc<AtomicUsize>,
+    producer: Option<Box<GenProducer + 'static + Send>>,
+    consumer: Option<Box<GenConsumer<B> + 'static + Send>>,
+    cancelled: bool,
+    completed: bool,
+    pulled: bool,
+    failed: Option<Error>,
+    phantom: PhantomData<(A, B, Msg)>,
 }
 
-impl<A> DetachedActor<A> {
-    fn new(demand: Arc<AtomicUsize>) -> Self {
+impl<A, B, Msg, Logic: DetachedLogic<A, B, Msg>> DetachedActor<A, B, Msg, Logic>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    Msg: 'static + Send,
+    Logic: 'static + Send,
+{
+    fn new(demand: Arc<AtomicUsize>, logic: Logic) -> Self {
         Self {
-            phantom: PhantomData,
             buffer: VecDeque::new(),
+            logic,
+            demand,
             producer: None,
             consumer: None,
             cancelled: false,
             completed: false,
+            pulled: false,
             failed: None,
-            demand,
+            phantom: PhantomData,
         }
+    }
+
+    fn convert_async_action(m: AsyncAction<B, Msg>) -> DetachedActorMsg<A, B, Msg> {
+        DetachedActorMsg::ReceivedAsyncAction(m)
     }
 }
 
-impl<A> Actor<DetachedActorMsg<A>> for DetachedActor<A>
+impl<A, B, Msg, Logic: DetachedLogic<A, B, Msg>> Actor<DetachedActorMsg<A, B, Msg>>
+    for DetachedActor<A, B, Msg, Logic>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    Msg: 'static + Send,
+    Logic: 'static + Send,
 {
     fn receive(
         &mut self,
-        msg: DetachedActorMsg<A>,
-        context: &mut ActorContext<DetachedActorMsg<A>>,
+        msg: DetachedActorMsg<A, B, Msg>,
+        context: &mut ActorContext<DetachedActorMsg<A, B, Msg>>,
     ) {
         match msg {
+            DetachedActorMsg::ReceivedAsyncAction(AsyncAction::Complete) => {
+                self.completed = true;
+
+                if let Some(consumer) = self.consumer.take() {
+                    context
+                        .system_context()
+                        .dispatcher()
+                        .execute_trampoline(consumer.completed());
+                }
+            }
+
+            DetachedActorMsg::ReceivedAsyncAction(AsyncAction::Fail(error)) => {
+                match self.consumer.take() {
+                    Some(consumer) => {
+                        context
+                            .system_context()
+                            .dispatcher()
+                            .execute_trampoline(consumer.failed(error));
+                    }
+
+                    None => {
+                        self.failed = Some(error);
+                    }
+                }
+            }
+
+            DetachedActorMsg::ReceivedAsyncAction(AsyncAction::Forward(msg)) => {
+                self.logic
+                    .forwarded(msg, context.actor_ref().convert(Self::convert_async_action));
+            }
+
+            DetachedActorMsg::ReceivedAsyncAction(AsyncAction::Pull) => {
+                if let Some(element) = self.buffer.pop_front() {
+                    self.logic.produced(
+                        element,
+                        context.actor_ref().convert(Self::convert_async_action),
+                    );
+                }
+            }
+
+            DetachedActorMsg::ReceivedAsyncAction(AsyncAction::Push(elem)) => {
+                // @TODO
+                //self.buffer.push_back(elem);
+
+                if let Some(consumer) = self.consumer.take() {
+                    self.receive(DetachedActorMsg::Pulled(consumer), context);
+                }
+            }
+
             DetachedActorMsg::Started(producer) => {
                 self.demand.fetch_add(BUFFER_SIZE, Ordering::SeqCst);
 
@@ -131,11 +211,8 @@ where
             }
 
             DetachedActorMsg::Produced(el) => {
-                self.buffer.push_back(el);
-
-                if let Some(consumer) = self.consumer.take() {
-                    self.receive(DetachedActorMsg::Pulled(consumer), context);
-                }
+                self.logic
+                    .produced(el, context.actor_ref().convert(Self::convert_async_action));
             }
 
             DetachedActorMsg::DoneProducing(producer) => {
@@ -160,28 +237,16 @@ where
             }
 
             DetachedActorMsg::Completed => {
-                self.completed = true;
-
-                if let Some(consumer) = self.consumer.take() {
-                    context
-                        .system_context()
-                        .dispatcher()
-                        .execute_trampoline(consumer.completed());
-                }
+                self.logic
+                    .completed(context.actor_ref().convert(Self::convert_async_action));
             }
 
-            DetachedActorMsg::Failed(error) => match self.consumer.take() {
-                Some(consumer) => {
-                    context
-                        .system_context()
-                        .dispatcher()
-                        .execute_trampoline(consumer.failed(error));
-                }
-
-                None => {
-                    self.failed = Some(error);
-                }
-            },
+            DetachedActorMsg::Failed(error) => {
+                self.logic.failed(
+                    error,
+                    context.actor_ref().convert(Self::convert_async_action),
+                );
+            }
 
             DetachedActorMsg::Pulled(consumer) => {
                 if self.completed {
@@ -219,7 +284,8 @@ where
                             // default system dispatcher, which uses a FIFO scheme for fairness
                             // between disparate actors
 
-                            dispatcher.execute_trampoline(consumer.produced(elem));
+                            // @TODO
+                            //dispatcher.execute_trampoline(consumer.produced(elem));
                         }
 
                         None => {
@@ -250,65 +316,89 @@ where
             }
         }
     }
+
+    fn receive_signal(
+        &mut self,
+        signal: Signal,
+        context: &mut ActorContext<DetachedActorMsg<A, B, Msg>>,
+    ) {
+        if let Signal::Started = signal {
+            self.logic.attach(context.system_context());
+        }
+    }
 }
 
-pub struct Detached<A, Up: Producer<A>, Down: Consumer<A>>
+pub struct Detached<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
 {
     upstream: Up,
     downstream: Down,
-    actor_ref: ActorRef<DetachedActorMsg<A>>,
+    actor_ref: ActorRef<DetachedActorMsg<A, B, M>>,
+    logic: L,
     demand: Arc<AtomicUsize>,
-    phantom: PhantomData<A>,
+    phantom: PhantomData<(A, B, M)>,
 }
 
-impl<A, Up> Detached<A, Up, Disconnected>
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up> Detached<A, B, M, L, Up, Disconnected>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
     Up: Producer<A>,
 {
-    pub fn new() -> impl FnOnce(Up) -> Self {
+    pub fn new(logic: L) -> impl FnOnce(Up) -> Self {
         move |upstream| Self {
             upstream,
             downstream: Disconnected,
             actor_ref: ActorRef::empty(),
+            logic,
             demand: Arc::new(AtomicUsize::new(0)),
             phantom: PhantomData,
         }
     }
 }
 
-impl<A, Up: Producer<A>, Down: Consumer<A>> Detached<A, Up, Down>
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>>
+    Detached<A, B, M, L, Up, Down>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    L: 'static + Send,
+    M: 'static + Send,
 {
     fn disconnect_downstream<Produce: Producer<A>>(
         self,
         producer: Produce,
-    ) -> (Down, Detached<A, Produce, Disconnected>) {
+    ) -> (Down, Detached<A, B, M, Disconnected, Produce, Disconnected>) {
         (
             self.downstream,
             Detached {
                 upstream: producer,
                 downstream: Disconnected,
                 actor_ref: self.actor_ref,
+                logic: Disconnected,
                 demand: self.demand,
                 phantom: PhantomData,
             },
         )
     }
 
-    fn disconnect_upstream<Consume: Consumer<A>>(
+    fn disconnect_upstream<Consume: Consumer<B>>(
         self,
         consumer: Consume,
-    ) -> (Up, Detached<A, Disconnected, Consume>) {
+    ) -> (Up, Detached<A, B, M, Disconnected, Disconnected, Consume>) {
         (
             self.upstream,
             Detached {
                 upstream: Disconnected,
                 downstream: consumer,
                 actor_ref: self.actor_ref,
+                logic: Disconnected,
                 demand: self.demand,
                 phantom: PhantomData,
             },
@@ -316,30 +406,39 @@ where
     }
 }
 
-impl<A, Up: Producer<A>, Down: Consumer<A>> Producer<A> for Detached<A, Up, Down>
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>> Producer<B>
+    for Detached<A, B, M, L, Up, Down>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
     Up: 'static + Send,
 {
-    fn attach<Consume: Consumer<A>>(
+    fn attach<Consume: Consumer<B>>(
         self,
         consumer: Consume,
         context: ActorSystemContext,
     ) -> Trampoline {
-        let actor_ref = context.spawn(DetachedActor::<A>::new(self.demand.clone()));
+        let actor_ref = context.spawn(DetachedActor::<A, B, M, L>::new(
+            self.demand.clone(),
+            self.logic,
+        ));
 
-        let upstream = Detached {
+        let upstream = Detached::<A, B, M, Disconnected, Disconnected, Disconnected> {
             upstream: Disconnected,
             downstream: Disconnected,
             actor_ref: actor_ref.clone(),
+            logic: Disconnected,
             demand: self.demand.clone(),
             phantom: PhantomData,
         };
 
-        let downstream = Detached {
+        let downstream = Detached::<A, B, M, Disconnected, Disconnected, Consume> {
             upstream: Disconnected,
             downstream: consumer,
             actor_ref,
+            logic: Disconnected,
             demand: self.demand,
             phantom: PhantomData,
         };
@@ -351,7 +450,7 @@ where
         self.upstream.attach(upstream, context)
     }
 
-    fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
+    fn pull<Consume: Consumer<B>>(self, consumer: Consume) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
         let (_, detached) = self.disconnect_upstream(consumer);
@@ -361,7 +460,7 @@ where
         Trampoline::done()
     }
 
-    fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
+    fn cancel<Consume: Consumer<B>>(self, consumer: Consume) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
         let (_, detached) = self.disconnect_upstream(consumer);
@@ -372,9 +471,13 @@ where
     }
 }
 
-impl<A, Up: Producer<A>, Down: Consumer<A>> Consumer<A> for Detached<A, Up, Down>
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>> Consumer<A>
+    for Detached<A, B, M, L, Up, Down>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
     Up: 'static + Send,
 {
     fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
@@ -418,9 +521,33 @@ where
     }
 }
 
-impl<A, Up: Producer<A>, Down: Consumer<A>> GenConsumer<A> for Detached<A, Up, Down>
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>> Stage<B>
+    for Detached<A, B, M, L, Up, Down>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
+{
+}
+
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>> Flow<A, B>
+    for Detached<A, B, M, L, Up, Down>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
+{
+}
+
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>> GenConsumer<B>
+    for Detached<A, B, M, L, Up, Down>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
 {
     fn started(self: Box<Self>) -> Trampoline {
         let (downstream, detached) = self.disconnect_downstream(Disconnected);
@@ -428,7 +555,7 @@ where
         downstream.started(detached)
     }
 
-    fn produced(self: Box<Self>, element: A) -> Trampoline {
+    fn produced(self: Box<Self>, element: B) -> Trampoline {
         let (downstream, detached) = self.disconnect_downstream(Disconnected);
 
         downstream.produced(detached, element)
@@ -447,9 +574,13 @@ where
     }
 }
 
-impl<A, Up: Producer<A>, Down: Consumer<A>> GenProducer for Detached<A, Up, Down>
+impl<A, B, M, L: DetachedLogic<A, B, M>, Up: Producer<A>, Down: Consumer<B>> GenProducer
+    for Detached<A, B, M, L, Up, Down>
 where
     A: 'static + Send,
+    B: 'static + Send,
+    M: 'static + Send,
+    L: 'static + Send,
 {
     fn attach(self: Box<Self>, context: ActorSystemContext) -> Trampoline {
         let (upstream, detached) = self.disconnect_upstream(Disconnected);

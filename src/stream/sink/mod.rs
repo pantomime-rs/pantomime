@@ -7,9 +7,9 @@ pub use ignore::Ignore;
 /// A `Sink` is a convention for a `Subscriber` that is
 /// not a `Publisher`, i.e. it has one input and zero
 /// outputs.
-pub struct Sink;
+pub struct Sinks;
 
-impl Sink {
+impl Sinks {
     pub fn for_each<A, F: FnMut(A)>(func: F) -> ForEach<A, F>
     where
         A: 'static + Send,

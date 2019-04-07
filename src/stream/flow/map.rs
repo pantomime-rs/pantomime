@@ -33,7 +33,7 @@ where
     B: 'static + Send,
     F: 'static + Send,
 {
-    fn attach(&mut self, _context: ActorSystemContext) {}
+    fn attach(&mut self, _: &ActorSystemContext) {}
 
     fn produced(&mut self, elem: A) -> Action<B> {
         Action::Push((self.map)(elem))

@@ -33,7 +33,7 @@ where
     B: 'static + Send,
     F: 'static + Send,
 {
-    fn attach(&mut self, context: ActorSystemContext) {}
+    fn attach(&mut self, _: &ActorSystemContext) {}
 
     fn produced(&mut self, elem: A) -> Action<B> {
         match (self.filter_map)(elem) {
