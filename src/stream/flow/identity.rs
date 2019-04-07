@@ -1,4 +1,4 @@
-use crate::actor::{ActorRef, ActorSystemContext};
+use crate::actor::ActorRef;
 use crate::stream::flow::attached::*;
 use crate::stream::flow::detached::*;
 use crate::stream::*;
@@ -9,7 +9,7 @@ impl<A> AttachedLogic<A, A> for Identity
 where
     A: 'static + Send,
 {
-    fn attach(&mut self, _: &ActorSystemContext) {}
+    fn attach(&mut self, _: &StreamContext) {}
 
     fn produced(&mut self, elem: A) -> Action<A> {
         Action::Push(elem)
@@ -19,12 +19,12 @@ where
         Action::Pull
     }
 
-    fn completed(self) -> Option<A> {
-        None
+    fn completed(&mut self) -> Action<A> {
+        Action::Complete
     }
 
-    fn failed(self, _: &Error) -> Option<A> {
-        None
+    fn failed(&mut self, error: Error) -> Action<A> {
+        Action::Fail(error)
     }
 }
 
@@ -32,7 +32,11 @@ impl<A> DetachedLogic<A, A, ()> for Identity
 where
     A: 'static + Send,
 {
-    fn attach(&mut self, _: &ActorRef<AsyncAction<A, ()>>) -> Option<AsyncAction<A, ()>> {
+    fn attach(
+        &mut self,
+        _: &StreamContext,
+        _: &ActorRef<AsyncAction<A, ()>>,
+    ) -> Option<AsyncAction<A, ()>> {
         None
     }
 

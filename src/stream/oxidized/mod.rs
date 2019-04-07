@@ -1,4 +1,3 @@
-use crate::actor::*;
 use crate::stream::*;
 
 /// A Producer produces elements when requested, often asynchronously.
@@ -13,11 +12,8 @@ where
     /// transfer ownership of itself back to the consumer at some point
     /// in the future via its `started` method.
     #[must_use]
-    fn attach<Consume: Consumer<A>>(
-        self,
-        consumer: Consume,
-        system: ActorSystemContext,
-    ) -> Trampoline;
+    fn attach<Consume: Consumer<A>>(self, consumer: Consume, context: &StreamContext)
+        -> Trampoline;
 
     /// Pull in an element. At some time in the future, the producer must
     /// transfer ownership of itself back to the consumer at some point

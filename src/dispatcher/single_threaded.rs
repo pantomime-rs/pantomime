@@ -1,5 +1,4 @@
 use super::*;
-use std::sync::{Arc, Weak};
 
 enum SingleThreadedDispatcherMessage {
     Execute(Thunk),
@@ -65,7 +64,7 @@ impl SingleThreadedDispatcher {
                             TrampolineStep::Bounce(produce) => {
                                 sender.send(SingleThreadedDispatcherMessage::ExecuteTrampoline(
                                     produce.apply(),
-                                ));
+                                )).expect("pantomime bug: SingleThreadedDispatcher sender missing, this shouldn't be possible");
                             }
 
                             TrampolineStep::Done => (),

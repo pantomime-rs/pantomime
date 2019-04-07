@@ -1,4 +1,3 @@
-use crate::actor::ActorSystemContext;
 use crate::stream::flow::attached::*;
 use crate::stream::*;
 use std::marker::PhantomData;
@@ -30,7 +29,7 @@ where
     A: 'static + Send,
     F: 'static + Send,
 {
-    fn attach(&mut self, _: &ActorSystemContext) {}
+    fn attach(&mut self, _: &StreamContext) {}
 
     fn produced(&mut self, elem: A) -> Action<A> {
         if (self.filter)(&elem) {
@@ -44,11 +43,11 @@ where
         Action::Pull
     }
 
-    fn completed(self) -> Option<A> {
-        None
+    fn completed(&mut self) -> Action<A> {
+        Action::Complete
     }
 
-    fn failed(self, _: &Error) -> Option<A> {
-        None
+    fn failed(&mut self, error: Error) -> Action<A> {
+        Action::Fail(error)
     }
 }

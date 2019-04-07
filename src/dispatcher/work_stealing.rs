@@ -173,7 +173,7 @@ impl WorkStealingDispatcher {
                                                     thunk.apply();
                                                 }
 
-                                                WorkStealingDispatcherMessage::ExecuteTrampoline(mut trampoline) => {
+                                                WorkStealingDispatcherMessage::ExecuteTrampoline(trampoline) => {
                                                     let mut i = 0;
                                                     let mut step = trampoline.step;
 
@@ -189,6 +189,7 @@ impl WorkStealingDispatcher {
 
                                                                     break;
                                                                 } else {
+                                                                    i += 1;
                                                                     step = next_step.apply().step;
                                                                 }
                                                             }
@@ -313,7 +314,7 @@ impl WorkStealingDispatcher {
                                                     thunk.apply();
                                                 }
 
-                                                WorkStealingDispatcherMessage::ExecuteTrampoline(mut trampoline) => {
+                                                WorkStealingDispatcherMessage::ExecuteTrampoline(trampoline) => {
                                                     let mut i = 0;
                                                     let mut step = trampoline.step;
 
@@ -329,6 +330,7 @@ impl WorkStealingDispatcher {
 
                                                                     break;
                                                                 } else {
+                                                                    i += 1;
                                                                     step = next_step.apply().step;
                                                                 }
                                                             }

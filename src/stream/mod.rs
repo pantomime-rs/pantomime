@@ -13,11 +13,36 @@ use crate::actor::ActorSystemContext;
 use crate::dispatcher::{Dispatcher, Trampoline, WorkStealingDispatcher};
 use filter::Filter;
 use oxidized::{Consumer, Producer};
-use std::sync::Arc;
 
-struct StreamContext {
+pub struct StreamContext {
     dispatcher: WorkStealingDispatcher,
     system_context: ActorSystemContext,
+}
+
+impl StreamContext {
+    pub fn dispatcher(&self) -> &WorkStealingDispatcher {
+        &self.dispatcher
+    }
+
+    pub fn system_context(&self) -> &ActorSystemContext {
+        &self.system_context
+    }
+
+    fn new(dispatcher: &WorkStealingDispatcher, system_context: &ActorSystemContext) -> Self {
+        Self {
+            dispatcher: dispatcher.clone(),
+            system_context: system_context.clone(),
+        }
+    }
+}
+
+impl Clone for StreamContext {
+    fn clone(&self) -> Self {
+        Self {
+            dispatcher: self.dispatcher.clone(),
+            system_context: self.system_context.clone(),
+        }
+    }
 }
 
 pub struct Error; // TODO
@@ -81,36 +106,23 @@ where
         f(self)
     }
 
-    /// Run this producer with the provided actor system context
-    /// and consumer.
+    /// Run the stream by spawning an actor and attaching the provided sink.
     ///
-    /// A thunk is executed by the system dispatcher that uses
-    /// fair (yielding) trampolines to run the various stages.
+    /// The actor topology of a stream's execution depends on the stages
+    /// that comprise it.
     ///
-    /// This producer's attach method is called with the provided
-    /// consumer. Contractually, this producer will then eventually
-    /// call started on the consumer, giving it the opportunity to
-    /// pull elements.
-    ///
-    /// If this producer has "upstream" producers, i.e. it is itself
-    /// a consumer, it should first call the producer's attach method
-    /// with itself, and upon receiving the started signal then
-    /// forward it downstream. In essence, running a stream consists
-    /// of a sequence of attach signals from downstream to upstream,
-    /// followed by a sequence of started signals from upstream to
-    /// downstream.
-    ///
-    /// This is intended to be used with so called "Sink" consumers,
-    /// those that have a single input and no outputs.
-    ///
-    /// T
-    /// @TODO provide a run_with_dispatcher
-    fn run_with<Down: Sink<A>>(self, consumer: Down, context: ActorSystemContext) {
-        let inner_dispatcher = context.dispatcher().safe_clone();
-        let inner_context = context.clone();
+    /// If the stream is only comprised of attached stages. In general, all
+    /// attached stages are run within the context of the current actor. All
+    /// detached stages spawn a new actor to transparently buffer elements
+    /// to improve performance when handing them over an asynchronous
+    /// boundary.
+    fn run_with<S: Sink<A>>(self, sink: S, context: ActorSystemContext) {
+        let dispatcher = context.dispatcher();
+        let inner_dispatcher = dispatcher.clone();
+        let stream_context = StreamContext::new(&dispatcher, &context);
 
-        context.dispatcher().execute(Box::new(move || {
-            inner_dispatcher.execute_trampoline(self.attach(consumer, inner_context));
+        dispatcher.execute(Box::new(move || {
+            inner_dispatcher.execute_trampoline(self.attach(sink, &stream_context));
         }));
     }
 }
