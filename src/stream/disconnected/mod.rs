@@ -81,25 +81,27 @@ where
     B: 'static + Send,
     M: 'static + Send,
 {
-    fn attach(&mut self, _: &ActorSystemContext) {}
-
-    fn forwarded(&mut self, _: M, actor_ref: ActorRef<AsyncAction<B, M>>) {
-        actor_ref.tell(AsyncAction::Complete);
+    fn attach(&mut self, _: &ActorRef<AsyncAction<B, M>>) -> Option<AsyncAction<B, M>> {
+        Some(AsyncAction::Cancel)
     }
 
-    fn produced(&mut self, elem: A, actor_ref: ActorRef<AsyncAction<B, M>>) {
-        actor_ref.tell(AsyncAction::Complete);
+    fn forwarded(&mut self, _: M) -> Option<AsyncAction<B, M>> {
+        Some(AsyncAction::Cancel)
     }
 
-    fn pulled(&mut self, actor_ref: ActorRef<AsyncAction<B, M>>) {
-        actor_ref.tell(AsyncAction::Complete);
+    fn produced(&mut self, _: A) -> Option<AsyncAction<B, M>> {
+        Some(AsyncAction::Cancel)
     }
 
-    fn completed(&mut self, actor_ref: ActorRef<AsyncAction<B, M>>) {
-        actor_ref.tell(AsyncAction::Complete);
+    fn pulled(&mut self) -> Option<AsyncAction<B, M>> {
+        Some(AsyncAction::Cancel)
     }
 
-    fn failed(&mut self, error: Error, actor_ref: ActorRef<AsyncAction<B, M>>) {
-        actor_ref.tell(AsyncAction::Fail(error));
+    fn completed(&mut self) -> Option<AsyncAction<B, M>> {
+        Some(AsyncAction::Complete)
+    }
+
+    fn failed(&mut self, error: Error) -> Option<AsyncAction<B, M>> {
+        Some(AsyncAction::Fail(error))
     }
 }
