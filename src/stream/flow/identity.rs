@@ -32,23 +32,27 @@ impl<A> DetachedLogic<A, A, ()> for Identity
 where
     A: 'static + Send,
 {
-    fn attach(&mut self, _: &ActorSystemContext) {}
-
-    fn forwarded(&mut self, _: (), _: ActorRef<AsyncAction<A, ()>>) {}
-
-    fn produced(&mut self, elem: A, actor_ref: ActorRef<AsyncAction<A, ()>>) {
-        actor_ref.tell(AsyncAction::Push(elem));
+    fn attach(&mut self, _: &ActorRef<AsyncAction<A, ()>>) -> Option<AsyncAction<A, ()>> {
+        None
     }
 
-    fn pulled(&mut self, actor_ref: ActorRef<AsyncAction<A, ()>>) {
-        actor_ref.tell(AsyncAction::Pull);
+    fn forwarded(&mut self, _: ()) -> Option<AsyncAction<A, ()>> {
+        None
     }
 
-    fn completed(&mut self, actor_ref: ActorRef<AsyncAction<A, ()>>) {
-        actor_ref.tell(AsyncAction::Complete);
+    fn produced(&mut self, elem: A) -> Option<AsyncAction<A, ()>> {
+        Some(AsyncAction::Push(elem))
     }
 
-    fn failed(&mut self, error: Error, actor_ref: ActorRef<AsyncAction<A, ()>>) {
-        actor_ref.tell(AsyncAction::Fail(error));
+    fn pulled(&mut self) -> Option<AsyncAction<A, ()>> {
+        Some(AsyncAction::Pull)
+    }
+
+    fn completed(&mut self) -> Option<AsyncAction<A, ()>> {
+        Some(AsyncAction::Complete)
+    }
+
+    fn failed(&mut self, error: Error) -> Option<AsyncAction<A, ()>> {
+        Some(AsyncAction::Fail(error))
     }
 }
