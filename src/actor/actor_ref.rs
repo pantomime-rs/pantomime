@@ -1,5 +1,5 @@
 use super::*;
-use crate::dispatcher::{Thunk, WorkStealingDispatcher};
+use crate::dispatcher::Thunk;
 use crate::util::Cancellable;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -439,19 +439,19 @@ impl<M: 'static + Send> ActorRefInnerShim<M> for EmptyActorRefInner {
         ActorType::Root
     }
 
-    fn enqueue(&self, msg: M) {}
+    fn enqueue(&self, _: M) {}
 
-    fn enqueue_cancellable(&self, cancellable: Cancellable, msg: M, thunk: Option<Thunk>) {}
+    fn enqueue_cancellable(&self, _: Cancellable, _: M, _: Option<Thunk>) {}
 
     fn enqueue_done(&self) {}
 
-    fn enqueue_system(&self, msg: SystemMsg) {}
+    fn enqueue_system(&self, _: SystemMsg) {}
 
     fn id(&self) -> usize {
         0
     }
 
-    fn initialize(&mut self, cell: Weak<ActorCell<M>>) {}
+    fn initialize(&mut self, _: Weak<ActorCell<M>>) {}
 
     fn parent_ref(&self) -> SystemActorRef {
         SystemActorRef {

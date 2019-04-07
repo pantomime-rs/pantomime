@@ -1,14 +1,3 @@
-// @TODO TODO TODO
-// @TODO TODO TODO
-// @TODO TODO TODO
-
-// this is nearly complete, but some details need to be figured on
-// wrt DetachedLogic and buffering.
-//
-// I *think* that the buffer should be for upstream, to keep demand
-// hot, but then how does that complicate the logic implementations
-// which are meant to be quite minimal?
-
 use crate::actor::*;
 use crate::dispatcher::{Dispatcher, Trampoline};
 use crate::stream::disconnected::Disconnected;
@@ -48,7 +37,11 @@ where
     Msg: 'static + Send,
 {
     #[must_use]
-    fn attach(&mut self, actor_ref: &ActorRef<AsyncAction<B, Msg>>) -> Option<AsyncAction<B, Msg>>;
+    fn attach(
+        &mut self,
+        context: &StreamContext,
+        actor_ref: &ActorRef<AsyncAction<B, Msg>>,
+    ) -> Option<AsyncAction<B, Msg>>;
 
     #[must_use]
     fn forwarded(&mut self, msg: Msg) -> Option<AsyncAction<B, Msg>>;
@@ -67,7 +60,7 @@ where
 }
 
 trait GenProducer {
-    fn attach(self: Box<Self>, context: ActorSystemContext) -> Trampoline;
+    fn attach(self: Box<Self>, context: &StreamContext) -> Trampoline;
 
     fn pull(self: Box<Self>) -> Trampoline;
 
@@ -119,6 +112,7 @@ where
     completed: bool,
     pulled: bool,
     failed: Option<Error>,
+    stream_context: StreamContext,
     phantom: PhantomData<(A, B, Msg)>,
 }
 
@@ -129,7 +123,7 @@ where
     Msg: 'static + Send,
     Logic: 'static + Send,
 {
-    fn new(demand: Arc<AtomicUsize>, logic: Logic) -> Self {
+    fn new(demand: Arc<AtomicUsize>, logic: Logic, stream_context: &StreamContext) -> Self {
         Self {
             buffer: VecDeque::new(),
             logic,
@@ -140,6 +134,7 @@ where
             completed: false,
             pulled: false,
             failed: None,
+            stream_context: stream_context.clone(),
             phantom: PhantomData,
         }
     }
@@ -382,7 +377,7 @@ where
         if let Signal::Started = signal {
             let actor_ref = context.actor_ref().convert(Self::convert_async_action);
 
-            if let Some(reply) = self.logic.attach(&actor_ref) {
+            if let Some(reply) = self.logic.attach(&self.stream_context, &actor_ref) {
                 context
                     .actor_ref()
                     .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
@@ -481,12 +476,15 @@ where
     fn attach<Consume: Consumer<B>>(
         self,
         consumer: Consume,
-        context: ActorSystemContext,
+        context: &StreamContext,
     ) -> Trampoline {
-        let actor_ref = context.spawn(DetachedActor::<A, B, M, L>::new(
-            self.demand.clone(),
-            self.logic,
-        ));
+        let actor_ref = context
+            .system_context()
+            .spawn(DetachedActor::<A, B, M, L>::new(
+                self.demand.clone(),
+                self.logic,
+                context,
+            ));
 
         let upstream = Detached::<A, B, M, Disconnected, Disconnected, Disconnected> {
             upstream: Disconnected,
@@ -629,13 +627,13 @@ where
     }
 
     fn completed(self: Box<Self>) -> Trampoline {
-        let (downstream, detached) = self.disconnect_downstream(Disconnected);
+        let (downstream, _) = self.disconnect_downstream(Disconnected);
 
         downstream.completed()
     }
 
     fn failed(self: Box<Self>, error: Error) -> Trampoline {
-        let (downstream, detached) = self.disconnect_downstream(Disconnected);
+        let (downstream, _) = self.disconnect_downstream(Disconnected);
 
         downstream.failed(error)
     }
@@ -649,8 +647,8 @@ where
     M: 'static + Send,
     L: 'static + Send,
 {
-    fn attach(self: Box<Self>, context: ActorSystemContext) -> Trampoline {
-        let (upstream, detached) = self.disconnect_upstream(Disconnected);
+    fn attach(self: Box<Self>, context: &StreamContext) -> Trampoline {
+        let (upstream, _) = self.disconnect_upstream(Disconnected);
 
         upstream.attach(Disconnected, context)
     }
@@ -662,7 +660,7 @@ where
     }
 
     fn cancel(self: Box<Self>) -> Trampoline {
-        let (upstream, detached) = self.disconnect_upstream(Disconnected);
+        let (upstream, _) = self.disconnect_upstream(Disconnected);
 
         upstream.cancel(Disconnected)
     }

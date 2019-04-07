@@ -44,7 +44,7 @@ where
         Trampoline::done()
     }
 
-    fn failed(self, error: Error) -> Trampoline {
+    fn failed(self, _: Error) -> Trampoline {
         Trampoline::done()
         // @TODO
     }
