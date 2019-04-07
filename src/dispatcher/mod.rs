@@ -104,4 +104,14 @@ impl Trampoline {
             step: TrampolineStep::Bounce(Box::new(f)),
         }
     }
+
+    pub fn step(self) -> TrampolineStep {
+        self.step
+    }
+
+    pub fn wrap(step: Box<BoxedFn1<Trampoline> + 'static + Send>) -> Self {
+        Self {
+            step: TrampolineStep::Bounce(step),
+        }
+    }
 }

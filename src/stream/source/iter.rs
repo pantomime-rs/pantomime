@@ -1,8 +1,6 @@
-use crate::actor::ActorSystemContext;
-use crate::dispatcher::{Dispatcher, Trampoline};
+use crate::dispatcher::Trampoline;
 use crate::stream::oxidized::*;
 use crate::stream::*;
-use std::sync::Arc;
 
 pub struct Iter<A, I: Iterator<Item = A>>
 where
@@ -26,11 +24,7 @@ where
     A: 'static + Send,
     I: 'static + Send,
 {
-    fn attach<Consume: Consumer<A>>(
-        mut self,
-        consumer: Consume,
-        context: ActorSystemContext,
-    ) -> Trampoline {
+    fn attach<Consume: Consumer<A>>(self, consumer: Consume, _: &StreamContext) -> Trampoline {
         consumer.started(self)
     }
 

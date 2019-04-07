@@ -34,7 +34,7 @@ where
         producer.pull(self)
     }
 
-    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
+    fn produced<Produce: Producer<A>>(self, producer: Produce, _: A) -> Trampoline {
         Trampoline::bounce(move || producer.pull(self))
     }
 
@@ -42,7 +42,7 @@ where
         Trampoline::done()
     }
 
-    fn failed(self, error: Error) -> Trampoline {
+    fn failed(self, _: Error) -> Trampoline {
         // @TODO
 
         Trampoline::done()

@@ -1,4 +1,3 @@
-use crate::actor::ActorSystemContext;
 use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
@@ -40,7 +39,7 @@ where
 {
     /// Invoked when the flow is first started. This can be useful to setup
     /// some state.
-    fn attach(&mut self, context: &ActorSystemContext);
+    fn attach(&mut self, context: &StreamContext);
 
     /// Upstream has produced an element, so now the flow must decide what
     /// action to take.
@@ -50,14 +49,21 @@ where
     /// action to take. A common action is to in turn pull upstream.
     fn pulled(&mut self) -> Action<B>;
 
-    /// Indicates that the flow has been completed. It may choose to emit an
-    /// element as a result.
-    fn completed(self) -> Option<B>;
+    /// Indicates that upstream has completed.
+    ///
+    /// Typically, this should forward downstream by returning `Action::Complete`
+    /// but the logic may choose to emit other actions instead.
+    ///
+    /// It must not, however, emit a Pull or Cancel as upstream is finished.
+    fn completed(&mut self) -> Action<B>;
 
-    /// Indicates that the flow has been completed. It may choose to emit an
-    /// element as a result, in which downstream will be considered completed
-    /// instead of failed.
-    fn failed(self, error: &Error) -> Option<B>;
+    /// Indicates that upstream has failed.
+    ///
+    /// Typically, this should be forwarded downstream with `Action::Fail`
+    /// but the logic may choose to emit other actions.
+    ///
+    /// It must not, however, emit a Pull or Cancel as upstream is finished.
+    fn failed(&mut self, error: Error) -> Action<B>;
 }
 
 pub struct Attached<A, B, Logic: AttachedLogic<A, B>, Up: Producer<A>, Down: Consumer<B>>
@@ -66,6 +72,7 @@ where
     B: 'static + Send,
 {
     logic: Logic,
+    connected: bool,
     upstream: Up,
     downstream: Down,
     phantom: PhantomData<(A, B)>,
@@ -81,6 +88,7 @@ where
     pub fn new(logic: Logic) -> impl FnOnce(Up) -> Self {
         move |upstream| Self {
             logic,
+            connected: false,
             upstream: upstream,
             downstream: Disconnected,
             phantom: PhantomData,
@@ -98,15 +106,14 @@ where
     Down: 'static + Send,
 {
     fn attach<Consume: Consumer<B>>(
-        mut self,
+        self,
         consumer: Consume,
-        context: ActorSystemContext,
+        context: &StreamContext,
     ) -> Trampoline {
-        self.logic.attach(&context);
-
         self.upstream.attach(
             Attached {
                 logic: self.logic,
+                connected: true,
                 upstream: Disconnected,
                 downstream: consumer,
                 phantom: PhantomData,
@@ -120,6 +127,7 @@ where
             Action::Push(element) => consumer.produced(
                 Attached {
                     logic: self.logic,
+                    connected: self.connected,
                     upstream: self.upstream,
                     downstream: Disconnected,
                     phantom: PhantomData,
@@ -129,35 +137,48 @@ where
 
             Action::Pull => self.upstream.pull(Attached {
                 logic: self.logic,
+                connected: self.connected,
                 upstream: Disconnected,
                 downstream: consumer,
                 phantom: PhantomData,
             }),
 
-            Action::Cancel => self.upstream.cancel(Attached {
+            Action::Cancel if self.connected => self.upstream.cancel(Attached {
                 logic: self.logic,
+                connected: self.connected,
                 upstream: Disconnected,
                 downstream: consumer,
                 phantom: PhantomData,
             }),
 
-            Action::Fail(error) => self.upstream.cancel(PendingFinish {
-                error: Some(error),
-                downstream: consumer,
-                phantom: PhantomData,
-            }),
+            Action::Cancel => self.downstream.failed(Error), // @TODO error type
 
-            Action::Complete => self.upstream.cancel(PendingFinish {
+            Action::Fail(error) => {
+                if self.connected {
+                    self.upstream.cancel(PendingFinish {
+                        error: Some(error),
+                        downstream: consumer,
+                        phantom: PhantomData,
+                    })
+                } else {
+                    self.downstream.failed(error)
+                }
+            }
+
+            Action::Complete if self.connected => self.upstream.cancel(PendingFinish {
                 error: None,
                 downstream: consumer,
                 phantom: PhantomData,
             }),
+
+            Action::Complete => self.downstream.completed(),
         }
     }
 
     fn cancel<Consume: Consumer<B>>(self, consumer: Consume) -> Trampoline {
         self.upstream.cancel(Attached {
             logic: self.logic,
+            connected: self.connected,
             upstream: Disconnected,
             downstream: consumer,
             phantom: PhantomData,
@@ -177,6 +198,7 @@ where
     fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
         self.downstream.started(Attached {
             logic: self.logic,
+            connected: self.connected,
             upstream: producer,
             downstream: Disconnected,
             phantom: PhantomData,
@@ -188,6 +210,7 @@ where
             Action::Push(element) => self.downstream.produced(
                 Attached {
                     logic: self.logic,
+                    connected: self.connected,
                     upstream: producer,
                     downstream: Disconnected,
                     phantom: PhantomData,
@@ -197,45 +220,87 @@ where
 
             Action::Pull => producer.pull(Attached {
                 logic: self.logic,
+                connected: self.connected,
                 upstream: Disconnected,
                 downstream: self.downstream,
                 phantom: PhantomData,
             }),
 
-            Action::Cancel => producer.cancel(Attached {
+            Action::Cancel if self.connected => producer.cancel(Attached {
                 logic: self.logic,
+                connected: self.connected,
                 upstream: Disconnected,
                 downstream: self.downstream,
                 phantom: PhantomData,
             }),
 
-            Action::Fail(error) => producer.cancel(PendingFinish {
-                error: Some(error),
-                downstream: self.downstream,
-                phantom: PhantomData,
-            }),
+            Action::Cancel => self.downstream.failed(Error), // @TODO error type
 
-            Action::Complete => producer.cancel(PendingFinish {
+            Action::Fail(error) => {
+                if self.connected {
+                    self.upstream.cancel(PendingFinish {
+                        error: Some(error),
+                        downstream: self.downstream,
+                        phantom: PhantomData,
+                    })
+                } else {
+                    self.downstream.failed(error)
+                }
+            }
+
+            Action::Complete if self.connected => producer.cancel(PendingFinish {
                 error: None,
                 downstream: self.downstream,
                 phantom: PhantomData,
             }),
+
+            Action::Complete => self.downstream.completed(),
         }
     }
 
-    fn completed(self) -> Trampoline {
+    fn completed(mut self) -> Trampoline {
         match self.logic.completed() {
-            Some(element) => self.downstream.produced(Disconnected, element),
+            Action::Push(element) => self.downstream.produced(
+                Attached {
+                    logic: self.logic,
+                    connected: false,
+                    upstream: Disconnected,
+                    downstream: Disconnected,
+                    phantom: PhantomData,
+                },
+                element,
+            ),
 
-            None => self.downstream.completed(),
+            Action::Pull => self.downstream.failed(Error), // @TODO error type
+
+            Action::Cancel => self.downstream.failed(Error), // @TODO error type
+
+            Action::Fail(error) => self.downstream.failed(error),
+
+            Action::Complete => self.downstream.completed(),
         }
     }
 
-    fn failed(self, error: Error) -> Trampoline {
-        match self.logic.failed(&error) {
-            Some(element) => self.downstream.produced(Disconnected, element),
+    fn failed(mut self, error: Error) -> Trampoline {
+        match self.logic.failed(error) {
+            Action::Push(element) => self.downstream.produced(
+                Attached {
+                    logic: self.logic,
+                    connected: false,
+                    upstream: Disconnected,
+                    downstream: Disconnected,
+                    phantom: PhantomData,
+                },
+                element,
+            ),
 
-            None => self.downstream.failed(error),
+            Action::Pull => self.downstream.failed(Error), // @TODO error type
+
+            Action::Cancel => self.downstream.failed(Error), // @TODO error type
+
+            Action::Fail(error) => self.downstream.failed(error),
+
+            Action::Complete => self.downstream.completed(),
         }
     }
 }
@@ -287,11 +352,11 @@ where
     A: 'static + Send,
     B: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
+    fn started<Produce: Producer<A>>(self, _: Produce) -> Trampoline {
         self.finish()
     }
 
-    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
+    fn produced<Produce: Producer<A>>(self, _: Produce, _: A) -> Trampoline {
         self.finish()
     }
 
@@ -299,7 +364,7 @@ where
         self.finish()
     }
 
-    fn failed(self, error: Error) -> Trampoline {
+    fn failed(self, _: Error) -> Trampoline {
         self.finish()
     }
 }

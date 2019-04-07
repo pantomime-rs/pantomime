@@ -1,4 +1,4 @@
-use crate::actor::{ActorRef, ActorSystemContext};
+use crate::actor::ActorRef;
 use crate::dispatcher::Trampoline;
 use crate::stream::attached::*;
 use crate::stream::detached::*;
@@ -11,11 +11,7 @@ impl<A> Producer<A> for Disconnected
 where
     A: 'static + Send,
 {
-    fn attach<Consume: Consumer<A>>(
-        self,
-        consumer: Consume,
-        context: ActorSystemContext,
-    ) -> Trampoline {
+    fn attach<Consume: Consumer<A>>(self, consumer: Consume, _: &StreamContext) -> Trampoline {
         consumer.started(self)
     }
 
@@ -36,7 +32,7 @@ where
         producer.cancel(self)
     }
 
-    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
+    fn produced<Produce: Producer<A>>(self, producer: Produce, _: A) -> Trampoline {
         producer.cancel(self)
     }
 
@@ -44,7 +40,7 @@ where
         Trampoline::done()
     }
 
-    fn failed(self, error: Error) -> Trampoline {
+    fn failed(self, _: Error) -> Trampoline {
         // @TODO
 
         Trampoline::done()
@@ -56,9 +52,9 @@ where
     A: 'static + Send,
     B: 'static + Send,
 {
-    fn attach(&mut self, _: &ActorSystemContext) {}
+    fn attach(&mut self, _: &StreamContext) {}
 
-    fn produced(&mut self, elem: A) -> Action<B> {
+    fn produced(&mut self, _: A) -> Action<B> {
         Action::Cancel
     }
 
@@ -66,12 +62,12 @@ where
         Action::Cancel
     }
 
-    fn completed(self) -> Option<B> {
-        None
+    fn completed(&mut self) -> Action<B> {
+        Action::Fail(Error)
     }
 
-    fn failed(self, _: &Error) -> Option<B> {
-        None
+    fn failed(&mut self, e: Error) -> Action<B> {
+        Action::Fail(e)
     }
 }
 
@@ -81,7 +77,11 @@ where
     B: 'static + Send,
     M: 'static + Send,
 {
-    fn attach(&mut self, _: &ActorRef<AsyncAction<B, M>>) -> Option<AsyncAction<B, M>> {
+    fn attach(
+        &mut self,
+        _: &StreamContext,
+        _: &ActorRef<AsyncAction<B, M>>,
+    ) -> Option<AsyncAction<B, M>> {
         Some(AsyncAction::Cancel)
     }
 
