@@ -46,6 +46,12 @@ impl Clone for StreamContext {
 }
 
 pub struct Error; // TODO
+
+pub enum Terminated {
+    Completed,
+    Failed(Error),
+}
+
 pub type BoxedDispatcher = Box<Dispatcher + Send + Sync>; // @TODO
 
 pub trait Stage<A>: Producer<A>
@@ -170,13 +176,19 @@ mod temp_tests {
 
         let mut system = ActorSystem::new().start();
 
-        let iterator = 0..usize::max_value();
+        let iterator = 0..2000;
 
         Iter::new(iterator).map(spin).detach().map(spin).run_with(
             ForEach::new(|n| {
                 println!("sink received {}", n);
-                if n == 2000 {
-                    std::process::exit(0);
+            })
+            .watch_termination(|done| match done {
+                Terminated::Completed => {
+                    println!("done!");
+                }
+
+                Terminated::Failed(e) => {
+                    println!("failed!");
                 }
             }),
             system.context.clone(),
