@@ -12,6 +12,7 @@ downcast-rs = "1.0.3"
 fern = { version = "0.5", features = ["colored"] }
 futures = { version = "0.1", optional = true }
 log = "0.4"
+mio = { version = "0.6", optional = true }
 num_cpus = "1.0"
 parking_lot = "0.7"
 rand = "0.6"
@@ -23,8 +24,9 @@ tokio-reactor = { version = "0.1", optional = true }
 tokio-timer = { version = "0.2", optional = true }
 
 [features]
-default = ["posix-signals-support"]
+default = ["mio-support", "posix-signals-support"]
 futures-support = ["futures"]
+mio-support = ["mio"]
 posix-signals-support = ["signal-hook"]
 testkit = []
 tokio-support = ["futures", "futures-support", "tokio", "tokio-executor", "tokio-threadpool", "tokio-reactor", "tokio-timer"]

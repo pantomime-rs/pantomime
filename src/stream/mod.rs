@@ -4,6 +4,9 @@ pub mod oxidized;
 pub mod sink;
 pub mod source;
 
+#[cfg(test)]
+mod tests;
+
 pub use disconnected::Disconnected;
 pub use flow::*;
 pub use sink::*;
@@ -58,6 +61,7 @@ pub trait Stage<A>: Producer<A>
 where
     A: 'static + Send,
 {
+    #[must_use]
     fn filter<F: FnMut(&A) -> bool>(
         self,
         filter: F,
@@ -68,6 +72,7 @@ where
         Attached::new(Filter::new(filter))(self)
     }
 
+    #[must_use]
     fn filter_map<B, F: FnMut(A) -> Option<B>>(
         self,
         filter_map: F,
@@ -83,6 +88,7 @@ where
     /// Inserts a stage that converts incoming elements using
     /// the provided function and emits them downstream,
     /// 1 to 1.
+    #[must_use]
     fn map<B, F: FnMut(A) -> B>(self, map: F) -> Attached<A, B, Map<A, B, F>, Self, Disconnected>
     where
         A: 'static + Send,
@@ -90,6 +96,18 @@ where
         F: 'static + Send,
     {
         Attached::new(Map::new(map))(self)
+    }
+
+    #[must_use]
+    fn take_while<F: FnMut(&A) -> bool>(
+        self,
+        func: F,
+    ) -> Attached<A, A, TakeWhile<A, F>, Self, Disconnected>
+    where
+        A: 'static + Send,
+        F: 'static + Send,
+    {
+        Attached::new(TakeWhile::new(func))(self)
     }
 
     /// Inserts a stage that decouples upstream and downstream,
@@ -101,10 +119,12 @@ where
     /// elements from upstream and sends them downstream in
     /// batches. This work is coordinated by an actor to manage
     /// signals from both directions.
+    #[must_use]
     fn detach(self) -> Detached<A, A, (), Identity, Self, Disconnected> {
         self.via(Detached::new(Identity))
     }
 
+    #[must_use]
     fn via<B, Down: Flow<A, B>, F: FnOnce(Self) -> Down>(self, f: F) -> Down
     where
         B: 'static + Send,
@@ -112,24 +132,17 @@ where
         f(self)
     }
 
-    /// Run the stream by spawning an actor and attaching the provided sink.
-    ///
-    /// The actor topology of a stream's execution depends on the stages
-    /// that comprise it.
-    ///
-    /// If the stream is only comprised of attached stages. In general, all
-    /// attached stages are run within the context of the current actor. All
-    /// detached stages spawn a new actor to transparently buffer elements
-    /// to improve performance when handing them over an asynchronous
-    /// boundary.
-    fn run_with<S: Sink<A>>(self, sink: S, context: ActorSystemContext) {
-        let dispatcher = context.dispatcher();
-        let inner_dispatcher = dispatcher.clone();
-        let stream_context = StreamContext::new(&dispatcher, &context);
+    #[must_use]
+    fn to<Down: Sink<A>, F: FnOnce(Self) -> Down>(self, sink: F) -> Down {
+        sink(self)
+    }
 
-        dispatcher.execute(Box::new(move || {
-            inner_dispatcher.execute_trampoline(self.attach(sink, &stream_context));
-        }));
+    fn run_with<Down: Sink<A>, F: FnOnce(Self) -> Down>(
+        self,
+        sink: F,
+        context: &ActorSystemContext,
+    ) {
+        self.to(sink).run(context)
     }
 }
 
@@ -143,6 +156,17 @@ pub trait Sink<A>: Consumer<A>
 where
     A: 'static + Send,
 {
+    fn run(self, context: &ActorSystemContext) {
+        let dispatcher = context.dispatcher();
+        let inner_dispatcher = dispatcher.clone();
+        let stream_context = StreamContext::new(&dispatcher, &context);
+
+        dispatcher.execute(Box::new(move || {
+            inner_dispatcher.execute_trampoline(self.start(&stream_context));
+        }));
+    }
+
+    fn start(self, stream_context: &StreamContext) -> Trampoline;
 }
 
 pub trait Flow<A, B>: Consumer<A> + Stage<B>
@@ -159,6 +183,8 @@ mod temp_tests {
     use crate::stream::for_each::ForEach;
     use crate::stream::iter::Iter;
     use crate::stream::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn spin(value: usize) -> usize {
         let start = std::time::Instant::now();
@@ -169,8 +195,8 @@ mod temp_tests {
     }
 
     #[test]
-    fn test() {
-        if false {
+    fn test_for_each_add() {
+        if true {
             return;
         };
 
@@ -178,20 +204,56 @@ mod temp_tests {
 
         let iterator = 0..2000;
 
+        let completed = Arc::new(AtomicBool::new(false));
+        let sum = Arc::new(AtomicUsize::new(0));
+
+        {
+            let completed = completed.clone();
+            let sum = sum.clone();
+
+            Iter::new(iterator)
+                .map(spin)
+                .detach()
+                .map(spin)
+                .to(ForEach::new(move |n| {
+                    sum.fetch_add(n, Ordering::SeqCst);
+                }))
+                .watch_termination(move |terminated| match terminated {
+                    Terminated::Completed => {
+                        completed.store(true, Ordering::SeqCst);
+                    }
+
+                    Terminated::Failed(_) => {
+                        panic!("unexpected");
+                    }
+                })
+                .run(&system.context);
+        }
+
+        loop {
+            // @TODO remove
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+    }
+
+    #[test]
+    fn test() {
+        if true {
+            return;
+        };
+
+        let mut system = ActorSystem::new().start();
+
+        let iterator = 0..2000;
+
+        let completed = Arc::new(AtomicBool::new(false));
+        let sum = Arc::new(AtomicUsize::new(0));
+
         Iter::new(iterator).map(spin).detach().map(spin).run_with(
             ForEach::new(|n| {
                 println!("sink received {}", n);
-            })
-            .watch_termination(|done| match done {
-                Terminated::Completed => {
-                    println!("done!");
-                }
-
-                Terminated::Failed(e) => {
-                    println!("failed!");
-                }
             }),
-            system.context.clone(),
+            &system.context,
         );
 
         loop {
@@ -220,9 +282,7 @@ mod temp_tests {
 
         let my_sink = Sinks::for_each(|n: usize| println!("sink received {}", n));
 
-        my_source
-            .via(my_flow)
-            .run_with(my_sink, system.context.clone());
+        my_source.via(my_flow).run_with(my_sink, &system.context);
 
         loop {
             // @TODO remove
@@ -256,9 +316,7 @@ mod temp_tests {
 
         let my_sink = Sinks::ignore();
 
-        my_source
-            .via(my_flow)
-            .run_with(my_sink, system.context.clone());
+        my_source.via(my_flow).run_with(my_sink, &system.context);
 
         loop {
             // @TODO remove

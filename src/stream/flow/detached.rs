@@ -68,7 +68,7 @@ trait GenProducer {
 }
 
 trait GenConsumer<A> {
-    fn started(self: Box<Self>) -> Trampoline;
+    fn started(self: Box<Self>, context: &StreamContext) -> Trampoline;
 
     fn produced(self: Box<Self>, element: A) -> Trampoline;
 
@@ -98,6 +98,7 @@ where
     Logic: 'static + Send,
 {
     buffer: VecDeque<A>,
+    buffer_size: usize,
     logic: Logic,
     /// Tracks demand and is shared with the upstream producer
     /// which continues to consume from its upstream if there
@@ -123,9 +124,15 @@ where
     Msg: 'static + Send,
     Logic: 'static + Send,
 {
-    fn new(demand: Arc<AtomicUsize>, logic: Logic, stream_context: &StreamContext) -> Self {
+    fn new(
+        demand: Arc<AtomicUsize>,
+        logic: Logic,
+        buffer_size: usize,
+        stream_context: &StreamContext,
+    ) -> Self {
         Self {
             buffer: VecDeque::new(),
+            buffer_size,
             logic,
             demand,
             producer: None,
@@ -224,10 +231,12 @@ where
 
                 let dispatcher = context.system_context().dispatcher();
 
-                self.demand.fetch_add(1, Ordering::SeqCst);
+                if self.buffer_size > 0 {
+                    self.demand.fetch_add(1, Ordering::SeqCst);
 
-                if let Some(producer) = self.producer.take() {
-                    dispatcher.execute_trampoline(producer.pull());
+                    if let Some(producer) = self.producer.take() {
+                        dispatcher.execute_trampoline(producer.pull());
+                    }
                 }
 
                 // in general, the streaming model expressed in this library is driven
@@ -252,18 +261,24 @@ where
             }
 
             DetachedActorMsg::Started(producer) => {
-                self.demand.fetch_add(BUFFER_SIZE, Ordering::SeqCst);
+                self.demand.fetch_add(self.buffer_size, Ordering::SeqCst);
 
                 if self.cancelled {
                     context
                         .system_context()
                         .dispatcher()
                         .execute_trampoline(producer.cancel());
-                } else {
+                } else if self.buffer_size > 0 {
                     context
                         .system_context()
                         .dispatcher()
                         .execute_trampoline(producer.pull());
+                } else {
+                    println!("storing");
+                    // empty buffer, meaning we just wish to wait for
+                    // cancellation. this is particularly useful for
+                    // the sources that are powered by detached logic
+                    self.producer = Some(producer);
                 }
             }
 
@@ -294,7 +309,8 @@ where
                         .system_context()
                         .dispatcher()
                         .execute_trampoline(producer.cancel());
-                } else if self.buffer.len() < BUFFER_SIZE {
+                } else if self.buffer.len() < self.buffer_size {
+                    println!("pull?");
                     let dispatcher = context.system_context().dispatcher();
                     let inner_dispatcher = dispatcher.clone();
 
@@ -351,6 +367,8 @@ where
                 self.consumer = Some(consumer);
 
                 if let Some(producer) = self.producer.take() {
+                    println!("got cancel");
+
                     context
                         .system_context()
                         .dispatcher()
@@ -364,7 +382,7 @@ where
                 context
                     .system_context()
                     .dispatcher()
-                    .execute_trampoline(consumer.started());
+                    .execute_trampoline(consumer.started(&self.stream_context));
             }
         }
     }
@@ -395,6 +413,7 @@ where
 {
     upstream: Up,
     downstream: Down,
+    buffer_size: usize,
     actor_ref: ActorRef<DetachedActorMsg<A, B, M>>,
     logic: L,
     demand: Arc<AtomicUsize>,
@@ -413,6 +432,19 @@ where
         move |upstream| Self {
             upstream,
             downstream: Disconnected,
+            buffer_size: BUFFER_SIZE,
+            actor_ref: ActorRef::empty(),
+            logic,
+            demand: Arc::new(AtomicUsize::new(0)),
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn new_sized(logic: L, buffer_size: usize) -> impl FnOnce(Up) -> Self {
+        move |upstream| Self {
+            upstream,
+            downstream: Disconnected,
+            buffer_size,
             actor_ref: ActorRef::empty(),
             logic,
             demand: Arc::new(AtomicUsize::new(0)),
@@ -438,6 +470,7 @@ where
             Detached {
                 upstream: producer,
                 downstream: Disconnected,
+                buffer_size: self.buffer_size,
                 actor_ref: self.actor_ref,
                 logic: Disconnected,
                 demand: self.demand,
@@ -455,6 +488,7 @@ where
             Detached {
                 upstream: Disconnected,
                 downstream: consumer,
+                buffer_size: self.buffer_size,
                 actor_ref: self.actor_ref,
                 logic: Disconnected,
                 demand: self.demand,
@@ -483,12 +517,14 @@ where
             .spawn(DetachedActor::<A, B, M, L>::new(
                 self.demand.clone(),
                 self.logic,
+                self.buffer_size,
                 context,
             ));
 
         let upstream = Detached::<A, B, M, Disconnected, Disconnected, Disconnected> {
             upstream: Disconnected,
             downstream: Disconnected,
+            buffer_size: 0,
             actor_ref: actor_ref.clone(),
             logic: Disconnected,
             demand: self.demand.clone(),
@@ -498,6 +534,7 @@ where
         let downstream = Detached::<A, B, M, Disconnected, Disconnected, Consume> {
             upstream: Disconnected,
             downstream: consumer,
+            buffer_size: 0,
             actor_ref,
             logic: Disconnected,
             demand: self.demand,
@@ -545,7 +582,7 @@ where
     L: 'static + Send,
     Up: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
+    fn started<Produce: Producer<A>>(self, producer: Produce, _: &StreamContext) -> Trampoline {
         let actor_ref = self.actor_ref.clone();
 
         let (_, detached) = self.disconnect_downstream(producer);
@@ -614,10 +651,10 @@ where
     M: 'static + Send,
     L: 'static + Send,
 {
-    fn started(self: Box<Self>) -> Trampoline {
+    fn started(self: Box<Self>, context: &StreamContext) -> Trampoline {
         let (downstream, detached) = self.disconnect_downstream(Disconnected);
 
-        downstream.started(detached)
+        downstream.started(detached, context)
     }
 
     fn produced(self: Box<Self>, element: B) -> Trampoline {
@@ -627,6 +664,8 @@ where
     }
 
     fn completed(self: Box<Self>) -> Trampoline {
+        println!("this completed!");
+
         let (downstream, _) = self.disconnect_downstream(Disconnected);
 
         downstream.completed()
@@ -647,10 +686,12 @@ where
     M: 'static + Send,
     L: 'static + Send,
 {
-    fn attach(self: Box<Self>, context: &StreamContext) -> Trampoline {
-        let (upstream, _) = self.disconnect_upstream(Disconnected);
+    // @TODO these all ignored detached before, and sent Disconnected upstream. seems weird?
 
-        upstream.attach(Disconnected, context)
+    fn attach(self: Box<Self>, context: &StreamContext) -> Trampoline {
+        let (upstream, detached) = self.disconnect_upstream(Disconnected);
+
+        upstream.attach(detached, context)
     }
 
     fn pull(self: Box<Self>) -> Trampoline {
@@ -660,8 +701,9 @@ where
     }
 
     fn cancel(self: Box<Self>) -> Trampoline {
-        let (upstream, _) = self.disconnect_upstream(Disconnected);
+        let (upstream, detached) = self.disconnect_upstream(Disconnected);
 
-        upstream.cancel(Disconnected)
+        println!("cancel here");
+        upstream.cancel(detached)
     }
 }

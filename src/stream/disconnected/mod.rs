@@ -11,8 +11,12 @@ impl<A> Producer<A> for Disconnected
 where
     A: 'static + Send,
 {
-    fn attach<Consume: Consumer<A>>(self, consumer: Consume, _: &StreamContext) -> Trampoline {
-        consumer.started(self)
+    fn attach<Consume: Consumer<A>>(
+        self,
+        consumer: Consume,
+        context: &StreamContext,
+    ) -> Trampoline {
+        consumer.started(self, context)
     }
 
     fn pull<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
@@ -28,7 +32,7 @@ impl<A> Consumer<A> for Disconnected
 where
     A: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
+    fn started<Produce: Producer<A>>(self, producer: Produce, _: &StreamContext) -> Trampoline {
         producer.cancel(self)
     }
 
