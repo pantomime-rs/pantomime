@@ -44,7 +44,11 @@ where
     /// - pull
     /// - cancel
     #[must_use]
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline;
+    fn started<Produce: Producer<A>>(
+        self,
+        producer: Produce,
+        context: &StreamContext,
+    ) -> Trampoline;
 
     /// Indicates that the producer has produced an element. The consumer must
     /// then at some point in the future call one of the following:

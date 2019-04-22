@@ -53,10 +53,6 @@ pub trait Dispatcher {
 
     fn throughput(&self) -> usize;
 }
-// @TODO generalize?
-pub trait BoxedFn1<A> {
-    fn apply(self: Box<Self>) -> A;
-}
 
 pub(crate) trait BoxedFn1In0Out<A> {
     fn apply(self: Box<Self>, a: A);
@@ -67,6 +63,22 @@ impl<A, F: FnOnce(A)> BoxedFn1In0Out<A> for F {
     fn apply(self: Box<F>, a: A) {
         (*self)(a)
     }
+}
+
+pub(crate) trait BoxedFn2In0Out<A, B> {
+    fn apply(self: Box<Self>, a: A, b: B);
+}
+
+impl<A, B, F: FnOnce(A, B)> BoxedFn2In0Out<A, B> for F {
+    #[inline(always)]
+    fn apply(self: Box<F>, a: A, b: B) {
+        (*self)(a, b)
+    }
+}
+//
+// @TODO generalize?
+pub trait BoxedFn1<A> {
+    fn apply(self: Box<Self>) -> A;
 }
 
 impl<A, F: FnOnce() -> A> BoxedFn1<A> for F {

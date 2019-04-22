@@ -9,25 +9,19 @@ use std::panic::{catch_unwind, UnwindSafe};
 ///
 /// It can be connected to producers to constantly
 /// pull values from upstream.
-pub struct Ignore<A>
+pub struct Ignore<A, Up: Producer<A>>
 where
     A: 'static + Send,
 {
     on_termination: Option<Box<BoxedFn1In0Out<Terminated> + 'static + Send + UnwindSafe>>,
+    upstream: Up,
     phantom: PhantomData<A>,
 }
 
-impl<A> Ignore<A>
+impl<A, Up: Producer<A>> Ignore<A, Up>
 where
     A: 'static + Send,
 {
-    pub fn new() -> Self {
-        Self {
-            on_termination: None,
-            phantom: PhantomData,
-        }
-    }
-
     pub fn watch_termination<F: FnOnce(Terminated)>(mut self, f: F) -> Self
     where
         F: 'static + Send + UnwindSafe,
@@ -37,11 +31,24 @@ where
     }
 }
 
-impl<A> Consumer<A> for Ignore<A>
+impl<A, Up: Producer<A>> Ignore<A, Up>
 where
     A: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
+    pub fn new() -> impl FnOnce(Up) -> Self {
+        move |upstream| Self {
+            on_termination: None,
+            upstream,
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<A, Up: Producer<A>> Consumer<A> for Ignore<A, Up>
+where
+    A: 'static + Send,
+{
+    fn started<Produce: Producer<A>>(self, producer: Produce, _: &StreamContext) -> Trampoline {
         producer.pull(self)
     }
 
@@ -72,4 +79,17 @@ where
     }
 }
 
-impl<A> Sink<A> for Ignore<A> where A: 'static + Send {}
+impl<A, Up: Producer<A>> Sink<A> for Ignore<A, Up>
+where
+    A: 'static + Send,
+{
+    fn start(self, stream_context: &StreamContext) -> Trampoline {
+        let sink = Ignore {
+            on_termination: self.on_termination,
+            upstream: Disconnected,
+            phantom: PhantomData,
+        };
+
+        self.upstream.attach(sink, &stream_context)
+    }
+}

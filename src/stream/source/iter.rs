@@ -24,8 +24,12 @@ where
     A: 'static + Send,
     I: 'static + Send,
 {
-    fn attach<Consume: Consumer<A>>(self, consumer: Consume, _: &StreamContext) -> Trampoline {
-        consumer.started(self)
+    fn attach<Consume: Consumer<A>>(
+        self,
+        consumer: Consume,
+        context: &StreamContext,
+    ) -> Trampoline {
+        consumer.started(self, context)
     }
 
     fn pull<Consume: Consumer<A>>(mut self, consumer: Consume) -> Trampoline {
@@ -37,6 +41,8 @@ where
     }
 
     fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
+        println!("cancel!");
+
         consumer.completed()
     }
 }
