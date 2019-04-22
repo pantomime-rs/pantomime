@@ -1,6 +1,7 @@
 use self::actor_watcher::{ActorWatcher, ActorWatcherMessage};
 use super::*;
 use crate::dispatcher::WorkStealingDispatcher;
+use crate::io::{IoCoordinator, IoCoordinatorMsg};
 use crossbeam::channel;
 use fern::colors::{Color, ColoredLevelConfig};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +31,7 @@ impl ActorSystemContext {
         dispatcher: WorkStealingDispatcher,
         initial_id: usize,
         timer_ref: Option<ActorRef<TimerMsg>>,
+        io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
         watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
         sender: channel::Sender<ActorSystemMsg>,
         shards: Option<usize>,
@@ -40,6 +42,7 @@ impl ActorSystemContext {
                 dispatcher,
                 initial_id,
                 timer_ref,
+                io_coordinator_ref,
                 watcher_ref,
                 sender,
                 shards,
@@ -146,6 +149,10 @@ impl ActorSystemContext {
         self.spawn_actor(ActorType::Root, actor, parent_ref)
     }
 
+    pub(crate) fn io_coordinator_ref(&self) -> Option<&ActorRef<IoCoordinatorMsg>> {
+        self.inner.io_coordinator_ref.as_ref()
+    }
+
     pub(in crate::actor) fn watcher_ref(&self) -> Option<&ActorRef<ActorWatcherMessage>> {
         self.inner.watcher_ref.as_ref()
     }
@@ -158,6 +165,7 @@ pub struct ActorSystemContextInner {
     pub dispatcher: WorkStealingDispatcher,
     next_id: AtomicUsize,
     timer_ref: Option<ActorRef<TimerMsg>>,
+    pub(crate) io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
     pub(in crate::actor) watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
     system_shard: Arc<ActorShard>,
     shards: Vec<Arc<ActorShard>>,
@@ -170,6 +178,7 @@ impl ActorSystemContextInner {
         dispatcher: WorkStealingDispatcher,
         initial_id: usize,
         timer_ref: Option<ActorRef<TimerMsg>>,
+        io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
         watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
         sender: channel::Sender<ActorSystemMsg>,
         shards: Option<usize>,
@@ -191,6 +200,7 @@ impl ActorSystemContextInner {
             dispatcher,
             next_id: AtomicUsize::new(initial_id),
             timer_ref,
+            io_coordinator_ref,
             watcher_ref,
             system_shard,
             shards,
@@ -418,6 +428,7 @@ impl ActorSystem {
             1,
             None,
             None,
+            None,
             sender.clone(),
             Some(0),
         ));
@@ -441,14 +452,28 @@ impl ActorSystem {
             &system_context,
             ActorType::System,
             ActorWatcher::new(),
+            parent_ref.clone(),
+        );
+
+        let poller = crate::io::Poller::new();
+
+        let poll = poller.poll.clone();
+
+        let io_coordinator_ref = ActorSystemContext::spawn_actor(
+            &system_context,
+            ActorType::System,
+            IoCoordinator::new(poll),
             parent_ref,
         );
+
+        poller.run(&io_coordinator_ref);
 
         let context = ActorSystemContext::new(
             config.clone(),
             dispatcher.clone(),
             usize::MIN + 100, // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
             Some(timer_ref.clone()),
+            Some(io_coordinator_ref),
             Some(actor_watcher_ref),
             sender.clone(),
             None,

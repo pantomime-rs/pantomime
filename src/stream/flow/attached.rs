@@ -2,6 +2,8 @@ use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
 
+const MAX_CYCLES: usize = 10;
+
 /// Represents the actions that an attached
 /// flow may take upon receiving a signal.
 pub enum Action<B> {
@@ -79,6 +81,7 @@ where
 {
     logic: Logic,
     connected: bool,
+    cycles: usize,
     upstream: Up,
     downstream: Down,
     phantom: PhantomData<(A, B)>,
@@ -95,6 +98,7 @@ where
         move |upstream| Self {
             logic,
             connected: false,
+            cycles: 0,
             upstream: upstream,
             downstream: Disconnected,
             phantom: PhantomData,
@@ -120,6 +124,7 @@ where
             Attached {
                 logic: self.logic,
                 connected: true,
+                cycles: self.cycles,
                 upstream: Disconnected,
                 downstream: consumer,
                 phantom: PhantomData,
@@ -134,6 +139,7 @@ where
                 Attached {
                     logic: self.logic,
                     connected: self.connected,
+                    cycles: self.cycles,
                     upstream: self.upstream,
                     downstream: Disconnected,
                     phantom: PhantomData,
@@ -141,9 +147,21 @@ where
                 element,
             ),
 
+            Action::Pull if self.cycles == MAX_CYCLES => Trampoline::bounce(|| {
+                self.upstream.pull(Attached {
+                    logic: self.logic,
+                    connected: self.connected,
+                    cycles: 0,
+                    upstream: Disconnected,
+                    downstream: consumer,
+                    phantom: PhantomData,
+                })
+            }),
+
             Action::Pull => self.upstream.pull(Attached {
                 logic: self.logic,
                 connected: self.connected,
+                cycles: self.cycles + 1,
                 upstream: Disconnected,
                 downstream: consumer,
                 phantom: PhantomData,
@@ -152,6 +170,7 @@ where
             Action::Cancel if self.connected => self.upstream.cancel(Attached {
                 logic: self.logic,
                 connected: self.connected,
+                cycles: self.cycles,
                 upstream: Disconnected,
                 downstream: consumer,
                 phantom: PhantomData,
@@ -185,6 +204,7 @@ where
         self.upstream.cancel(Attached {
             logic: self.logic,
             connected: self.connected,
+            cycles: self.cycles,
             upstream: Disconnected,
             downstream: consumer,
             phantom: PhantomData,
@@ -201,14 +221,22 @@ where
     Up: 'static + Send,
     Down: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce) -> Trampoline {
-        self.downstream.started(Attached {
-            logic: self.logic,
-            connected: self.connected,
-            upstream: producer,
-            downstream: Disconnected,
-            phantom: PhantomData,
-        })
+    fn started<Produce: Producer<A>>(
+        self,
+        producer: Produce,
+        context: &StreamContext,
+    ) -> Trampoline {
+        self.downstream.started(
+            Attached {
+                logic: self.logic,
+                connected: self.connected,
+                cycles: self.cycles,
+                upstream: producer,
+                downstream: Disconnected,
+                phantom: PhantomData,
+            },
+            context,
+        )
     }
 
     fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
@@ -217,6 +245,7 @@ where
                 Attached {
                     logic: self.logic,
                     connected: self.connected,
+                    cycles: self.cycles,
                     upstream: producer,
                     downstream: Disconnected,
                     phantom: PhantomData,
@@ -224,9 +253,21 @@ where
                 element,
             ),
 
+            Action::Pull if self.cycles == MAX_CYCLES => Trampoline::bounce(|| {
+                producer.pull(Attached {
+                    logic: self.logic,
+                    connected: self.connected,
+                    cycles: 0,
+                    upstream: Disconnected,
+                    downstream: self.downstream,
+                    phantom: PhantomData,
+                })
+            }),
+
             Action::Pull => producer.pull(Attached {
                 logic: self.logic,
                 connected: self.connected,
+                cycles: self.cycles,
                 upstream: Disconnected,
                 downstream: self.downstream,
                 phantom: PhantomData,
@@ -235,6 +276,7 @@ where
             Action::Cancel if self.connected => producer.cancel(Attached {
                 logic: self.logic,
                 connected: self.connected,
+                cycles: self.cycles,
                 upstream: Disconnected,
                 downstream: self.downstream,
                 phantom: PhantomData,
@@ -270,6 +312,7 @@ where
                 Attached {
                     logic: self.logic,
                     connected: false,
+                    cycles: self.cycles,
                     upstream: Disconnected,
                     downstream: Disconnected,
                     phantom: PhantomData,
@@ -293,6 +336,7 @@ where
                 Attached {
                     logic: self.logic,
                     connected: false,
+                    cycles: self.cycles,
                     upstream: Disconnected,
                     downstream: Disconnected,
                     phantom: PhantomData,
@@ -358,7 +402,7 @@ where
     A: 'static + Send,
     B: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, _: Produce) -> Trampoline {
+    fn started<Produce: Producer<A>>(self, _: Produce, _: &StreamContext) -> Trampoline {
         self.finish()
     }
 

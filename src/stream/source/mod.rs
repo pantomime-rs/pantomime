@@ -1,4 +1,10 @@
+//! MIO support offers TCP/UDP support for actors.
+
+//pub mod idle;
 pub mod iter;
+
+pub(crate) mod io_manager;
+pub(crate) mod io_tcp;
 
 use std::iter as std_iter;
 
@@ -22,7 +28,7 @@ impl Sources {
 
     pub fn empty<A>() -> iter::Iter<A, std_iter::Empty<A>>
     where
-        A: Send + Clone,
+        A: Send,
     {
         iter::Iter::new(std_iter::empty())
     }
