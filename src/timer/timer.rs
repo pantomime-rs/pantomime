@@ -32,7 +32,7 @@ impl Actor<TimerMsg> for Timer {
                 if self.ticker.is_none() {
                     self.ticker = Some(
                         Ticker::new(self.tick_interval)
-                            .with_dispatcher(context.system_context().dispatcher().clone())
+                            .with_dispatcher(context.system_context().dispatcher())
                             .run(),
                     );
                 }

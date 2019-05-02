@@ -21,6 +21,54 @@ pub use self::fs::FutureDispatcherBridge;
 #[cfg(feature = "tokio-support")]
 pub use self::tokio::RunTokioFuture;
 
+pub struct Dispatcher {
+    inner: Box<DispatcherLogic + Send + Sync>,
+}
+
+impl Dispatcher {
+    pub fn new<Logic: DispatcherLogic>(logic: Logic) -> Self
+    where
+        Logic: 'static + Send + Sync,
+    {
+        Self {
+            inner: Box::new(logic),
+        }
+    }
+
+    /// Execute the provided function on this dispatcher.
+    pub fn execute<F: FnOnce()>(&self, f: F)
+    where
+        F: 'static + Send,
+    {
+        self.inner.execute(Box::new(f));
+    }
+
+    pub fn execute_thunk(&self, thunk: Thunk) {
+        self.inner.execute(thunk);
+    }
+
+    pub fn execute_trampoline(&self, trampoline: Trampoline) {
+        self.inner.execute_trampoline(trampoline);
+    }
+
+    fn shutdown(self) {
+        self.inner.shutdown()
+        // @TODO
+    }
+
+    fn throughput(&self) -> usize {
+        self.inner.throughput()
+    }
+}
+
+impl Clone for Dispatcher {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone_box(),
+        }
+    }
+}
+
 /// A `Dispatcher` is a service that can execute `Thunk`s, which
 /// are boxed functions.
 ///
@@ -39,7 +87,9 @@ pub use self::tokio::RunTokioFuture;
 ///
 /// An actor can be pinned to a particular dispatcher by overriding
 /// the `config_dispatcher` method.
-pub trait Dispatcher {
+pub trait DispatcherLogic {
+    fn clone_box(&self) -> Box<DispatcherLogic + 'static + Sync + Send>;
+
     /// Execute the thunk on this dispatcher
     fn execute(&self, thunk: Thunk);
 
@@ -47,9 +97,7 @@ pub trait Dispatcher {
     /// are free to implement their own calling semantics.
     fn execute_trampoline(&self, trampoline: Trampoline);
 
-    fn safe_clone(&self) -> Box<Dispatcher + Send + Sync>;
-
-    fn shutdown(self);
+    fn shutdown(self: Box<Self>);
 
     fn throughput(&self) -> usize;
 }

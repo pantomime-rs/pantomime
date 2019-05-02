@@ -1,6 +1,6 @@
 use self::actor_watcher::{ActorWatcher, ActorWatcherMessage};
 use super::*;
-use crate::dispatcher::WorkStealingDispatcher;
+use crate::dispatcher::{Dispatcher, WorkStealingDispatcher};
 use crate::io::{IoCoordinator, IoCoordinatorMsg};
 use crossbeam::channel;
 use fern::colors::{Color, ColoredLevelConfig};
@@ -28,7 +28,7 @@ pub struct ActorSystemContext {
 impl ActorSystemContext {
     fn new(
         config: ActorSystemConfig,
-        dispatcher: WorkStealingDispatcher,
+        dispatcher: Dispatcher,
         initial_id: usize,
         timer_ref: Option<ActorRef<TimerMsg>>,
         io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
@@ -50,7 +50,7 @@ impl ActorSystemContext {
         }
     }
 
-    pub fn dispatcher(&self) -> &WorkStealingDispatcher {
+    pub fn dispatcher(&self) -> &Dispatcher {
         &self.inner.dispatcher
     }
 
@@ -161,8 +161,8 @@ impl ActorSystemContext {
 /// Holds references to the system's configuration, global dispatcher,
 /// and various internal data structures.
 pub struct ActorSystemContextInner {
-    pub config: ActorSystemConfig,
-    pub dispatcher: WorkStealingDispatcher,
+    config: ActorSystemConfig,
+    dispatcher: Dispatcher,
     next_id: AtomicUsize,
     timer_ref: Option<ActorRef<TimerMsg>>,
     pub(crate) io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
@@ -175,7 +175,7 @@ pub struct ActorSystemContextInner {
 impl ActorSystemContextInner {
     fn new(
         config: ActorSystemConfig,
-        dispatcher: WorkStealingDispatcher,
+        dispatcher: Dispatcher,
         initial_id: usize,
         timer_ref: Option<ActorRef<TimerMsg>>,
         io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
@@ -206,6 +206,14 @@ impl ActorSystemContextInner {
             shards,
             sender,
         }
+    }
+
+    fn config(&self) -> &ActorSystemConfig {
+        &self.config
+    }
+
+    fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
     }
 
     fn drain(&self) {
@@ -415,10 +423,12 @@ impl ActorSystem {
 
         let config = ActorSystemConfig::parse();
 
-        let dispatcher = WorkStealingDispatcher::new(
+        let dispatcher_logic = WorkStealingDispatcher::new(
             config.default_dispatcher_parallelism(),
             config.default_dispatcher_task_queue_fifo,
         );
+
+        let dispatcher = Dispatcher::new(dispatcher_logic);
 
         let (sender, receiver) = channel::unbounded();
 

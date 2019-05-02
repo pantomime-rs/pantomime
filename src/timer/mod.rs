@@ -8,7 +8,7 @@ use crate::dispatcher::{Dispatcher, ThunkWithSync};
 /// A unit of work to be executed with an optional dispatcher to run it on
 pub(crate) struct TimerThunk {
     thunk: ThunkWithSync,
-    dispatcher: Option<Box<Dispatcher + Send + 'static>>,
+    dispatcher: Option<Dispatcher>,
 }
 
 impl TimerThunk {

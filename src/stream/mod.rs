@@ -13,17 +13,17 @@ pub use sink::*;
 pub use source::*;
 
 use crate::actor::ActorSystemContext;
-use crate::dispatcher::{Dispatcher, Trampoline, WorkStealingDispatcher};
+use crate::dispatcher::{Dispatcher, Trampoline};
 use filter::Filter;
 use oxidized::{Consumer, Producer};
 
 pub struct StreamContext {
-    dispatcher: WorkStealingDispatcher,
+    dispatcher: Dispatcher,
     system_context: ActorSystemContext,
 }
 
 impl StreamContext {
-    pub fn dispatcher(&self) -> &WorkStealingDispatcher {
+    pub fn dispatcher(&self) -> &Dispatcher {
         &self.dispatcher
     }
 
@@ -31,7 +31,7 @@ impl StreamContext {
         &self.system_context
     }
 
-    fn new(dispatcher: &WorkStealingDispatcher, system_context: &ActorSystemContext) -> Self {
+    fn new(dispatcher: &Dispatcher, system_context: &ActorSystemContext) -> Self {
         Self {
             dispatcher: dispatcher.clone(),
             system_context: system_context.clone(),
@@ -54,8 +54,6 @@ pub enum Terminated {
     Completed,
     Failed(Error),
 }
-
-pub type BoxedDispatcher = Box<Dispatcher + Send + Sync>; // @TODO
 
 pub trait Stage<A>: Producer<A>
 where
@@ -161,9 +159,9 @@ where
         let inner_dispatcher = dispatcher.clone();
         let stream_context = StreamContext::new(&dispatcher, &context);
 
-        dispatcher.execute(Box::new(move || {
+        dispatcher.execute(move || {
             inner_dispatcher.execute_trampoline(self.start(&stream_context));
-        }));
+        });
     }
 
     fn start(self, stream_context: &StreamContext) -> Trampoline;
