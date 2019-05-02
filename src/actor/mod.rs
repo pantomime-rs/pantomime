@@ -84,10 +84,7 @@ pub trait Actor<M: 'static + Send> {
     ///
     /// When a custom mailbox is used, an actor is assigned to its
     /// own shard.
-    fn config_mailbox(
-        &self,
-        _context: &ActorSystemContext,
-    ) -> Option<Box<Mailbox<M> + Send + Sync>> {
+    fn config_mailbox(&self, _context: &ActorSystemContext) -> Option<Mailbox<M>> {
         None
     }
 

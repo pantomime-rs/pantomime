@@ -428,8 +428,7 @@ pub(in crate::actor) struct ActorRefInner<M: 'static + Send> {
     pub(in crate::actor) new_cell: Weak<ActorCell<M>>,
     pub(in crate::actor) shard: Arc<ActorShard>,
     pub(in crate::actor) system_context: ActorSystemContext,
-    pub(in crate::actor) custom_mailbox_appender:
-        Option<Box<'static + MailboxAppender<M> + Send + Sync>>,
+    pub(in crate::actor) custom_mailbox_appender: Option<MailboxAppender<M>>,
 }
 
 struct EmptyActorRefInner;

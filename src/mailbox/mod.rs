@@ -7,13 +7,44 @@ mod segqueue;
 use crate::dispatcher::Thunk;
 use crate::util::Cancellable;
 
-pub use self::channel::{CrossbeamChannelMailbox, CrossbeamChannelMailboxAppender};
-pub use self::noop::{NoopMailbox, NoopMailboxAppender};
-pub use self::segqueue::{CrossbeamSegQueueMailbox, CrossbeamSegQueueMailboxAppender};
+pub use self::channel::CrossbeamChannelMailboxLogic;
+pub use self::noop::NoopMailboxLogic;
+pub use self::segqueue::CrossbeamSegQueueMailboxLogic;
+
+pub struct MailboxAppender<M> {
+    logic: Box<MailboxAppenderLogic<M> + 'static + Send + Sync>,
+}
+
+impl<M> MailboxAppender<M> {
+    pub fn new<Logic: MailboxAppenderLogic<M>>(logic: Logic) -> Self
+    where
+        Logic: 'static + Send + Sync,
+    {
+        Self {
+            logic: Box::new(logic),
+        }
+    }
+
+    pub fn append(&self, message: M) {
+        self.logic.append(message);
+    }
+
+    pub fn append_cancellable(&self, cancellable: Cancellable, message: M, thunk: Option<Thunk>) {
+        self.logic.append_cancellable(cancellable, message, thunk);
+    }
+}
+
+impl<M> Clone for MailboxAppender<M> {
+    fn clone(&self) -> Self {
+        Self {
+            logic: self.logic.clone_box(),
+        }
+    }
+}
 
 /// A `MailboxAppender` is a handle to a mailbox through which messages can be
 /// appended.
-pub trait MailboxAppender<M> {
+pub trait MailboxAppenderLogic<M> {
     /// Append the supplied message to the mailbox.
     ///
     /// Calls to `Mailbox::retrieve` should then eventually return the
@@ -30,7 +61,7 @@ pub trait MailboxAppender<M> {
     /// In general, this is not what you want.
     fn append_cancellable(&self, cancellable: Cancellable, message: M, thunk: Option<Thunk>);
 
-    fn safe_clone(&self) -> Box<MailboxAppender<M> + Send + Sync>;
+    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync>;
 }
 
 /// A Mailbox holds messages that are destined for an actor.
@@ -41,12 +72,35 @@ pub trait MailboxAppender<M> {
 /// resulting value can be cloned and sent between threads.
 ///
 /// When dropped, calling append on an associated appender should be a noop.
-pub trait Mailbox<M> {
+pub trait MailboxLogic<M> {
     /// Obtain a `MailboxAppender` which can be used to
     /// insert messages into the mailbox.
-    fn appender(&mut self) -> Box<MailboxAppender<M> + Send + Sync>;
+    fn appender(&mut self) -> MailboxAppender<M>;
 
     /// Retrieve a message from the mailbox, returning
     /// `None` if there are none.
     fn retrieve(&mut self) -> Option<M>;
+}
+
+pub struct Mailbox<M> {
+    logic: Box<MailboxLogic<M> + 'static + Send + Sync>,
+}
+
+impl<M> Mailbox<M> {
+    pub fn new<Logic: MailboxLogic<M>>(logic: Logic) -> Self
+    where
+        Logic: 'static + Send + Sync,
+    {
+        Self {
+            logic: Box::new(logic),
+        }
+    }
+
+    pub(in crate) fn appender(&mut self) -> MailboxAppender<M> {
+        self.logic.appender()
+    }
+
+    pub(in crate) fn retrieve(&mut self) -> Option<M> {
+        self.logic.retrieve()
+    }
 }
