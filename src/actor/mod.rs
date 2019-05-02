@@ -63,13 +63,27 @@ pub enum StopReason {
 /// its own state, spawn new actors, and send messages to other
 /// actors.
 pub trait Actor<M: 'static + Send> {
-    fn config_dispatcher(
-        &self,
-        _context: &ActorSystemContext,
-    ) -> Option<Box<'static + Dispatcher + Send + Sync>> {
+    /// Configures a custom `Dispatcher` for this actor. When an actor
+    /// is messaged, its `receive`/`receive_signal` methods will be
+    /// executed on the provided dispatcher.
+    ///
+    /// This is useful if the actor needs to perform blocking operations
+    /// among other things.
+    ///
+    /// When a custom dispatcher is used, an actor is assigned to its
+    /// own shard.
+    fn config_dispatcher(&self, _context: &ActorSystemContext) -> Option<Dispatcher> {
         None
     }
 
+    /// Configures a custom `Mailbox` for this actor.
+    ///
+    /// This allows the delivery semantics to be customized for the
+    /// particular actor. For instance, a priority queue could be used
+    /// as a mailbox implementation.
+    ///
+    /// When a custom mailbox is used, an actor is assigned to its
+    /// own shard.
     fn config_mailbox(
         &self,
         _context: &ActorSystemContext,

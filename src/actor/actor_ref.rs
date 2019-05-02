@@ -1,5 +1,5 @@
 use super::*;
-use crate::dispatcher::Thunk;
+use crate::dispatcher::{Dispatcher, Thunk};
 use crate::util::Cancellable;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -635,11 +635,7 @@ impl<M: 'static + Send> ActorRef<M> {
     /// there is one. Even if that results in a new call to execute_system, that will
     /// be started from within the custom_dispatcher, so this is okay.
     #[inline(always)]
-    fn shard_execute(
-        &self,
-        event: ActorShardEvent,
-        dispatcher: Option<Box<'static + Dispatcher + Send + Sync>>,
-    ) {
+    fn shard_execute(&self, event: ActorShardEvent, dispatcher: Option<Dispatcher>) {
         let follow_up = match event {
             ActorShardEvent::Messaged => self.shard().messaged(),
             ActorShardEvent::Scheduled => self.shard().scheduled(10), // @TODO throughput
@@ -650,19 +646,17 @@ impl<M: 'static + Send> ActorRef<M> {
 
             match dispatcher {
                 None => {
-                    self.system_context()
-                        .dispatcher()
-                        .execute(Box::new(move || {
-                            next_self.shard_execute(follow_up, None);
-                        }));
+                    self.system_context().dispatcher().execute(move || {
+                        next_self.shard_execute(follow_up, None);
+                    });
                 }
 
                 Some(ref d) => {
-                    let d2 = d.safe_clone();
+                    let d2 = d.clone();
 
-                    d.execute(Box::new(move || {
+                    d.execute(move || {
                         next_self.shard_execute(follow_up, Some(d2));
-                    }));
+                    });
                 }
             }
         }

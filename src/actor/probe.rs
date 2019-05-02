@@ -128,9 +128,9 @@ mod tests {
             thread::spawn(move || {
                 let c = context.clone();
 
-                context.dispatcher().execute(Box::new(move || {
+                context.dispatcher().execute(move || {
                     c.drain();
-                }));
+                });
             });
         }
 

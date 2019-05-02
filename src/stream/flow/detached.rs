@@ -1,5 +1,5 @@
 use crate::actor::*;
-use crate::dispatcher::{Dispatcher, Trampoline};
+use crate::dispatcher::Trampoline;
 use crate::stream::disconnected::Disconnected;
 use crate::stream::oxidized::*;
 use crate::stream::*;
@@ -314,12 +314,9 @@ where
                     let dispatcher = context.system_context().dispatcher();
                     let inner_dispatcher = dispatcher.clone();
 
-                    context
-                        .system_context()
-                        .dispatcher()
-                        .execute(Box::new(move || {
-                            inner_dispatcher.execute_trampoline(producer.pull());
-                        }));
+                    context.system_context().dispatcher().execute(move || {
+                        inner_dispatcher.execute_trampoline(producer.pull());
+                    });
                 } else {
                     self.producer = Some(producer);
                 }
