@@ -1,43 +1,43 @@
-use super::{Mailbox, MailboxAppender};
+use super::{MailboxAppender, MailboxAppenderLogic, MailboxLogic};
 use crate::dispatcher::Thunk;
 use crate::util::Cancellable;
 use std::marker::PhantomData;
 
 /// An appender for `NoopMailbox` that drops any
 /// messages sent to it.
-pub struct NoopMailboxAppender<M> {
+pub struct NoopMailboxAppenderLogic<M> {
     data: PhantomData<M>,
 }
 
-impl<M> NoopMailboxAppender<M> {
+impl<M> NoopMailboxAppenderLogic<M> {
     pub fn new() -> Self {
         Self { data: PhantomData }
     }
 }
 
-impl<M: Send + Sync + 'static> MailboxAppender<M> for NoopMailboxAppender<M> {
+impl<M: Send + Sync + 'static> MailboxAppenderLogic<M> for NoopMailboxAppenderLogic<M> {
     fn append(&self, _message: M) {}
 
     fn append_cancellable(&self, _cancellable: Cancellable, _message: M, _thunk: Option<Thunk>) {}
 
-    fn safe_clone(&self) -> Box<MailboxAppender<M> + Send + Sync> {
-        Box::new(NoopMailboxAppender::new())
+    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
+        Box::new(NoopMailboxAppenderLogic::new())
     }
 }
 
-pub struct NoopMailbox<M> {
+pub struct NoopMailboxLogic<M> {
     data: PhantomData<M>,
 }
 
-impl<M> NoopMailbox<M> {
+impl<M> NoopMailboxLogic<M> {
     pub fn new() -> Self {
         Self { data: PhantomData }
     }
 }
 
-impl<M: Send + Sync + 'static> Mailbox<M> for NoopMailbox<M> {
-    fn appender(&mut self) -> Box<MailboxAppender<M> + Send + Sync> {
-        Box::new(NoopMailboxAppender::new())
+impl<M: Send + Sync + 'static> MailboxLogic<M> for NoopMailboxLogic<M> {
+    fn appender(&mut self) -> MailboxAppender<M> {
+        MailboxAppender::new(NoopMailboxAppenderLogic::new())
     }
 
     fn retrieve(&mut self) -> Option<M> {
@@ -47,18 +47,18 @@ impl<M: Send + Sync + 'static> Mailbox<M> for NoopMailbox<M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mailbox::{Mailbox, NoopMailbox};
+    use crate::mailbox::{Mailbox, NoopMailboxLogic};
 
     #[test]
     fn simple_test() {
-        let mut mailbox = NoopMailbox::new();
+        let mut mailbox = Mailbox::new(NoopMailboxLogic::new());
 
         assert_eq!(mailbox.retrieve(), None);
 
         let appender = mailbox.appender();
         appender.append(0);
 
-        let appender2 = appender.safe_clone();
+        let appender2 = appender.clone();
         appender2.append(1);
 
         assert_eq!(mailbox.retrieve(), None);

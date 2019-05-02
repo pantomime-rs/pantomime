@@ -88,7 +88,7 @@ pub(in crate::actor) struct ActorCellContents<M: 'static + Send> {
     state: ActorCellState,
     stash: Vec<StashedMsg<M>>,
     done: bool,
-    custom_mailbox: Option<Box<Mailbox<M> + 'static + Send + Sync>>,
+    custom_mailbox: Option<Mailbox<M>>,
 }
 
 enum StashedMsg<M: 'static + Send> {
@@ -100,7 +100,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
     fn new<A: Actor<M> + 'static + Send>(
         actor: A,
         context: ActorContext<M>,
-        custom_mailbox: Option<Box<Mailbox<M> + 'static + Send + Sync>>,
+        custom_mailbox: Option<Mailbox<M>>,
     ) -> Self {
         Self {
             actor: Box::new(actor),
@@ -401,7 +401,7 @@ impl<M: 'static + Send> ActorCell<M> {
         actor: A,
         parent_ref: SystemActorRef,
         context: ActorContext<M>,
-        custom_mailbox: Option<Box<Mailbox<M> + 'static + Send + Sync>>,
+        custom_mailbox: Option<Mailbox<M>>,
     ) -> Self {
         Self {
             contents: Mutex::new(ActorCellContents::new(actor, context, custom_mailbox)),

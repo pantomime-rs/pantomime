@@ -1,5 +1,5 @@
 use super::*;
-use crate::mailbox::{CrossbeamSegQueueMailbox, CrossbeamSegQueueMailboxAppender};
+use crate::mailbox::CrossbeamSegQueueMailboxLogic;
 use std::{thread, time};
 
 /// Provides a means of receiving messages from a non-actor context.
@@ -12,7 +12,7 @@ use std::{thread, time};
 /// stopped.
 pub struct Probe<M: 'static + Send> {
     pub actor_ref: ActorRef<M>,
-    mailbox: CrossbeamSegQueueMailbox<M>,
+    mailbox: Mailbox<M>,
 }
 
 pub trait SpawnProbe {
@@ -67,12 +67,13 @@ impl<M: 'static + Send> Drop for Probe<M> {
 }
 
 struct ProbeActor<M> {
-    appender: CrossbeamSegQueueMailboxAppender<M>,
+    appender: MailboxAppender<M>,
 }
 
 impl<M: 'static + Send> ProbeActor<M> {
-    fn new() -> (Self, CrossbeamSegQueueMailbox<M>) {
-        let mailbox = CrossbeamSegQueueMailbox::new();
+    fn new() -> (Self, Mailbox<M>) {
+        let mut mailbox = Mailbox::new(CrossbeamSegQueueMailboxLogic::new());
+
         let probe_actor = Self {
             appender: mailbox.appender(),
         };
