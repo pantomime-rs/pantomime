@@ -1,4 +1,4 @@
-use super::{Dispatcher, Thunk, Trampoline, TrampolineStep};
+use super::{DispatcherLogic, Thunk, Trampoline, TrampolineStep};
 use crossbeam::deque::{self as deque, Injector, Steal, Stealer, Worker};
 use rand::rngs::SmallRng;
 use rand::{FromEntropy, Rng};
@@ -428,16 +428,14 @@ enum WorkStealingDispatcherMessage {
     Shutdown,
 }
 
-impl Clone for WorkStealingDispatcher {
-    fn clone(&self) -> Self {
-        Self {
+impl DispatcherLogic for WorkStealingDispatcher {
+    fn clone_box(&self) -> Box<DispatcherLogic + 'static + Send + Sync> {
+        Box::new(Self {
             injector: self.injector.clone(),
             num_workers: self.num_workers,
-        }
+        })
     }
-}
 
-impl Dispatcher for WorkStealingDispatcher {
     fn execute(&self, thunk: Thunk) {
         Self::WORKER.with(|w| match *w.borrow() {
             Some(ref worker) => {
@@ -464,14 +462,7 @@ impl Dispatcher for WorkStealingDispatcher {
         });
     }
 
-    fn safe_clone(&self) -> Box<Dispatcher + Send + Sync> {
-        Box::new(Self {
-            injector: self.injector.clone(),
-            num_workers: self.num_workers,
-        })
-    }
-
-    fn shutdown(self) {
+    fn shutdown(self: Box<Self>) {
         for _ in 0..self.num_workers {
             self.injector.push(WorkStealingDispatcherMessage::Shutdown);
         }
@@ -479,12 +470,6 @@ impl Dispatcher for WorkStealingDispatcher {
 
     fn throughput(&self) -> usize {
         10
-    }
-}
-
-impl AsRef<Dispatcher + Send + Sync> for WorkStealingDispatcher {
-    fn as_ref(&self) -> &(Dispatcher + Send + Sync + 'static) {
-        self
     }
 }
 

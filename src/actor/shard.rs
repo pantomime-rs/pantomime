@@ -1,5 +1,5 @@
 use super::*;
-use crate::dispatcher::Thunk;
+use crate::dispatcher::{Dispatcher, Thunk};
 use crate::util::Cancellable;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +27,7 @@ pub(in crate::actor) struct ActorShard {
     system_mailbox_appender:
         CrossbeamSegQueueMailboxAppender<Box<ActorWithSystemMessage + Send + 'static>>,
     running: Arc<AtomicBool>,
-    custom_dispatcher: Option<Box<Dispatcher + Send + Sync + 'static>>,
+    custom_dispatcher: Option<Dispatcher>,
 }
 
 impl ActorShard {
@@ -47,15 +47,13 @@ impl ActorShard {
         }
     }
 
-    pub fn with_dispatcher(mut self, dispatcher: Box<Dispatcher + Send + Sync + 'static>) -> Self {
+    pub(in crate::actor) fn with_dispatcher(mut self, dispatcher: Dispatcher) -> Self {
         self.custom_dispatcher = Some(dispatcher);
         self
     }
 
-    pub(in crate::actor) fn custom_dispatcher(
-        &self,
-    ) -> Option<Box<Dispatcher + Send + Sync + 'static>> {
-        self.custom_dispatcher.as_ref().map(|d| d.safe_clone())
+    pub(in crate::actor) fn custom_dispatcher(&self) -> Option<Dispatcher> {
+        self.custom_dispatcher.as_ref().map(|d| d.clone())
     }
 
     #[inline(always)]

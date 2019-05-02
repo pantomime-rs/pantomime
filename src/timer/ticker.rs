@@ -1,6 +1,6 @@
 use super::timer_wheel::TimerWheel;
 use super::TimerThunk;
-use crate::dispatcher::WorkStealingDispatcher;
+use crate::dispatcher::Dispatcher;
 use crossbeam::channel;
 use std::thread;
 use std::time;
@@ -36,7 +36,7 @@ impl ActiveTicker {
 }
 
 pub(crate) struct Ticker {
-    dispatcher: Option<WorkStealingDispatcher>,
+    dispatcher: Option<Dispatcher>,
     interval: time::Duration,
 }
 
@@ -52,8 +52,8 @@ impl Ticker {
         }
     }
 
-    pub(crate) fn with_dispatcher(mut self, dispatcher: WorkStealingDispatcher) -> Self {
-        self.dispatcher = Some(dispatcher);
+    pub(crate) fn with_dispatcher(mut self, dispatcher: &Dispatcher) -> Self {
+        self.dispatcher = Some(dispatcher.clone());
         self
     }
 

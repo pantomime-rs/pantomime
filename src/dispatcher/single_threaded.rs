@@ -88,7 +88,13 @@ impl SingleThreadedDispatcher {
     }
 }
 
-impl Dispatcher for SingleThreadedDispatcher {
+impl DispatcherLogic for SingleThreadedDispatcher {
+    fn clone_box(&self) -> Box<DispatcherLogic + 'static + Send + Sync> {
+        Box::new(Self {
+            sender: self.sender.clone(),
+        })
+    }
+
     fn execute(&self, thunk: Thunk) {
         let _ = self
             .sender
@@ -103,13 +109,7 @@ impl Dispatcher for SingleThreadedDispatcher {
             ));
     }
 
-    fn safe_clone(&self) -> Box<Dispatcher + Send + Sync> {
-        Box::new(Self {
-            sender: self.sender.clone(),
-        })
-    }
-
-    fn shutdown(self) {
+    fn shutdown(self: Box<Self>) {
         let _ = self.sender.send(SingleThreadedDispatcherMessage::Shutdown);
     }
 
@@ -118,9 +118,11 @@ impl Dispatcher for SingleThreadedDispatcher {
     }
 }
 
-impl AsRef<Dispatcher + Send + Sync> for SingleThreadedDispatcher {
-    fn as_ref(&self) -> &(Dispatcher + Send + Sync + 'static) {
-        self
+impl Clone for SingleThreadedDispatcher {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+        }
     }
 }
 
