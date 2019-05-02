@@ -6,33 +6,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 struct ActorShardKernel {
-    mailbox: CrossbeamSegQueueMailbox<Box<dyn ActorWithMessage + Send + 'static>>,
+    mailbox: Mailbox<Box<dyn ActorWithMessage + Send + 'static>>,
     running: Arc<AtomicBool>,
-    system_mailbox: CrossbeamSegQueueMailbox<Box<dyn ActorWithSystemMessage + Send + 'static>>,
+    system_mailbox: Mailbox<Box<dyn ActorWithSystemMessage + Send + 'static>>,
 }
 
 impl ActorShardKernel {
     fn new() -> Self {
         Self {
-            mailbox: CrossbeamSegQueueMailbox::new(),
+            mailbox: Mailbox::new(CrossbeamSegQueueMailboxLogic::new()),
             running: Arc::new(AtomicBool::new(false)),
-            system_mailbox: CrossbeamSegQueueMailbox::new(),
+            system_mailbox: Mailbox::new(CrossbeamSegQueueMailboxLogic::new()),
         }
     }
 }
 
 pub(in crate::actor) struct ActorShard {
     kernel: Mutex<ActorShardKernel>,
-    mailbox_appender: CrossbeamSegQueueMailboxAppender<Box<dyn ActorWithMessage + Send + 'static>>,
-    system_mailbox_appender:
-        CrossbeamSegQueueMailboxAppender<Box<ActorWithSystemMessage + Send + 'static>>,
+    mailbox_appender: MailboxAppender<Box<dyn ActorWithMessage + Send + 'static>>,
+    system_mailbox_appender: MailboxAppender<Box<ActorWithSystemMessage + Send + 'static>>,
     running: Arc<AtomicBool>,
     custom_dispatcher: Option<Dispatcher>,
 }
 
 impl ActorShard {
     pub(in crate::actor) fn new() -> Self {
-        let kernel = ActorShardKernel::new();
+        let mut kernel = ActorShardKernel::new();
         let mailbox_appender = kernel.mailbox.appender();
         let system_mailbox_appender = kernel.system_mailbox.appender();
         let running = kernel.running.clone();
