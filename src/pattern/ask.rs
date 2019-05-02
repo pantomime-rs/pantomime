@@ -66,10 +66,7 @@ impl<Req: 'static + Send, Resp: 'static + Send> Ask<Req, Resp> for ActorRef<Req>
     {
         let (c, p) = oneshot::<Resp>();
 
-        let actor_ref = ActorSystemContext::spawn_anonymous_actor(
-            &self.system_context(),
-            AskActor::new(c, None),
-        );
+        let actor_ref = self.system_context().spawn(AskActor::new(c, None));
 
         let msg = f(actor_ref);
 
