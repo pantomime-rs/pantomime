@@ -233,7 +233,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         self.actor_ref()
             .inner
             .system_context()
-            .dispatcher
+            .dispatcher()
             .spawn_future(future);
     }
 

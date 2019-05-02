@@ -10,7 +10,7 @@ pub trait RunTokioFuture {
         -> Result<(), io::Error>;
 }
 
-impl Executor for WorkStealingDispatcher {
+impl Executor for Dispatcher {
     fn spawn(
         &mut self,
         future: Box<Future<Item = (), Error = ()> + Send>,
@@ -21,7 +21,7 @@ impl Executor for WorkStealingDispatcher {
     }
 }
 
-impl RunTokioFuture for WorkStealingDispatcher {
+impl RunTokioFuture for Dispatcher {
     fn run<F: 'static + Future<Item = (), Error = ()> + Send>(
         &self,
         f: F,

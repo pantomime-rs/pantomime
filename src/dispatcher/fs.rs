@@ -12,25 +12,20 @@ pub trait FutureDispatcherBridge {
         F: Future<Item = (), Error = ()> + 'static + Send;
 }
 
-impl<D> FutureDispatcherBridge for D
-where
-    D: AsRef<Dispatcher + Send + Sync>,
-{
+impl FutureDispatcherBridge for Dispatcher {
     fn spawn_future<F>(&self, future: F)
     where
         F: Future<Item = (), Error = ()> + 'static + Send,
     {
-        let d_ref = self.as_ref();
+        let dispatcher = self.clone();
 
-        let dispatcher = d_ref.safe_clone();
-
-        d_ref.execute(Box::new(move || {
+        self.execute(move || {
             dispatcher_spawn_continue(dispatcher, Arc::new(Mutex::new(executor::spawn(future))));
-        }));
+        });
     }
 }
 
-impl<F> future::Executor<F> for WorkStealingDispatcher
+impl<F> future::Executor<F> for Dispatcher
 where
     F: 'static + Future<Item = (), Error = ()> + Send,
 {
@@ -54,9 +49,8 @@ impl Notify for Notifier {
 /// is invoked with a notifier that will then recursively make progress until the
 /// future is ready.
 #[inline(always)]
-fn dispatcher_spawn_continue<D, F>(dispatcher: D, spawn: Arc<Mutex<executor::Spawn<F>>>)
+fn dispatcher_spawn_continue<F>(dispatcher: Dispatcher, spawn: Arc<Mutex<executor::Spawn<F>>>)
 where
-    D: AsRef<Dispatcher + Send + Sync> + Sync + Send + 'static,
     F: Future<Item = (), Error = ()> + 'static + Send,
 {
     let done = AtomicBool::new(false);
@@ -68,12 +62,11 @@ where
                 return;
             }
             let spawn = spawn.clone();
-            let d_ref = dispatcher.as_ref();
-            let d = d_ref.safe_clone();
+            let d = dispatcher.clone();
 
-            d_ref.execute(Box::new(move || {
+            dispatcher.execute(move || {
                 dispatcher_spawn_continue(d, spawn);
-            }));
+            });
         })
     };
 
