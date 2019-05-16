@@ -637,7 +637,7 @@ impl<M: 'static + Send> ActorRef<M> {
     fn shard_execute(&self, event: ActorShardEvent, dispatcher: Option<Dispatcher>) {
         let follow_up = match event {
             ActorShardEvent::Messaged => self.shard().messaged(),
-            ActorShardEvent::Scheduled => self.shard().scheduled(10), // @TODO throughput
+            ActorShardEvent::Scheduled(kernel) => self.shard().scheduled(kernel, 10), // @TODO throughput
         };
 
         if let Some(follow_up) = follow_up {

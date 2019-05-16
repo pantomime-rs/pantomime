@@ -1,13 +1,16 @@
 use super::*;
 use crate::dispatcher::{Dispatcher, Thunk};
 use crate::util::Cancellable;
-use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use crossbeam::atomic::AtomicCell;
 
-struct ActorShardKernel {
+enum KernelState {
+    Idle(ActorShardKernel),
+    Messaged,
+    Running
+}
+
+pub (in crate::actor) struct ActorShardKernel {
     mailbox: Mailbox<Box<dyn ActorWithMessage + Send + 'static>>,
-    running: Arc<AtomicBool>,
     system_mailbox: Mailbox<Box<dyn ActorWithSystemMessage + Send + 'static>>,
 }
 
@@ -15,17 +18,15 @@ impl ActorShardKernel {
     fn new() -> Self {
         Self {
             mailbox: Mailbox::new(CrossbeamSegQueueMailboxLogic::new()),
-            running: Arc::new(AtomicBool::new(false)),
             system_mailbox: Mailbox::new(CrossbeamSegQueueMailboxLogic::new()),
         }
     }
 }
 
 pub(in crate::actor) struct ActorShard {
-    kernel: Mutex<ActorShardKernel>,
-    mailbox_appender: MailboxAppender<Box<dyn ActorWithMessage + Send + 'static>>,
+    kernel: AtomicCell<KernelState>,
+    mailbox_appender: MailboxAppender<Box<ActorWithMessage + Send + 'static>>,
     system_mailbox_appender: MailboxAppender<Box<ActorWithSystemMessage + Send + 'static>>,
-    running: Arc<AtomicBool>,
     custom_dispatcher: Option<Dispatcher>,
 }
 
@@ -34,14 +35,11 @@ impl ActorShard {
         let mut kernel = ActorShardKernel::new();
         let mailbox_appender = kernel.mailbox.appender();
         let system_mailbox_appender = kernel.system_mailbox.appender();
-        let running = kernel.running.clone();
-        let kernel = Mutex::new(kernel);
 
         Self {
-            kernel,
+            kernel: AtomicCell::new(KernelState::Idle(kernel)),
             mailbox_appender,
             system_mailbox_appender,
-            running,
             custom_dispatcher: None,
         }
     }
@@ -75,24 +73,26 @@ impl ActorShard {
     }
 
     pub(in crate::actor) fn messaged(&self) -> Option<ActorShardEvent> {
-        if !self
-            .running
-            .compare_and_swap(false, true, Ordering::Acquire)
-        {
-            Some(ActorShardEvent::Scheduled)
-        } else {
-            None
+        match self.kernel.swap(KernelState::Running) {
+            KernelState::Idle(kernel) => {
+                Some(ActorShardEvent::Scheduled(kernel))
+            }
+
+            KernelState::Messaged | KernelState::Running => {
+                match self.kernel.swap(KernelState::Messaged) {
+                    KernelState::Idle(kernel) => {
+                        Some(ActorShardEvent::Scheduled(kernel))
+                    }
+
+                    KernelState::Messaged | KernelState::Running => {
+                        None
+                    }
+                }
+            }
         }
     }
 
-    pub(in crate::actor) fn scheduled(&self, throughput: usize) -> Option<ActorShardEvent> {
-        // note that in the typical case, acquiring the lock will not block
-        // as we're guarded behind a ready CAS. There can be rare conditions
-        // where it will though.
-        let mut kernel = self.kernel.lock();
-
-        self.running.store(false, Ordering::Release);
-
+    pub(in crate::actor) fn scheduled(&self, mut kernel: ActorShardKernel, throughput: usize) -> Option<ActorShardEvent> {
         let mut processed = 0;
 
         while let Some(system_msg) = kernel.system_mailbox.retrieve() {
@@ -127,16 +127,21 @@ impl ActorShard {
             }
         }
 
-        let cont = processed == throughput;
+        let cont = match self.kernel.swap(KernelState::Idle(kernel)) {
+            KernelState::Messaged => {
+                true
+            }
 
-        if self
-            .running
-            .compare_and_swap(true, false, Ordering::Release)
-            || cont
-        {
-            // we've been notified that it's time to execute again. even if
-            // we've stopped, we schedule for execution again. we'll change
-            // status on the next go, and then notify the watcher
+            KernelState::Running => {
+                false
+            }
+
+            KernelState::Idle(_) => {
+                panic!("pantomime bug: cannot be in Idle");
+            }
+        } || processed == throughput;
+
+        if cont {
             Some(ActorShardEvent::Messaged)
         } else {
             None

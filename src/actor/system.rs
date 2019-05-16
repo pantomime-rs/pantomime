@@ -127,11 +127,15 @@ impl ActorSystemContext {
             custom_mailbox_appender,
         }));
 
-        let mut contents = cell.contents.lock();
+        let mut contents = cell.contents.swap(None).expect("pantomime bug: cell#contents missing");
+
+        //let mut contents = cell.contents.lock();
 
         contents.store(cell.clone());
 
         contents.initialize(actor_ref.clone());
+
+        cell.contents.swap(Some(contents));
 
         actor_ref
     }
