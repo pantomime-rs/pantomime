@@ -11,6 +11,7 @@ mod system;
 #[cfg(test)]
 mod tests;
 
+use self::shard::ActorShardKernel;
 use self::actor_watcher::ActorWatcherMessage;
 use crate::cfg::*;
 use crate::dispatcher::Dispatcher;
@@ -114,5 +115,5 @@ trait ActorWithSystemMessage {
 
 enum ActorShardEvent {
     Messaged,
-    Scheduled,
+    Scheduled(ActorShardKernel),
 }

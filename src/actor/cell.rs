@@ -1,7 +1,7 @@
 use self::actor_watcher::ActorWatcherMessage;
 use super::*;
 use crate::mailbox::*;
-use parking_lot::Mutex;
+use crossbeam::atomic::AtomicCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -42,7 +42,8 @@ impl<M: 'static + Send> ActorWithMessage for ActorCellWithMessage<M> {
         // also note that the shard mutex is only acquired when
         // an AtomicBool is flipped, so contention on it is
         // minimal
-        let mut contents = self.actor_cell.contents.lock();
+
+        let mut contents = self.actor_cell.contents.swap(None).expect("pantomime bug: actor_cell#contents missing");
 
         match self.msg {
             ActorCellMessage::Message(msg) => {
@@ -73,6 +74,8 @@ impl<M: 'static + Send> ActorWithMessage for ActorCellWithMessage<M> {
 
             _ => {}
         }
+
+        self.actor_cell.contents.swap(Some(contents));
     }
 }
 
@@ -392,7 +395,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
 }
 
 pub(in crate::actor) struct ActorCell<M: 'static + Send> {
-    pub contents: Mutex<ActorCellContents<M>>,
+    pub contents: AtomicCell<Option<ActorCellContents<M>>>,
     pub parent_ref: SystemActorRef,
 }
 
@@ -404,7 +407,7 @@ impl<M: 'static + Send> ActorCell<M> {
         custom_mailbox: Option<Mailbox<M>>,
     ) -> Self {
         Self {
-            contents: Mutex::new(ActorCellContents::new(actor, context, custom_mailbox)),
+            contents: AtomicCell::new(Some(ActorCellContents::new(actor, context, custom_mailbox))),
 
             parent_ref,
         }
@@ -419,9 +422,7 @@ impl<M: 'static + Send> ActorCellWithSystemMessage<M> {
 
 impl<M: 'static + Send> ActorWithSystemMessage for ActorCellWithSystemMessage<M> {
     fn apply(self: Box<Self>) {
-        // note: as with ActorCellWithMessage, contention here is non-existent
-
-        let mut contents = self.actor_cell.contents.lock();
+        let mut contents = self.actor_cell.contents.swap(None).expect("pantomime bug: actor_cell#contents missing");
 
         contents.receive_system(*self.msg);
 
@@ -436,5 +437,7 @@ impl<M: 'static + Send> ActorWithSystemMessage for ActorCellWithSystemMessage<M>
 
             _ => {}
         }
+
+        self.actor_cell.contents.swap(Some(contents));
     }
 }
