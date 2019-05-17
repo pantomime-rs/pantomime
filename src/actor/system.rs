@@ -4,7 +4,9 @@ use crate::dispatcher::{Dispatcher, WorkStealingDispatcher};
 use crate::io::{IoCoordinator, IoCoordinatorMsg};
 use crossbeam::channel;
 use fern::colors::{Color, ColoredLevelConfig};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::io::{Error, ErrorKind};
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::{time, usize};
 
@@ -127,9 +129,10 @@ impl ActorSystemContext {
             custom_mailbox_appender,
         }));
 
-        let mut contents = cell.contents.swap(None).expect("pantomime bug: cell#contents missing");
-
-        //let mut contents = cell.contents.lock();
+        let mut contents = cell
+            .contents
+            .swap(None)
+            .expect("pantomime bug: cell#contents missing");
 
         contents.store(cell.clone());
 
@@ -413,12 +416,99 @@ impl ActiveActorSystem {
     }
 }
 
+struct ReaperMonitor<M, A: Actor<M>>
+where
+    M: 'static + Send,
+    A: 'static + Send,
+{
+    actor: Option<A>,
+    failed: Arc<AtomicBool>,
+    phantom: PhantomData<M>,
+}
+
+impl<M, A: Actor<M>> ReaperMonitor<M, A>
+where
+    M: 'static + Send,
+    A: 'static + Send,
+{
+    fn new(actor: A, failed: &Arc<AtomicBool>) -> Self {
+        Self {
+            actor: Some(actor),
+            failed: failed.clone(),
+            phantom: PhantomData,
+        }
+    }
+
+    fn failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst)
+    }
+}
+
+impl<M, A: Actor<M>> Actor<()> for ReaperMonitor<M, A>
+where
+    M: 'static + Send,
+    A: 'static + Send,
+{
+    fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+
+    fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+        match signal {
+            Signal::Started => {
+                ctx.spawn(
+                    self.actor
+                        .take()
+                        .expect("pantomime bug: ReaperMonitor cannot get actor"),
+                );
+            }
+
+            Signal::ActorStopped(_, StopReason::Failed) => {
+                self.failed.store(true, Ordering::Release);
+                ctx.system_context().drain();
+            }
+
+            Signal::ActorStopped(_, _) => {
+                ctx.system_context().drain();
+            }
+
+            _ => {}
+        }
+    }
+}
+
 impl ActorSystem {
-    pub fn new() -> Self {
+    /// Spawns an ActorSystem on the current thread. A reaper actor must
+    /// be provided whose job is to spawn other actors and optionally
+    /// watch them.
+    ///
+    /// Returns whether the reaper terminated successfully or not.
+    ///
+    /// A suggested pattern is to spawn and watch all of your top level actors
+    /// with the reaper, and react to any termination signals of those actors
+    /// via the `receive_signal` method.
+    pub fn spawn<M: 'static + Send, A: 'static + Send>(actor: A) -> Result<(), Error>
+    where
+        A: Actor<M>,
+    {
+        let mut system = ActorSystem::new().start();
+
+        let failed = Arc::new(AtomicBool::new(false));
+
+        system.spawn(ReaperMonitor::new(actor, &failed));
+
+        system.join();
+
+        if failed.load(Ordering::Acquire) {
+            Err(Error::new(ErrorKind::Other, "TODO"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn new() -> Self {
         Self {}
     }
 
-    pub fn start(self) -> ActiveActorSystem {
+    fn start(self) -> ActiveActorSystem {
         INITIALIZE_ONCE.call_once(|| {
             if let Some(log_err) = Self::setup_logger().err() {
                 panic!("pantomime bug: cannot initialize logger; {}", log_err);

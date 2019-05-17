@@ -19,7 +19,6 @@ pub enum AsyncAction<B, Msg> {
     Push(B),
 }
 
-
 /// `DetachedLogic` describes transformations of a stream with one input and
 /// one output.
 ///
@@ -92,7 +91,6 @@ enum DetachedActorMsg<A, B, Msg> {
     Cancelled(Box<GenConsumer<B> + 'static + Send>),
     Attached(Box<GenConsumer<B> + 'static + Send>),
 }
-
 
 struct DetachedActor<A, B, Msg, Logic: DetachedLogic<A, B, Msg>>
 where
@@ -249,7 +247,10 @@ where
                     self.demand.fetch_add(1, Ordering::SeqCst);
 
                     if let Some(producer) = self.producer.take() {
-                        context.system_context().dispatcher().execute_trampoline(producer.pull());
+                        context
+                            .system_context()
+                            .dispatcher()
+                            .execute_trampoline(producer.pull());
                     }
                 }
             }
@@ -306,18 +307,24 @@ where
                     self.demand.fetch_add(1, Ordering::SeqCst);
 
                     if let Some(producer) = self.producer.take() {
-                        context.system_context().dispatcher().execute_trampoline(producer.pull());
+                        context
+                            .system_context()
+                            .dispatcher()
+                            .execute_trampoline(producer.pull());
                     }
 
                     self.pulled = false;
                     self.buffer.push_back(el);
-                    self.logic.produced(self.buffer.pop_front().expect("pantomime bug: just pushed, but buffer is empty"))
+                    self.logic.produced(
+                        self.buffer
+                            .pop_front()
+                            .expect("pantomime bug: just pushed, but buffer is empty"),
+                    )
                 } else {
                     self.buffer.push_back(el);
 
                     None
                 };
-
 
                 if let Some(reply) = reply {
                     context

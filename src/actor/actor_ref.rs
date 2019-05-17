@@ -191,9 +191,11 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     ///
     /// If the supplied actor has already failed or stopped, a signal will
     /// still be delivered, but the reason will be unknown.
-    pub fn watch<N: 'static + Send, A: AsRef<ActorRef<N>>>(&mut self, actor_ref: A) {
-        let actor_ref = actor_ref.as_ref();
-
+    ///
+    /// Note that it is not necessary to watch your own direct children
+    /// as they are automatically watched. Additionally, a parent is guaranteed
+    /// to know if its child stopped due to failure.
+    pub fn watch<N: 'static + Send>(&mut self, actor_ref: &ActorRef<N>) {
         match self.system_context().watcher_ref() {
             Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
                 self.actor_ref().system_ref(),
@@ -241,6 +243,10 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     /// to this context. An `ActorRef` is returned, which
     /// can be used to message the child and manage its
     /// lifecycle.
+    ///
+    /// The actor will be watched, so this actor (the parent)
+    /// is guaranteed to receive a signal when the child
+    /// stops or fails.
     pub fn spawn<A: 'static + Send, N: 'static + Send>(&mut self, actor: A) -> ActorRef<N>
     where
         A: Actor<N>,

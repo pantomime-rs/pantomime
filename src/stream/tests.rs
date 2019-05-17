@@ -5,6 +5,15 @@ mod tests {
 
     #[test]
     fn test_sink_for_each_watch_termination() {
+        struct TestReaper;
+
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {}
+            }
+        }
         let mut system = ActorSystem::new().start();
         let mut probe = system.spawn_probe::<Option<()>>();
         let probe_ref = probe.actor_ref.clone();
@@ -82,7 +91,7 @@ mod tests {
                     break;
                 }
 
-                _ => ()
+                _ => (),
             }
         }
 
@@ -237,10 +246,12 @@ mod tests {
 
         println!("yea!");
 
-        a.merge(b).run_with(Sinks::for_each(|n| {
-            println!("received: {}", n);
-        }), &system.context);
-
+        a.merge(b).run_with(
+            Sinks::for_each(|n| {
+                println!("received: {}", n);
+            }),
+            &system.context,
+        );
 
         //system.context.stop();
         system.join();

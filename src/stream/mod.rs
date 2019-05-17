@@ -16,8 +16,8 @@ use crate::actor::ActorSystemContext;
 use crate::dispatcher::{Dispatcher, Trampoline};
 use filter::Filter;
 use merge::Merge;
-use sink::tell::TellEvent;
 use oxidized::{Consumer, Producer};
+use sink::tell::TellEvent;
 
 pub struct StreamContext {
     dispatcher: Dispatcher,
@@ -99,10 +99,13 @@ where
     }
 
     #[must_use]
-    fn merge<Other: Stage<A>>(self, other: Other) -> Detached<A, A, TellEvent<A>, Merge<A, Other>, Self, Disconnected>
+    fn merge<Other: Stage<A>>(
+        self,
+        other: Other,
+    ) -> Detached<A, A, TellEvent<A>, Merge<A, Other>, Self, Disconnected>
     where
         A: 'static + Send,
-        Other: 'static + Send
+        Other: 'static + Send,
     {
         Detached::new(Merge::new(other))(self)
     }
@@ -205,6 +208,15 @@ mod temp_tests {
 
     #[test]
     fn test_for_each_add() {
+        struct TestReaper;
+
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {}
+            }
+        }
         if true {
             return;
         };
@@ -247,6 +259,15 @@ mod temp_tests {
 
     #[test]
     fn test() {
+        struct TestReaper;
+
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {}
+            }
+        }
         if true {
             return;
         };
@@ -273,6 +294,15 @@ mod temp_tests {
 
     #[test]
     fn test2() {
+        struct TestReaper;
+
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {}
+            }
+        }
         if true {
             return;
         };
@@ -301,6 +331,15 @@ mod temp_tests {
 
     #[test]
     fn test3() {
+        struct TestReaper;
+
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {}
+            }
+        }
         if true {
             return;
         }
