@@ -15,7 +15,7 @@ mod tests {
                     let mut probe = ctx.spawn_probe::<Option<()>>();
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::iterator(0..=10000)
+                    let stream = Sources::iterator(0..=10000)
                         .to(Sinks::for_each(move |_| ()))
                         .watch_termination(move |terminated| match terminated {
                             Terminated::Completed => {
@@ -25,8 +25,9 @@ mod tests {
                             Terminated::Failed(_) => {
                                 probe_ref.tell(None);
                             }
-                        })
-                        .run(&ctx.system_context());
+                        });
+
+                    ctx.spawn_stream(stream);
 
                     assert_eq!(probe.receive(Duration::from_secs(10)), Some(()));
 
@@ -50,7 +51,7 @@ mod tests {
                     let mut probe = ctx.spawn_probe::<Option<usize>>();
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::iterator(1..=10000)
+                    let stream = Sources::iterator(1..=10000)
                         .to(Sinks::last())
                         .watch_termination(move |terminated, last| match terminated {
                             Terminated::Completed => {
@@ -60,8 +61,9 @@ mod tests {
                             Terminated::Failed(_) => {
                                 probe_ref.tell(None);
                             }
-                        })
-                        .run(&ctx.system_context());
+                        });
+
+                    ctx.spawn_stream(stream);
 
                     assert_eq!(probe.receive(Duration::from_secs(10)), Some(10000));
 
@@ -87,9 +89,9 @@ mod tests {
                         .with_poll_interval(Duration::from_micros(10));
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::iterator(1..=10000)
-                        .to(Sinks::tell(probe_ref))
-                        .run(&ctx.system_context());
+                    let stream = Sources::iterator(1..=10000).to(Sinks::tell(probe_ref));
+
+                    ctx.spawn_stream(stream);
 
                     let mut a = 0;
 
@@ -134,7 +136,7 @@ mod tests {
                     let mut probe = ctx.spawn_probe::<bool>();
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::iterator(1..=10000)
+                    let stream = Sources::iterator(1..=10000)
                         .to(Sinks::cancel())
                         .watch_termination(move |terminated| match terminated {
                             Terminated::Completed => {
@@ -144,8 +146,9 @@ mod tests {
                             Terminated::Failed(_) => {
                                 probe_ref.tell(false);
                             }
-                        })
-                        .run(&ctx.system_context());
+                        });
+
+                    ctx.spawn_stream(stream);
 
                     assert_eq!(probe.receive(Duration::from_secs(10)), true);
 
@@ -169,7 +172,7 @@ mod tests {
                     let mut probe = ctx.spawn_probe::<Option<usize>>();
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::iterator(1..=10000)
+                    let stream = Sources::iterator(1..=10000)
                         .to(Sinks::first())
                         .watch_termination(move |terminated, first| match terminated {
                             Terminated::Completed => {
@@ -179,8 +182,9 @@ mod tests {
                             Terminated::Failed(_) => {
                                 probe_ref.tell(None);
                             }
-                        })
-                        .run(&ctx.system_context());
+                        });
+
+                    ctx.spawn_stream(stream);
 
                     assert_eq!(probe.receive(Duration::from_secs(10)), Some(1));
 
@@ -204,9 +208,8 @@ mod tests {
                     let mut probe = ctx.spawn_probe::<Option<usize>>();
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::empty()
-                        .to(Sinks::last())
-                        .watch_termination(move |terminated, last| match terminated {
+                    let stream = Sources::empty().to(Sinks::last()).watch_termination(
+                        move |terminated, last| match terminated {
                             Terminated::Completed => {
                                 probe_ref.tell(last);
                             }
@@ -214,8 +217,10 @@ mod tests {
                             Terminated::Failed(_) => {
                                 probe_ref.tell(None);
                             }
-                        })
-                        .run(&ctx.system_context());
+                        },
+                    );
+
+                    ctx.spawn_stream(stream);
 
                     assert_eq!(probe.receive(Duration::from_secs(10)), None);
 
@@ -241,7 +246,7 @@ mod tests {
                     let mut probe = ctx.spawn_probe::<Option<u64>>();
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::iterator(1..=u64::MAX)
+                    let stream = Sources::iterator(1..=u64::MAX)
                         .take_while(|n: &u64| *n <= 10000)
                         .to(Sinks::last())
                         .watch_termination(move |terminated, last| match terminated {
@@ -252,8 +257,9 @@ mod tests {
                             Terminated::Failed(_) => {
                                 probe_ref.tell(None);
                             }
-                        })
-                        .run(&ctx.system_context());
+                        });
+
+                    ctx.spawn_stream(stream);
 
                     assert_eq!(probe.receive(Duration::from_secs(10)), Some(10000));
 
@@ -279,7 +285,7 @@ mod tests {
                     let mut probe = ctx.spawn_probe::<Option<u64>>();
                     let probe_ref = probe.actor_ref.clone();
 
-                    Sources::iterator(1..=u64::MAX)
+                    let stream = Sources::iterator(1..=u64::MAX)
                         .take_while(|n: &u64| *n <= 10_000_000)
                         .map(|n| n * 2)
                         .filter(|n| n % 27 == 0)
@@ -293,8 +299,9 @@ mod tests {
                             Terminated::Failed(_) => {
                                 probe_ref.tell(None);
                             }
-                        })
-                        .run(&ctx.system_context());
+                        });
+
+                    ctx.spawn_stream(stream);
 
                     assert_eq!(probe.receive(Duration::from_secs(10)), Some(59999940));
 
@@ -319,14 +326,11 @@ mod tests {
                     let a = Sources::iterator(0..=99);
                     let b = Sources::iterator(100..=199);
 
-                    println!("yea!");
+                    ctx.spawn_stream(a.merge(b).to(Sinks::for_each(|n| {
+                        println!("received: {}", n);
+                    })));
 
-                    a.merge(b).run_with(
-                        Sinks::for_each(|n| {
-                            println!("received: {}", n);
-                        }),
-                        &ctx.system_context(),
-                    );
+                    println!("yea!");
 
                     ctx.actor_ref().drain();
                 }
