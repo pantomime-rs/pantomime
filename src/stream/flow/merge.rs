@@ -75,14 +75,13 @@ where
         context: &StreamContext,
         actor_ref: &ActorRef<AsyncAction<A, TellEvent<A>>>,
     ) -> Option<AsyncAction<A, TellEvent<A>>> {
-        let source = self.source.take().expect("cannot call Merge#attach twice");
+        let stream = self
+            .source
+            .take()
+            .expect("cannot call Merge#attach twice")
+            .to(Sinks::tell(actor_ref.convert(|m| AsyncAction::Forward(m))));
 
-        source.run_with(
-            Sinks::tell(actor_ref.convert(|m| AsyncAction::Forward(m))),
-            &context.system_context,
-        );
-
-        println!("running other");
+        context.spawn_stream(stream);
 
         None
     }
