@@ -260,6 +260,7 @@ impl DetachedLogic<Payload, (), TcpSinkMsg> for TcpSink {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,3 +324,4 @@ mod tests {
         system.context.drain();
     }
 }
+*/

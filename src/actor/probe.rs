@@ -13,6 +13,7 @@ use std::{thread, time};
 pub struct Probe<M: 'static + Send> {
     pub actor_ref: ActorRef<M>,
     mailbox: Mailbox<M>,
+    poll_interval: time::Duration
 }
 
 pub trait SpawnProbe {
@@ -31,7 +32,14 @@ impl<M: 'static + Send> Probe<M> {
 
         let actor_ref = system.spawn(probe_actor);
 
-        Self { actor_ref, mailbox }
+        Self { actor_ref, mailbox, poll_interval: time::Duration::from_millis(10) }
+    }
+
+    /// Sets the poll interval for this probe. This defines the time that the probe
+    /// will sleep when its mailbox is empty.
+    pub fn with_poll_interval(mut self, poll_interval: time::Duration) -> Self {
+        self.poll_interval = poll_interval;
+        self
     }
 
     /// Receive a message from the mailbox, waiting upto the specified
@@ -50,7 +58,7 @@ impl<M: 'static + Send> Probe<M> {
             } else if start.elapsed() > limit {
                 panic!("provided function hasn't returned true within {:?}", limit);
             } else {
-                thread::sleep(time::Duration::from_millis(30));
+                thread::sleep(self.poll_interval);
             }
         }
     }

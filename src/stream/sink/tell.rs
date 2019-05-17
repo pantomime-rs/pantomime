@@ -99,12 +99,18 @@ where
     ) -> Option<AsyncAction<(), TellCommand>> {
         self.logic_ref = actor_ref.clone();
 
+        self.dest_ref.tell(TellEvent::Started(
+            TellHandle::new(self.logic_ref.clone()),
+        ));
+
         None
     }
 
     fn forwarded(&mut self, msg: TellCommand) -> Option<AsyncAction<(), TellCommand>> {
         match msg {
-            TellCommand::Pull => Some(AsyncAction::Pull),
+            TellCommand::Pull => {
+                Some(AsyncAction::Pull)
+            }
 
             TellCommand::Cancel => Some(AsyncAction::Cancel),
         }
