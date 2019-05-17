@@ -12,7 +12,7 @@ pub use flow::*;
 pub use sink::*;
 pub use source::*;
 
-use crate::actor::ActorSystemContext;
+use crate::actor::{ActorContext, ActorSystemContext};
 use crate::dispatcher::{Dispatcher, Trampoline};
 use filter::Filter;
 use merge::Merge;
@@ -148,14 +148,6 @@ where
     fn to<Down: Sink<A>, F: FnOnce(Self) -> Down>(self, sink: F) -> Down {
         sink(self)
     }
-
-    fn run_with<Down: Sink<A>, F: FnOnce(Self) -> Down>(
-        self,
-        sink: F,
-        context: &ActorSystemContext,
-    ) {
-        self.to(sink).run(context)
-    }
 }
 
 pub trait Source<A>: Stage<A>
@@ -168,16 +160,6 @@ pub trait Sink<A>: Consumer<A>
 where
     A: 'static + Send,
 {
-    fn run(self, context: &ActorSystemContext) {
-        let dispatcher = context.dispatcher();
-        let inner_dispatcher = dispatcher.clone();
-        let stream_context = StreamContext::new(&dispatcher, &context);
-
-        dispatcher.execute(move || {
-            inner_dispatcher.execute_trampoline(self.start(&stream_context));
-        });
-    }
-
     fn start(self, stream_context: &StreamContext) -> Trampoline;
 }
 
@@ -186,6 +168,48 @@ where
     A: 'static + Send,
     B: 'static + Send,
 {
+}
+
+pub trait SpawnStream {
+    fn spawn_stream<M, Stream: Sink<M>>(&self, stream: Stream)
+    where
+        M: 'static + Send,
+        Stream: 'static + Send;
+}
+
+impl<N> SpawnStream for ActorContext<N>
+where
+    N: 'static + Send,
+{
+    fn spawn_stream<M, Stream: Sink<M>>(&self, stream: Stream)
+    where
+        M: 'static + Send,
+        Stream: 'static + Send,
+    {
+        let context = self.system_context();
+        let dispatcher = context.dispatcher();
+        let inner_dispatcher = dispatcher.clone();
+        let stream_context = StreamContext::new(&dispatcher, &context);
+
+        dispatcher.execute(move || {
+            inner_dispatcher.execute_trampoline(stream.start(&stream_context));
+        });
+    }
+}
+
+impl SpawnStream for StreamContext {
+    fn spawn_stream<M, Stream: Sink<M>>(&self, stream: Stream)
+    where
+        M: 'static + Send,
+        Stream: 'static + Send,
+    {
+        let inner_dispatcher = self.dispatcher.clone();
+        let stream_context = StreamContext::new(&self.dispatcher, &self.system_context);
+
+        self.dispatcher.execute(move || {
+            inner_dispatcher.execute_trampoline(stream.start(&stream_context));
+        });
+    }
 }
 
 #[cfg(test)]
@@ -224,7 +248,7 @@ mod temp_tests {
                         let completed = completed.clone();
                         let sum = sum.clone();
 
-                        Iter::new(iterator)
+                        let stream = Iter::new(iterator)
                             .map(spin)
                             .detach()
                             .map(spin)
@@ -239,8 +263,9 @@ mod temp_tests {
                                 Terminated::Failed(_) => {
                                     panic!("unexpected");
                                 }
-                            })
-                            .run(&ctx.system_context());
+                            });
+
+                        ctx.spawn_stream(stream);
                     }
 
                     loop {
@@ -271,12 +296,15 @@ mod temp_tests {
                     let completed = Arc::new(AtomicBool::new(false));
                     let sum = Arc::new(AtomicUsize::new(0));
 
-                    Iter::new(iterator).map(spin).detach().map(spin).run_with(
-                        ForEach::new(|n| {
+                    let stream = Iter::new(iterator)
+                        .map(spin)
+                        .detach()
+                        .map(spin)
+                        .to(ForEach::new(|n| {
                             println!("sink received {}", n);
-                        }),
-                        &ctx.system_context(),
-                    );
+                        }));
+
+                    ctx.spawn_stream(stream);
 
                     loop {
                         // @TODO remove
@@ -314,9 +342,7 @@ mod temp_tests {
 
                     let my_sink = Sinks::for_each(|n: usize| println!("sink received {}", n));
 
-                    my_source
-                        .via(my_flow)
-                        .run_with(my_sink, &ctx.system_context());
+                    ctx.spawn_stream(my_source.via(my_flow).to(my_sink));
 
                     loop {
                         // @TODO remove
@@ -360,9 +386,7 @@ mod temp_tests {
 
                     let my_sink = Sinks::ignore();
 
-                    my_source
-                        .via(my_flow)
-                        .run_with(my_sink, &ctx.system_context());
+                    ctx.spawn_stream(my_source.via(my_flow).to(my_sink));
 
                     loop {
                         // @TODO remove
