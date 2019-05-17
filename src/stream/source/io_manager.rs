@@ -252,6 +252,7 @@ impl DetachedLogic<Datagram, (), UdpSinkMsg> for UdpSink {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,3 +323,4 @@ mod tests {
         system.context.drain();
     }
 }
+*/

@@ -165,7 +165,7 @@ enum PollerEvent {
 }
 
 pub(crate) struct ActivePoller {
-    pub poll: Arc<Poll>,
+    pub(crate) poll: Arc<Poll>,
     sender: channel::Sender<PollerEvent>,
 }
 
@@ -178,7 +178,7 @@ impl ActivePoller {
 }
 
 pub(crate) struct Poller {
-    pub poll: Arc<Poll>,
+    pub(crate) poll: Arc<Poll>,
 }
 
 impl Poller {

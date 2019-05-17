@@ -3,6 +3,11 @@ name = "pantomime"
 version = "0.1.0"
 authors = ["Jason Longshore <hello@jasonlongshore.com>"]
 edition = "2018"
+readme = "README.md"
+repository = "https://github.com/pantomime-rs/pantomime"
+keywords = ["actor", "streams", "streaming", "actors", "concurrency", "async", "asynchronous"]
+homepage = "https://www.pantomime.dev/"
+description = "A library that empowers you to build concurrent, stateful, and stream-oriented programs with ease"
 
 [dependencies]
 atty = "0.2"

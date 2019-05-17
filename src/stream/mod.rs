@@ -15,6 +15,8 @@ pub use source::*;
 use crate::actor::ActorSystemContext;
 use crate::dispatcher::{Dispatcher, Trampoline};
 use filter::Filter;
+use merge::Merge;
+use sink::tell::TellEvent;
 use oxidized::{Consumer, Producer};
 
 pub struct StreamContext {
@@ -94,6 +96,15 @@ where
         F: 'static + Send,
     {
         Attached::new(Map::new(map))(self)
+    }
+
+    #[must_use]
+    fn merge<Other: Stage<A>>(self, other: Other) -> Detached<A, A, TellEvent<A>, Merge<A, Other>, Self, Disconnected>
+    where
+        A: 'static + Send,
+        Other: 'static + Send
+    {
+        Detached::new(Merge::new(other))(self)
     }
 
     #[must_use]
