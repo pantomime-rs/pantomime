@@ -190,7 +190,7 @@ where
 
 #[cfg(test)]
 mod temp_tests {
-    use crate::actor::ActorSystem;
+    use crate::actor::*;
     use crate::stream::flow::detached::Detached;
     use crate::stream::for_each::ForEach;
     use crate::stream::iter::Iter;
@@ -214,47 +214,47 @@ mod temp_tests {
             fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
             fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {}
+                if let Signal::Started = signal {
+                    let iterator = 0..2000;
+
+                    let completed = Arc::new(AtomicBool::new(false));
+                    let sum = Arc::new(AtomicUsize::new(0));
+
+                    {
+                        let completed = completed.clone();
+                        let sum = sum.clone();
+
+                        Iter::new(iterator)
+                            .map(spin)
+                            .detach()
+                            .map(spin)
+                            .to(ForEach::new(move |n| {
+                                sum.fetch_add(n, Ordering::SeqCst);
+                            }))
+                            .watch_termination(move |terminated| match terminated {
+                                Terminated::Completed => {
+                                    completed.store(true, Ordering::SeqCst);
+                                }
+
+                                Terminated::Failed(_) => {
+                                    panic!("unexpected");
+                                }
+                            })
+                            .run(&ctx.system_context());
+                    }
+
+                    loop {
+                        // @TODO remove
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
             }
         }
         if true {
             return;
         };
 
-        let mut system = ActorSystem::new().start();
-
-        let iterator = 0..2000;
-
-        let completed = Arc::new(AtomicBool::new(false));
-        let sum = Arc::new(AtomicUsize::new(0));
-
-        {
-            let completed = completed.clone();
-            let sum = sum.clone();
-
-            Iter::new(iterator)
-                .map(spin)
-                .detach()
-                .map(spin)
-                .to(ForEach::new(move |n| {
-                    sum.fetch_add(n, Ordering::SeqCst);
-                }))
-                .watch_termination(move |terminated| match terminated {
-                    Terminated::Completed => {
-                        completed.store(true, Ordering::SeqCst);
-                    }
-
-                    Terminated::Failed(_) => {
-                        panic!("unexpected");
-                    }
-                })
-                .run(&system.context);
-        }
-
-        loop {
-            // @TODO remove
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-        }
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 
     #[test]
@@ -265,31 +265,32 @@ mod temp_tests {
             fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
             fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {}
+                if let Signal::Started = signal {
+                    let iterator = 0..2000;
+
+                    let completed = Arc::new(AtomicBool::new(false));
+                    let sum = Arc::new(AtomicUsize::new(0));
+
+                    Iter::new(iterator).map(spin).detach().map(spin).run_with(
+                        ForEach::new(|n| {
+                            println!("sink received {}", n);
+                        }),
+                        &ctx.system_context(),
+                    );
+
+                    loop {
+                        // @TODO remove
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
             }
         }
+
         if true {
             return;
         };
 
-        let mut system = ActorSystem::new().start();
-
-        let iterator = 0..2000;
-
-        let completed = Arc::new(AtomicBool::new(false));
-        let sum = Arc::new(AtomicUsize::new(0));
-
-        Iter::new(iterator).map(spin).detach().map(spin).run_with(
-            ForEach::new(|n| {
-                println!("sink received {}", n);
-            }),
-            &system.context,
-        );
-
-        loop {
-            // @TODO remove
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-        }
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 
     #[test]
@@ -300,33 +301,35 @@ mod temp_tests {
             fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
             fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {}
+                if let Signal::Started = signal {
+                    let my_source = Sources::iterator(0..10_000);
+
+                    fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, usize> {
+                        upstream
+                            .filter(|&n| n % 3 == 0)
+                            .filter(|&n| n % 5 == 0)
+                            .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
+                            .map(|n| n * 2)
+                    }
+
+                    let my_sink = Sinks::for_each(|n: usize| println!("sink received {}", n));
+
+                    my_source
+                        .via(my_flow)
+                        .run_with(my_sink, &ctx.system_context());
+
+                    loop {
+                        // @TODO remove
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
             }
         }
         if true {
             return;
         };
 
-        let mut system = ActorSystem::new().start();
-
-        let my_source = Sources::iterator(0..10_000);
-
-        fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, usize> {
-            upstream
-                .filter(|&n| n % 3 == 0)
-                .filter(|&n| n % 5 == 0)
-                .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
-                .map(|n| n * 2)
-        }
-
-        let my_sink = Sinks::for_each(|n: usize| println!("sink received {}", n));
-
-        my_source.via(my_flow).run_with(my_sink, &system.context);
-
-        loop {
-            // @TODO remove
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-        }
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 
     #[test]
@@ -337,38 +340,42 @@ mod temp_tests {
             fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
             fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {}
+                if let Signal::Started = signal {
+                    let my_source = Sources::iterator(0..100_000_000);
+
+                    fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, ()> {
+                        upstream
+                            .filter(|&n| n % 3 == 0)
+                            .filter(|&n| n % 5 == 0)
+                            .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
+                            .map(|n| n * 2)
+                            .map(|n| {
+                                if false && n % 1_000_000 == 0 {
+                                    println!("n: {}", n)
+                                } else if n == 399999960 {
+                                    std::process::exit(0);
+                                }
+                            })
+                    }
+
+                    let my_sink = Sinks::ignore();
+
+                    my_source
+                        .via(my_flow)
+                        .run_with(my_sink, &ctx.system_context());
+
+                    loop {
+                        // @TODO remove
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
             }
         }
+
         if true {
             return;
         }
-        let mut system = ActorSystem::new().start();
 
-        let my_source = Sources::iterator(0..100_000_000);
-
-        fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, ()> {
-            upstream
-                .filter(|&n| n % 3 == 0)
-                .filter(|&n| n % 5 == 0)
-                .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
-                .map(|n| n * 2)
-                .map(|n| {
-                    if false && n % 1_000_000 == 0 {
-                        println!("n: {}", n)
-                    } else if n == 399999960 {
-                        std::process::exit(0);
-                    }
-                })
-        }
-
-        let my_sink = Sinks::ignore();
-
-        my_source.via(my_flow).run_with(my_sink, &system.context);
-
-        loop {
-            // @TODO remove
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-        }
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 }
