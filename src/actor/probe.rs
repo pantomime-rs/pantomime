@@ -150,20 +150,10 @@ mod tests {
 
                     assert_eq!(probe.receive(time::Duration::from_secs(10)), 8);
 
-                    drop(probe);
+                    // @TODO can we improve this test to assert that dropping
+                    // the probe stops the actor?
 
-                    {
-                        let dispatcher = ctx.system_context().dispatcher();
-                        let context = system.context.clone();
-
-                        thread::spawn(move || {
-                            let c = context.clone();
-
-                            context.dispatcher().execute(move || {
-                                c.drain();
-                            });
-                        });
-                    }
+                    ctx.actor_ref().drain();
                 }
             }
         }

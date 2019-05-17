@@ -119,14 +119,12 @@ mod test_posix_signals {
             fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
             fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {}
+                if let Signal::Started = signal {
+                    ctx.spawn(MyActor);
+                }
             }
         }
 
-        let mut system = ActorSystem::new().start();
-
-        system.spawn(MyActor);
-
-        system.join();
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 }
