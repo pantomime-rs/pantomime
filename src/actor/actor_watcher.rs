@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 pub(in crate::actor) enum ActorWatcherMessage {
     Subscribe(SystemActorRef, SystemActorRef),
-    Started(usize, SystemActorRef),
+    Started(usize, SystemActorRef, SystemActorRef),
     Stopped(SystemActorRef),
     Failed(SystemActorRef),
 
@@ -79,10 +79,17 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                 }
             }
 
-            ActorWatcherMessage::Started(id, system_ref) => {
+            ActorWatcherMessage::Started(id, parent_system_ref, system_ref) => {
+                system_ref.tell_system(SystemMsg::Signaled(Signal::Started));
+
                 self.system_refs.insert(id);
 
-                system_ref.tell_system(SystemMsg::Signaled(Signal::Started));
+                let entry = self
+                    .watchers
+                    .entry(system_ref.id)
+                    .or_insert_with(|| Vec::with_capacity(1));
+
+                entry.push(parent_system_ref);
 
                 if system_ref.actor_type() == ActorType::Root {
                     self.root_system_refs.insert(id, system_ref);

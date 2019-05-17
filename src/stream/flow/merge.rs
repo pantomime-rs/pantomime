@@ -34,7 +34,7 @@ where
             pulled_two: false,
             handle: None,
             buffer: [None, None],
-            phantom: PhantomData
+            phantom: PhantomData,
         }
     }
 

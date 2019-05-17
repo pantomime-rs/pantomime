@@ -43,7 +43,11 @@ impl<M: 'static + Send> ActorWithMessage for ActorCellWithMessage<M> {
         // an AtomicBool is flipped, so contention on it is
         // minimal
 
-        let mut contents = self.actor_cell.contents.swap(None).expect("pantomime bug: actor_cell#contents missing");
+        let mut contents = self
+            .actor_cell
+            .contents
+            .swap(None)
+            .expect("pantomime bug: actor_cell#contents missing");
 
         match self.msg {
             ActorCellMessage::Message(msg) => {
@@ -130,6 +134,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
 
             watcher_ref.tell(ActorWatcherMessage::Started(
                 actor_ref.id(),
+                actor_ref.parent_ref(),
                 actor_ref.system_ref(),
             ));
         } else {
@@ -422,7 +427,11 @@ impl<M: 'static + Send> ActorCellWithSystemMessage<M> {
 
 impl<M: 'static + Send> ActorWithSystemMessage for ActorCellWithSystemMessage<M> {
     fn apply(self: Box<Self>) {
-        let mut contents = self.actor_cell.contents.swap(None).expect("pantomime bug: actor_cell#contents missing");
+        let mut contents = self
+            .actor_cell
+            .contents
+            .swap(None)
+            .expect("pantomime bug: actor_cell#contents missing");
 
         contents.receive_system(*self.msg);
 
