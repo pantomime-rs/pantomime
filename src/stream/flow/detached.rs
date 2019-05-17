@@ -19,6 +19,7 @@ pub enum AsyncAction<B, Msg> {
     Push(B),
 }
 
+
 /// `DetachedLogic` describes transformations of a stream with one input and
 /// one output.
 ///
@@ -30,6 +31,8 @@ pub enum AsyncAction<B, Msg> {
 ///
 /// In general, a logic responds and forwards demand signals from downstream
 /// and handles incoming production signals from upstream.
+///
+/// @TODO think about logic requiring cancel of upstream, does that happen?
 pub trait DetachedLogic<A, B, Msg>
 where
     A: 'static + Send,
@@ -90,6 +93,7 @@ enum DetachedActorMsg<A, B, Msg> {
     Attached(Box<GenConsumer<B> + 'static + Send>),
 }
 
+
 struct DetachedActor<A, B, Msg, Logic: DetachedLogic<A, B, Msg>>
 where
     A: 'static + Send,
@@ -111,6 +115,8 @@ where
     consumer: Option<Box<GenConsumer<B> + 'static + Send>>,
     cancelled: bool,
     completed: bool,
+    upstream_completed: bool,
+    upstream_failed: Option<Error>,
     pulled: bool,
     failed: Option<Error>,
     stream_context: StreamContext,
@@ -139,6 +145,8 @@ where
             consumer: None,
             cancelled: false,
             completed: false,
+            upstream_completed: false,
+            upstream_failed: None,
             pulled: false,
             failed: None,
             stream_context: stream_context.clone(),
@@ -221,30 +229,39 @@ where
                             .actor_ref()
                             .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
                     }
+                } else if self.upstream_completed {
+                    if let Some(reply) = self.logic.completed() {
+                        context
+                            .actor_ref()
+                            .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
+                    }
+                } else if let Some(error) = self.upstream_failed.take() {
+                    if let Some(reply) = self.logic.failed(error) {
+                        context
+                            .actor_ref()
+                            .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
+                    }
                 } else {
                     self.pulled = true;
+                }
+
+                if self.buffer_size > 0 {
+                    self.demand.fetch_add(1, Ordering::SeqCst);
+
+                    if let Some(producer) = self.producer.take() {
+                        context.system_context().dispatcher().execute_trampoline(producer.pull());
+                    }
                 }
             }
 
             DetachedActorMsg::ReceivedAsyncAction(AsyncAction::Push(elem)) => {
                 let consumer = self.consumer.take().expect("cannot push without pull");
 
-                let dispatcher = context.system_context().dispatcher();
-
-                if self.buffer_size > 0 {
-                    self.demand.fetch_add(1, Ordering::SeqCst);
-
-                    if let Some(producer) = self.producer.take() {
-                        dispatcher.execute_trampoline(producer.pull());
-                    }
-                }
-
                 // in general, the streaming model expressed in this library is driven
                 // from downstream demand, i.e. it's a pull-based model. there are
                 // some optimizations taken to turn it into a "push-pull" model
                 // but fundamentally this is always driven from downstream demand,
-                // so it still remains pull based. i feel this is also true for the effort
-                // that inspired this library, reactive streams.
+                // so it still remains pull based.
                 //
                 // because of this, we can reason that a LIFO model for execution is
                 // the best, because it biases execution towards downstream which is
@@ -253,7 +270,7 @@ where
                 // default system dispatcher, which uses a FIFO scheme for fairness
                 // between disparate actors
 
-                // @TODO
+                // @TODO use diff dispatcher
                 context
                     .system_context()
                     .dispatcher()
@@ -274,7 +291,6 @@ where
                         .dispatcher()
                         .execute_trampoline(producer.pull());
                 } else {
-                    println!("storing");
                     // empty buffer, meaning we just wish to wait for
                     // cancellation. this is particularly useful for
                     // the sources that are powered by detached logic
@@ -287,14 +303,21 @@ where
                     self.pulled = false;
                     self.logic.produced(el)
                 } else if self.pulled {
+                    self.demand.fetch_add(1, Ordering::SeqCst);
+
+                    if let Some(producer) = self.producer.take() {
+                        context.system_context().dispatcher().execute_trampoline(producer.pull());
+                    }
+
                     self.pulled = false;
                     self.buffer.push_back(el);
-                    self.logic.produced(self.buffer.pop_front().expect("TODO"))
+                    self.logic.produced(self.buffer.pop_front().expect("pantomime bug: just pushed, but buffer is empty"))
                 } else {
                     self.buffer.push_back(el);
 
                     None
                 };
+
 
                 if let Some(reply) = reply {
                     context
@@ -310,7 +333,6 @@ where
                         .dispatcher()
                         .execute_trampoline(producer.cancel());
                 } else if self.buffer.len() < self.buffer_size {
-                    println!("pull?");
                     let dispatcher = context.system_context().dispatcher();
                     let inner_dispatcher = dispatcher.clone();
 
@@ -323,18 +345,26 @@ where
             }
 
             DetachedActorMsg::Completed => {
-                if let Some(reply) = self.logic.completed() {
-                    context
-                        .actor_ref()
-                        .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
+                if self.pulled && self.buffer.is_empty() {
+                    if let Some(reply) = self.logic.completed() {
+                        context
+                            .actor_ref()
+                            .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
+                    }
+                } else {
+                    self.upstream_completed = true;
                 }
             }
 
             DetachedActorMsg::Failed(error) => {
-                if let Some(reply) = self.logic.failed(error) {
-                    context
-                        .actor_ref()
-                        .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
+                if self.pulled && self.buffer.is_empty() {
+                    if let Some(reply) = self.logic.failed(error) {
+                        context
+                            .actor_ref()
+                            .tell(DetachedActorMsg::ReceivedAsyncAction(reply));
+                    }
+                } else {
+                    self.upstream_failed = Some(error);
                 }
             }
 
@@ -364,8 +394,6 @@ where
                 self.consumer = Some(consumer);
 
                 if let Some(producer) = self.producer.take() {
-                    println!("got cancel");
-
                     context
                         .system_context()
                         .dispatcher()
@@ -661,8 +689,6 @@ where
     }
 
     fn completed(self: Box<Self>) -> Trampoline {
-        println!("this completed!");
-
         let (downstream, _) = self.disconnect_downstream(Disconnected);
 
         downstream.completed()
@@ -700,7 +726,6 @@ where
     fn cancel(self: Box<Self>) -> Trampoline {
         let (upstream, detached) = self.disconnect_upstream(Disconnected);
 
-        println!("cancel here");
         upstream.cancel(detached)
     }
 }

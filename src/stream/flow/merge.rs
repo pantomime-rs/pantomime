@@ -9,7 +9,7 @@ use crate::stream::sink::tell::{TellEvent, TellHandle};
 use crate::stream::*;
 use std::marker::PhantomData;
 
-struct Merge<A, Peer: Source<A>>
+pub struct Merge<A, Peer: Stage<A>>
 where
     A: 'static + Send,
 {
@@ -22,10 +22,22 @@ where
     phantom: PhantomData<A>,
 }
 
-impl<A, Peer: Source<A>> Merge<A, Peer>
+impl<A, Peer: Stage<A>> Merge<A, Peer>
 where
     A: 'static + Send,
 {
+    pub fn new(peer: Peer) -> Self {
+        Self {
+            source: Some(peer),
+            pulled: false,
+            pulled_one: false,
+            pulled_two: false,
+            handle: None,
+            buffer: [None, None],
+            phantom: PhantomData
+        }
+    }
+
     fn store(&mut self, elem: A) {
         if self.buffer[0].is_none() {
             self.buffer[0] = Some(elem);
@@ -38,6 +50,7 @@ where
 
     fn try_push(&mut self) -> Option<AsyncAction<A, TellEvent<A>>> {
         if self.pulled && self.buffer[0].is_some() {
+            println!("psuH!");
             let elem = self.buffer[0]
                 .take()
                 .expect("pantomime bug: Merge#try_push, Option#is_some lied");
@@ -53,7 +66,7 @@ where
     }
 }
 
-impl<A, Peer: Source<A>> DetachedLogic<A, A, TellEvent<A>> for Merge<A, Peer>
+impl<A, Peer: Stage<A>> DetachedLogic<A, A, TellEvent<A>> for Merge<A, Peer>
 where
     A: 'static + Send,
 {
@@ -69,18 +82,22 @@ where
             &context.system_context,
         );
 
+        println!("running other");
+
         None
     }
 
     fn forwarded(&mut self, msg: TellEvent<A>) -> Option<AsyncAction<A, TellEvent<A>>> {
         match msg {
             TellEvent::Started(handle) => {
+                println!("started!");
                 handle.pull();
 
                 self.try_push()
             }
 
             TellEvent::Produced(elem, handle) => {
+                println!("produced");
                 self.store(elem);
 
                 self.handle = Some(handle);
@@ -102,6 +119,8 @@ where
 
     fn pulled(&mut self) -> Option<AsyncAction<A, TellEvent<A>>> {
         self.pulled = true;
+
+        println!("pulled!");
 
         self.try_push()
     }

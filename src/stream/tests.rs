@@ -54,6 +54,45 @@ mod tests {
     }
 
     #[test]
+    fn test_sink_tell() {
+        let mut system = ActorSystem::new().start();
+        let mut probe = system
+            .spawn_probe::<TellEvent<usize>>()
+            .with_poll_interval(Duration::from_micros(10));
+        let probe_ref = probe.actor_ref.clone();
+
+        Sources::iterator(1..=10000)
+            .to(Sinks::tell(probe_ref))
+            .run(&system.context);
+
+        let mut a = 0;
+
+        loop {
+            match probe.receive(Duration::from_secs(10)) {
+                TellEvent::Started(handle) => {
+                    handle.pull();
+                }
+
+                TellEvent::Produced(n, handle) => {
+                    a += n;
+                    handle.pull();
+                }
+
+                TellEvent::Completed => {
+                    break;
+                }
+
+                _ => ()
+            }
+        }
+
+        assert_eq!(a, 50_005_000);
+
+        system.context.stop();
+        system.join();
+    }
+
+    #[test]
     fn test_sources_iterator_sink_cancel_watch_termination() {
         let mut system = ActorSystem::new().start();
         let mut probe = system.spawn_probe::<bool>();
@@ -184,6 +223,26 @@ mod tests {
         assert_eq!(probe.receive(Duration::from_secs(10)), Some(59999940));
 
         system.context.stop();
+        system.join();
+    }
+
+    #[test]
+    fn test_merge() {
+        return;
+
+        let mut system = ActorSystem::new().start();
+
+        let a = Sources::iterator(0..=99);
+        let b = Sources::iterator(100..=199);
+
+        println!("yea!");
+
+        a.merge(b).run_with(Sinks::for_each(|n| {
+            println!("received: {}", n);
+        }), &system.context);
+
+
+        //system.context.stop();
         system.join();
     }
 }
