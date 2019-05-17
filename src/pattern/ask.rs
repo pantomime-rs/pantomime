@@ -151,29 +151,53 @@ mod tests {
 
     #[test]
     fn test_ask_infinite() {
-        let mut system = ActorSystem::new().start();
+        struct TestReaper;
 
-        let greeter = system.spawn(Greeter);
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-        let reply = greeter
-            .ask_infinite(|reply| Msg::Hello(reply))
-            .wait()
-            .expect("actor didn't reply");
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {
+                    let greeter = ctx.spawn(Greeter);
 
-        assert_eq!(reply, "Hello!");
+                    let reply = greeter
+                        .ask_infinite(|reply| Msg::Hello(reply))
+                        .wait()
+                        .expect("actor didn't reply");
+
+                    assert_eq!(reply, "Hello!");
+
+                    ctx.actor_ref().drain();
+                }
+            }
+        }
+
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 
     #[test]
     fn test_ask_no_reply() {
-        let mut system = ActorSystem::new().start();
+        struct TestReaper;
 
-        let greeter = system.spawn(Greeter);
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-        let is_err = greeter
-            .ask(time::Duration::from_millis(100), |reply| Msg::Rude(reply))
-            .wait()
-            .is_err();
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {
+                    let greeter = ctx.spawn(Greeter);
 
-        assert!(is_err);
+                    let is_err = greeter
+                        .ask(time::Duration::from_millis(100), |reply| Msg::Rude(reply))
+                        .wait()
+                        .is_err();
+
+                    assert!(is_err);
+
+                    ctx.actor_ref().drain();
+                }
+            }
+        }
+
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 }

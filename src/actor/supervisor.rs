@@ -85,7 +85,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::prelude::*;
     use std::time;
 
     struct Divider;
@@ -112,34 +112,32 @@ mod tests {
             fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
             fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {}
+                if let Signal::Started = signal {
+                    let mut probe = ctx.spawn_probe::<usize>();
+
+                    let divider = {
+                        let probe_ref = probe.actor_ref.clone();
+
+                        ctx.spawn(
+                            Supervisor::resume(Divider)
+                                .on_resume(move || DividerMsg::Divide(32, 2, probe_ref.clone())),
+                        )
+                    };
+
+                    divider.tell(DividerMsg::Divide(4, 0, probe.actor_ref.clone()));
+
+                    assert_eq!(probe.receive(time::Duration::from_secs(10)), 16);
+
+                    divider.tell(DividerMsg::Divide(4, 1, probe.actor_ref.clone()));
+
+                    assert_eq!(probe.receive(time::Duration::from_secs(10)), 4);
+
+                    ctx.actor_ref().drain();
+                }
             }
         }
 
-        let mut system = ActorSystem::new().start();
-
-        let mut probe = system.spawn_probe::<usize>();
-
-        let divider = {
-            let probe_ref = probe.actor_ref.clone();
-
-            system.spawn(
-                Supervisor::resume(Divider)
-                    .on_resume(move || DividerMsg::Divide(32, 2, probe_ref.clone())),
-            )
-        };
-
-        divider.tell(DividerMsg::Divide(4, 0, probe.actor_ref.clone()));
-
-        assert_eq!(probe.receive(time::Duration::from_secs(10)), 16);
-
-        divider.tell(DividerMsg::Divide(4, 1, probe.actor_ref.clone()));
-
-        assert_eq!(probe.receive(time::Duration::from_secs(10)), 4);
-
-        system.context.drain();
-
-        system.join();
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 
     // @TODO test failures in signal handling
