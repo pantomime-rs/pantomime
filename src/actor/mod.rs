@@ -11,8 +11,8 @@ mod system;
 #[cfg(test)]
 mod tests;
 
-use self::shard::ActorShardKernel;
 use self::actor_watcher::ActorWatcherMessage;
+use self::shard::ActorShardKernel;
 use crate::cfg::*;
 use crate::dispatcher::Dispatcher;
 use crate::mailbox::*;

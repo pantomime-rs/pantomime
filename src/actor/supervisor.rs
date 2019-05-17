@@ -106,6 +106,16 @@ mod tests {
 
     #[test]
     fn test_supervisor_strategy_resume() {
+        struct TestReaper;
+
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {}
+            }
+        }
+
         let mut system = ActorSystem::new().start();
 
         let mut probe = system.spawn_probe::<usize>();

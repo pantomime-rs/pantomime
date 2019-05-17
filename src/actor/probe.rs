@@ -8,12 +8,11 @@ use std::{thread, time};
 /// specified type, and places them into a buffer that is consumed
 /// by the caller.
 ///
-/// When a `Probe` is dropped, its underlying actor is automatically
-/// stopped.
+/// When a `Probe` is dropped, its underlying actor is stopped.
 pub struct Probe<M: 'static + Send> {
     pub actor_ref: ActorRef<M>,
     mailbox: Mailbox<M>,
-    poll_interval: time::Duration
+    poll_interval: time::Duration,
 }
 
 pub trait SpawnProbe {
@@ -22,17 +21,34 @@ pub trait SpawnProbe {
 
 impl SpawnProbe for ActiveActorSystem {
     fn spawn_probe<M: 'static + Send>(&mut self) -> Probe<M> {
-        Probe::new(self)
+        let (probe_actor, mailbox) = ProbeActor::new();
+
+        let actor_ref = self.spawn(probe_actor);
+
+        Probe::new(actor_ref, mailbox)
+    }
+}
+
+impl<N> SpawnProbe for ActorContext<N>
+where
+    N: 'static + Send,
+{
+    fn spawn_probe<M: 'static + Send>(&mut self) -> Probe<M> {
+        let (probe_actor, mailbox) = ProbeActor::new();
+
+        let actor_ref = self.spawn(probe_actor);
+
+        Probe::new(actor_ref, mailbox)
     }
 }
 
 impl<M: 'static + Send> Probe<M> {
-    fn new(system: &mut ActiveActorSystem) -> Self {
-        let (probe_actor, mailbox) = ProbeActor::new();
-
-        let actor_ref = system.spawn(probe_actor);
-
-        Self { actor_ref, mailbox, poll_interval: time::Duration::from_millis(10) }
+    fn new(actor_ref: ActorRef<M>, mailbox: Mailbox<M>) -> Self {
+        Self {
+            actor_ref,
+            mailbox,
+            poll_interval: time::Duration::from_millis(10),
+        }
     }
 
     /// Sets the poll interval for this probe. This defines the time that the probe
@@ -119,30 +135,39 @@ mod tests {
 
     #[test]
     fn test_probe() {
-        let mut system = ActorSystem::new().start();
+        struct TestReaper;
 
-        let mut probe = system.spawn_probe::<usize>();
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-        let doubler = system.spawn(Doubler);
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {
+                    let mut probe = ctx.spawn_probe::<usize>();
 
-        doubler.tell(DoublerMsg::Double(4, probe.actor_ref.clone()));
+                    let doubler = ctx.spawn(Doubler);
 
-        assert_eq!(probe.receive(time::Duration::from_secs(10)), 8);
+                    doubler.tell(DoublerMsg::Double(4, probe.actor_ref.clone()));
 
-        drop(probe);
+                    assert_eq!(probe.receive(time::Duration::from_secs(10)), 8);
 
-        {
-            let context = system.context.clone();
+                    drop(probe);
 
-            thread::spawn(move || {
-                let c = context.clone();
+                    {
+                        let dispatcher = ctx.system_context().dispatcher();
+                        let context = system.context.clone();
 
-                context.dispatcher().execute(move || {
-                    c.drain();
-                });
-            });
+                        thread::spawn(move || {
+                            let c = context.clone();
+
+                            context.dispatcher().execute(move || {
+                                c.drain();
+                            });
+                        });
+                    }
+                }
+            }
         }
 
-        system.join();
+        assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
 }

@@ -6,10 +6,10 @@ use crossbeam::atomic::AtomicCell;
 enum KernelState {
     Idle(ActorShardKernel),
     Messaged,
-    Running
+    Running,
 }
 
-pub (in crate::actor) struct ActorShardKernel {
+pub(in crate::actor) struct ActorShardKernel {
     mailbox: Mailbox<Box<dyn ActorWithMessage + Send + 'static>>,
     system_mailbox: Mailbox<Box<dyn ActorWithSystemMessage + Send + 'static>>,
 }
@@ -74,25 +74,23 @@ impl ActorShard {
 
     pub(in crate::actor) fn messaged(&self) -> Option<ActorShardEvent> {
         match self.kernel.swap(KernelState::Running) {
-            KernelState::Idle(kernel) => {
-                Some(ActorShardEvent::Scheduled(kernel))
-            }
+            KernelState::Idle(kernel) => Some(ActorShardEvent::Scheduled(kernel)),
 
             KernelState::Messaged | KernelState::Running => {
                 match self.kernel.swap(KernelState::Messaged) {
-                    KernelState::Idle(kernel) => {
-                        Some(ActorShardEvent::Scheduled(kernel))
-                    }
+                    KernelState::Idle(kernel) => Some(ActorShardEvent::Scheduled(kernel)),
 
-                    KernelState::Messaged | KernelState::Running => {
-                        None
-                    }
+                    KernelState::Messaged | KernelState::Running => None,
                 }
             }
         }
     }
 
-    pub(in crate::actor) fn scheduled(&self, mut kernel: ActorShardKernel, throughput: usize) -> Option<ActorShardEvent> {
+    pub(in crate::actor) fn scheduled(
+        &self,
+        mut kernel: ActorShardKernel,
+        throughput: usize,
+    ) -> Option<ActorShardEvent> {
         let mut processed = 0;
 
         while let Some(system_msg) = kernel.system_mailbox.retrieve() {
@@ -128,13 +126,9 @@ impl ActorShard {
         }
 
         let cont = match self.kernel.swap(KernelState::Idle(kernel)) {
-            KernelState::Messaged => {
-                true
-            }
+            KernelState::Messaged => true,
 
-            KernelState::Running => {
-                false
-            }
+            KernelState::Running => false,
 
             KernelState::Idle(_) => {
                 panic!("pantomime bug: cannot be in Idle");
