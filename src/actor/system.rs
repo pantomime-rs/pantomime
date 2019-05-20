@@ -145,6 +145,8 @@ impl ActorSystemContext {
 
         cell.contents.swap(Some(contents));
 
+        cell.register(&actor_ref);
+
         actor_ref
     }
 
