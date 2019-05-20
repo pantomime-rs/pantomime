@@ -312,31 +312,4 @@ mod tests {
 
         assert!(ActorSystem::spawn(TestReaper).is_ok());
     }
-
-    #[test]
-    fn test_merge() {
-        return;
-        struct TestReaper;
-
-        impl Actor<()> for TestReaper {
-            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
-
-            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {
-                    let a = Sources::iterator(0..=99);
-                    let b = Sources::iterator(100..=199);
-
-                    ctx.spawn_stream(a.merge(b).to(Sinks::for_each(|n| {
-                        println!("received: {}", n);
-                    })));
-
-                    println!("yea!");
-
-                    ctx.actor_ref().drain();
-                }
-            }
-        }
-
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
-    }
 }

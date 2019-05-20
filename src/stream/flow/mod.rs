@@ -4,7 +4,6 @@ pub mod filter;
 pub mod filter_map;
 pub mod identity;
 pub mod map;
-pub mod merge;
 pub mod take_while;
 
 pub use attached::Attached;
