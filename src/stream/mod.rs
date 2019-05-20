@@ -15,7 +15,6 @@ pub use source::*;
 use crate::actor::{ActorContext, ActorSystemContext};
 use crate::dispatcher::{Dispatcher, Trampoline};
 use filter::Filter;
-use merge::Merge;
 use oxidized::{Consumer, Producer};
 use sink::tell::TellEvent;
 
@@ -96,18 +95,6 @@ where
         F: 'static + Send,
     {
         Attached::new(Map::new(map))(self)
-    }
-
-    #[must_use]
-    fn merge<Other: Stage<A>>(
-        self,
-        other: Other,
-    ) -> Detached<A, A, TellEvent<A>, Merge<A, Other>, Self, Disconnected>
-    where
-        A: 'static + Send,
-        Other: 'static + Send,
-    {
-        Detached::new(Merge::new(other))(self)
     }
 
     #[must_use]
