@@ -1,5 +1,5 @@
 use super::TimerThunk;
-use crate::dispatcher::{Dispatcher, WorkStealingDispatcher};
+use crate::dispatcher::Dispatcher;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ const TIMER_WHEEL_GEAR_SPROCKETS: usize = 128;
 /// beyond that, it will stay in the last sprocket of the last wheel until
 /// enough time has elapsed for it to move.
 pub(crate) struct TimerWheel {
-    dispatcher: Option<WorkStealingDispatcher>,
+    dispatcher: Option<Dispatcher>,
     gears: [[VecDeque<(TimerThunk, u64)>; TIMER_WHEEL_GEAR_SPROCKETS]; TIMER_WHEEL_GEARS],
     positions: [usize; TIMER_WHEEL_GEARS],
     start: Instant,
@@ -187,7 +187,7 @@ impl TimerWheel {
     /// allow separating the scheduling workload from the task workload.
     ///
     /// If one is not configured, the current thread is used instead.
-    pub(crate) fn set_dispatcher(&mut self, dispatcher: Option<WorkStealingDispatcher>) {
+    pub(crate) fn set_dispatcher(&mut self, dispatcher: Option<Dispatcher>) {
         self.dispatcher = dispatcher;
     }
 
@@ -245,9 +245,9 @@ impl TimerWheel {
     fn run(&mut self) {
         while let Some((thunk, _)) = self.gears[0][self.positions[0]].pop_front() {
             if let Some(ref d) = thunk.dispatcher {
-                d.execute(thunk.thunk);
+                d.execute_thunk(thunk.thunk);
             } else if let Some(ref d) = self.dispatcher {
-                d.execute(thunk.thunk);
+                d.execute_thunk(thunk.thunk);
             } else {
                 thunk.thunk.apply();
             }
@@ -322,13 +322,13 @@ impl TimerWheel {
     /// Converts the supplied `time::Duration` to a u64 value representing the
     /// number of milliseconds since the wheel was started.
     fn duration_ms(duration: Duration) -> u64 {
-        (duration.as_secs() * 1_000) + (duration.subsec_nanos() / 1_000_000) as u64
+        (duration.as_secs() * 1_000) + u64::from(duration.subsec_millis())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::dispatcher::WorkStealingDispatcher;
+    use crate::dispatcher::{Dispatcher, WorkStealingDispatcher};
     use crate::testkit::*;
     use crate::timer::timer_wheel::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -347,7 +347,7 @@ mod tests {
     fn test_default_dispatcher() {
         let mut wheel = TimerWheel::new(Duration::from_millis(10));
 
-        wheel.set_dispatcher(Some(WorkStealingDispatcher::new(8, true)));
+        wheel.set_dispatcher(Some(Dispatcher::new(WorkStealingDispatcher::new(8, true))));
 
         let scheduled = Arc::new(AtomicBool::new(false));
         let executed = Arc::new(AtomicBool::new(false));

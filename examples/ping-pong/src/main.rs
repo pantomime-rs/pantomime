@@ -1,7 +1,7 @@
 extern crate pantomime;
 
 use pantomime::prelude::*;
-use std::process;
+use std::{io, process};
 
 const ACTOR_PAIRS: usize = 8;
 const MESSAGE_LIMIT: u64 = 10_000_000;
@@ -77,26 +77,34 @@ impl Actor<PingerMessage> for Pinger {
     }
 }
 
-fn main() {
-    let mut system = ActorSystem::new().start();
+struct Reaper;
 
-    let finisher = system.spawn(Finisher::new());
+impl Actor<()> for Reaper {
+    fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-    for _ in 0..ACTOR_PAIRS {
-        let pinger_a = {
-            let finisher = finisher.clone();
+    fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+        if let Signal::Started = signal {
+            let finisher = ctx.spawn(Finisher::new());
 
-            system.spawn(Pinger::new(&finisher))
-        };
+            for _ in 0..ACTOR_PAIRS {
+                let pinger_a = {
+                    let finisher = finisher.clone();
 
-        let pinger_b = {
-            let finisher = finisher.clone();
+                    ctx.spawn(Pinger::new(&finisher))
+                };
 
-            system.spawn(Pinger::new(&finisher))
-        };
+                let pinger_b = {
+                    let finisher = finisher.clone();
 
-        pinger_a.tell(PingerMessage::TalkTo { to: pinger_b });
+                    ctx.spawn(Pinger::new(&finisher))
+                };
+
+                pinger_a.tell(PingerMessage::TalkTo { to: pinger_b });
+            }
+        }
     }
+}
 
-    system.join();
+fn main() -> io::Result<()> {
+    ActorSystem::new().spawn(Reaper)
 }

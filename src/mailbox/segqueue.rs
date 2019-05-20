@@ -1,23 +1,15 @@
-use super::{Mailbox, MailboxAppender};
+use super::{MailboxAppender, MailboxAppenderLogic, MailboxLogic};
 use crate::dispatcher::Thunk;
 use crate::util::{Cancellable, MaybeCancelled};
 use crossbeam::queue::SegQueue;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-pub struct CrossbeamSegQueueMailboxAppender<M> {
+pub struct CrossbeamSegQueueMailboxAppenderLogic<M> {
     queue: Arc<SegQueue<MaybeCancelled<M>>>,
 }
 
-impl<M: 'static + Send> CrossbeamSegQueueMailboxAppender<M> {
-    pub fn safe_clone(&self) -> Self {
-        Self {
-            queue: self.queue.clone(),
-        }
-    }
-}
-
-impl<M: 'static + Send> MailboxAppender<M> for CrossbeamSegQueueMailboxAppender<M> {
+impl<M: 'static + Send> MailboxAppenderLogic<M> for CrossbeamSegQueueMailboxAppenderLogic<M> {
     #[inline(always)]
     fn append(&self, message: M) {
         self.queue.push(MaybeCancelled::new(message, None, None));
@@ -31,18 +23,19 @@ impl<M: 'static + Send> MailboxAppender<M> for CrossbeamSegQueueMailboxAppender<
         ));
     }
 
-    fn safe_clone(&self) -> Box<MailboxAppender<M> + Send + Sync> {
+    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
         Box::new(Self {
             queue: self.queue.clone(),
         })
     }
 }
 
-pub struct CrossbeamSegQueueMailbox<M: 'static + Send> {
+pub struct CrossbeamSegQueueMailboxLogic<M: 'static + Send> {
     queue: Arc<SegQueue<MaybeCancelled<M>>>,
 }
 
-impl<M: 'static> CrossbeamSegQueueMailbox<M>
+
+impl<M: 'static> CrossbeamSegQueueMailboxLogic<M>
 where
     M: Send,
 {
@@ -51,21 +44,19 @@ where
             queue: Arc::new(SegQueue::new()),
         }
     }
+}
 
-    pub fn appender(&self) -> CrossbeamSegQueueMailboxAppender<M> {
-        CrossbeamSegQueueMailboxAppender {
-            queue: self.queue.clone(),
-        }
+impl<M: 'static + Send> Default for CrossbeamSegQueueMailboxLogic<M> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl<M: 'static + Send> Mailbox<M> for CrossbeamSegQueueMailbox<M> {
-    fn appender(&mut self) -> Box<MailboxAppender<M> + Send + Sync> {
-        let appender = CrossbeamSegQueueMailboxAppender {
+impl<M: 'static + Send> MailboxLogic<M> for CrossbeamSegQueueMailboxLogic<M> {
+    fn appender(&mut self) -> MailboxAppender<M> {
+        MailboxAppender::new(CrossbeamSegQueueMailboxAppenderLogic {
             queue: self.queue.clone(),
-        };
-
-        Box::new(appender)
+        })
     }
 
     fn retrieve(&mut self) -> Option<M> {
@@ -97,20 +88,20 @@ impl<M: 'static + Send> Mailbox<M> for CrossbeamSegQueueMailbox<M> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Mailbox, MailboxAppender};
+    use super::super::Mailbox;
     use super::*;
     use std::thread;
 
     #[test]
     fn simple_test() {
-        let mut mailbox = CrossbeamSegQueueMailbox::new();
+        let mut mailbox = Mailbox::new(CrossbeamSegQueueMailboxLogic::new());
 
         assert_eq!(mailbox.retrieve(), None);
 
         let appender = mailbox.appender();
         appender.append(0);
 
-        let appender2 = appender.safe_clone();
+        let appender2 = appender.clone();
         appender2.append(1);
 
         assert_eq!(mailbox.retrieve(), Some(0));
@@ -120,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_multiple_threads() {
-        let mut mailbox = CrossbeamSegQueueMailbox::new();
+        let mut mailbox = Mailbox::new(CrossbeamSegQueueMailboxLogic::new());
 
         assert_eq!(mailbox.retrieve(), None);
 
@@ -130,7 +121,7 @@ mod tests {
         let mut handles = Vec::new();
 
         for i in 1..9 {
-            let appender = appender.safe_clone();
+            let appender = appender.clone();
 
             handles.push(thread::spawn(move || {
                 for j in (i * 100)..(i * 100) + 50 {

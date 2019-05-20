@@ -1,4 +1,4 @@
-use super::{Dispatcher, Thunk};
+use super::{DispatcherLogic, Thunk, Trampoline, TrampolineStep};
 use crossbeam::deque::{self as deque, Injector, Steal, Stealer, Worker};
 use rand::rngs::SmallRng;
 use rand::{FromEntropy, Rng};
@@ -79,7 +79,7 @@ impl WorkStealingDispatcher {
             let injector = injector.clone();
 
             let mut stealers: Vec<Stealer<WorkStealingDispatcherMessage>> =
-                stealers.iter().map(|s| s.clone()).collect();
+                stealers.to_vec();
 
             let w = workers.remove(i);
             let _ = stealers.remove(i);
@@ -110,7 +110,7 @@ impl WorkStealingDispatcher {
                         if let Some(worker) = w.replace(None) {
                             let mut stealers = Vec::new();
 
-                            for stealer in self.stealers.pop() {
+                            if let Some(stealer) = self.stealers.pop() {
                                 stealers.push(stealer);
                             }
 
@@ -144,6 +144,8 @@ impl WorkStealingDispatcher {
                 let inline_steal_injector_limit = 100;
                 let inline_steal_stealers_limit = 1;
 
+                let trampoline_limit = 10;
+
                 let schedule_aggressive_attempts = 100;
                 let schedule_moderate_attempts = 100;
                 let schedule_conservative_attempts = 20;
@@ -165,9 +167,30 @@ impl WorkStealingDispatcher {
                                 loop {
                                     match worker.pop() {
                                         Some(work) => {
+                                            // @TODO this is duplicated below
                                             match work {
                                                 WorkStealingDispatcherMessage::Execute(thunk) => {
                                                     thunk.apply();
+                                                }
+
+                                                WorkStealingDispatcherMessage::ExecuteTrampoline(trampoline) => {
+                                                    let mut i = 0;
+                                                    let mut step = trampoline.step;
+
+                                                    while let TrampolineStep::Bounce(next_step) = step {
+                                                        if i == trampoline_limit {
+                                                            worker.push(
+                                                                WorkStealingDispatcherMessage::ExecuteTrampoline(
+                                                                    Trampoline { step: TrampolineStep::Bounce(next_step) }
+                                                                )
+                                                            );
+
+                                                            break;
+                                                        } else {
+                                                            i += 1;
+                                                            step = next_step.apply().step;
+                                                        }
+                                                    }
                                                 }
 
                                                 WorkStealingDispatcherMessage::Shutdown => {
@@ -277,9 +300,30 @@ impl WorkStealingDispatcher {
                                 loop {
                                     match stealers[r % l].steal() {
                                         Steal::Success(work) => {
+                                            // @TODO this is duplicated above
                                             match work {
                                                 WorkStealingDispatcherMessage::Execute(thunk) => {
                                                     thunk.apply();
+                                                }
+
+                                                WorkStealingDispatcherMessage::ExecuteTrampoline(trampoline) => {
+                                                    let mut i = 0;
+                                                    let mut step = trampoline.step;
+
+                                                    while let TrampolineStep::Bounce(next_step) = step {
+                                                        if i == trampoline_limit {
+                                                            worker.push(
+                                                                WorkStealingDispatcherMessage::ExecuteTrampoline(
+                                                                    Trampoline { step: TrampolineStep::Bounce(next_step) }
+                                                                )
+                                                            );
+
+                                                            break;
+                                                        } else {
+                                                            i += 1;
+                                                            step = next_step.apply().step;
+                                                        }
+                                                    }
                                                 }
 
                                                 WorkStealingDispatcherMessage::Shutdown => {
@@ -364,19 +408,18 @@ impl WorkStealingDispatcher {
 
 enum WorkStealingDispatcherMessage {
     Execute(Thunk),
+    ExecuteTrampoline(Trampoline),
     Shutdown,
 }
 
-impl Clone for WorkStealingDispatcher {
-    fn clone(&self) -> Self {
-        Self {
+impl DispatcherLogic for WorkStealingDispatcher {
+    fn clone_box(&self) -> Box<DispatcherLogic + 'static + Send + Sync> {
+        Box::new(Self {
             injector: self.injector.clone(),
             num_workers: self.num_workers,
-        }
+        })
     }
-}
 
-impl Dispatcher for WorkStealingDispatcher {
     fn execute(&self, thunk: Thunk) {
         Self::WORKER.with(|w| match *w.borrow() {
             Some(ref worker) => {
@@ -390,14 +433,20 @@ impl Dispatcher for WorkStealingDispatcher {
         });
     }
 
-    fn safe_clone(&self) -> Box<Dispatcher + Send + Sync> {
-        Box::new(Self {
-            injector: self.injector.clone(),
-            num_workers: self.num_workers,
-        })
+    fn execute_trampoline(&self, trampoline: Trampoline) {
+        Self::WORKER.with(|w| match *w.borrow() {
+            Some(ref worker) => {
+                worker.push(WorkStealingDispatcherMessage::ExecuteTrampoline(trampoline));
+            }
+
+            None => {
+                self.injector
+                    .push(WorkStealingDispatcherMessage::ExecuteTrampoline(trampoline));
+            }
+        });
     }
 
-    fn shutdown(self) {
+    fn shutdown(self: Box<Self>) {
         for _ in 0..self.num_workers {
             self.injector.push(WorkStealingDispatcherMessage::Shutdown);
         }
@@ -405,12 +454,6 @@ impl Dispatcher for WorkStealingDispatcher {
 
     fn throughput(&self) -> usize {
         10
-    }
-}
-
-impl AsRef<Dispatcher + Send + Sync> for WorkStealingDispatcher {
-    fn as_ref(&self) -> &(Dispatcher + Send + Sync + 'static) {
-        self
     }
 }
 

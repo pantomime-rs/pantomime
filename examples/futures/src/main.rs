@@ -15,9 +15,7 @@ extern crate pantomime;
 use futures::*;
 use pantomime::pattern::{Ask, PipeTo};
 use pantomime::prelude::*;
-use std::process;
-use std::sync::Arc;
-use std::time;
+use std::{io, process, time};
 
 const DELAY_MS: u64 = 1000;
 
@@ -71,30 +69,34 @@ impl Actor<Msg> for MyActor {
     }
 
     fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<Msg>) {
-        match signal {
-            Signal::Started => {
-                context.spawn_future(
-                    context
-                        .actor_ref()
-                        .ask(time::Duration::from_secs(10), |reply_to| {
-                            Msg::SendDouble(42, reply_to)
-                        })
-                        .then(|r| future::ok(Msg::ReceivedDouble(r.ok().unwrap_or(0))))
-                        .pipe_to(context.actor_ref().clone()),
-                );
-            }
-
-            _ => {}
+        if let Signal::Started = signal {
+            context.spawn_future(
+                context
+                    .actor_ref()
+                    .ask(time::Duration::from_secs(10), |reply_to| {
+                        Msg::SendDouble(42, reply_to)
+                    })
+                    .then(|r| future::ok(Msg::ReceivedDouble(r.ok().unwrap_or(0))))
+                    .pipe_to(context.actor_ref().clone()),
+            );
         }
     }
 }
 
-fn main() {
-    let mut system = ActorSystem::new().start();
+struct MyReaper;
 
-    let my_actor = Arc::new(system.spawn(MyActor));
+impl Actor<()> for MyReaper {
+    fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-    my_actor.tell(Msg::Double(2));
+    fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+        if let Signal::Started = signal {
+            let my_actor = ctx.spawn(MyActor);
 
-    system.join();
+            my_actor.tell(Msg::Double(2));
+        }
+    }
+}
+
+fn main() -> io::Result<()> {
+    ActorSystem::new().spawn(MyReaper)
 }

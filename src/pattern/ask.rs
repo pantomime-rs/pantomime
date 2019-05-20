@@ -1,4 +1,4 @@
-use crate::actor::{Actor, ActorContext, ActorRef, ActorSystemContext, Signal};
+use crate::actor::{Actor, ActorContext, ActorRef, Signal};
 use futures::*;
 use std::time::Duration;
 
@@ -48,10 +48,7 @@ impl<Req: 'static + Send, Resp: 'static + Send> Ask<Req, Resp> for ActorRef<Req>
     {
         let (c, p) = oneshot::<Resp>();
 
-        let actor_ref = ActorSystemContext::spawn_anonymous_actor(
-            &self.system_context(),
-            AskActor::new(c, Some(timeout)),
-        );
+        let actor_ref = self.system_context().spawn(AskActor::new(c, Some(timeout)));
 
         let msg = f(actor_ref);
 
@@ -69,10 +66,7 @@ impl<Req: 'static + Send, Resp: 'static + Send> Ask<Req, Resp> for ActorRef<Req>
     {
         let (c, p) = oneshot::<Resp>();
 
-        let actor_ref = ActorSystemContext::spawn_anonymous_actor(
-            &self.system_context(),
-            AskActor::new(c, None),
-        );
+        let actor_ref = self.system_context().spawn(AskActor::new(c, None));
 
         let msg = f(actor_ref);
 
@@ -133,8 +127,7 @@ impl<Resp: 'static + Send> Actor<Resp> for AskActor<Resp> {
 mod tests {
     use super::*;
     use crate::prelude::*;
-    use crate::testkit::*;
-    use std::{thread, time};
+    use std::time;
 
     struct Greeter;
 
@@ -157,29 +150,53 @@ mod tests {
 
     #[test]
     fn test_ask_infinite() {
-        let mut system = ActorSystem::new().start();
+        struct TestReaper;
 
-        let greeter = system.spawn(Greeter);
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-        let reply = greeter
-            .ask_infinite(|reply| Msg::Hello(reply))
-            .wait()
-            .expect("actor didn't reply");
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {
+                    let greeter = ctx.spawn(Greeter);
 
-        assert_eq!(reply, "Hello!");
+                    let reply = greeter
+                        .ask_infinite(Msg::Hello)
+                        .wait()
+                        .expect("actor didn't reply");
+
+                    assert_eq!(reply, "Hello!");
+
+                    ctx.actor_ref().drain();
+                }
+            }
+        }
+
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 
     #[test]
     fn test_ask_no_reply() {
-        let mut system = ActorSystem::new().start();
+        struct TestReaper;
 
-        let greeter = system.spawn(Greeter);
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-        let is_err = greeter
-            .ask(time::Duration::from_millis(100), |reply| Msg::Rude(reply))
-            .wait()
-            .is_err();
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {
+                    let greeter = ctx.spawn(Greeter);
 
-        assert!(is_err);
+                    let is_err = greeter
+                        .ask(time::Duration::from_millis(100), Msg::Rude)
+                        .wait()
+                        .is_err();
+
+                    assert!(is_err);
+
+                    ctx.actor_ref().drain();
+                }
+            }
+        }
+
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 }

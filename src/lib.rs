@@ -21,6 +21,9 @@ extern crate log;
 #[cfg(feature = "futures-support")]
 extern crate futures;
 
+#[cfg(feature = "mio-support")]
+extern crate mio as ext_mio;
+
 #[cfg(feature = "posix-signals-support")]
 extern crate signal_hook;
 
@@ -42,9 +45,11 @@ extern crate tokio_timer;
 pub mod actor;
 pub mod cfg;
 pub mod dispatcher;
+pub mod io;
 pub mod mailbox;
 pub mod pattern;
 pub mod prelude;
+pub mod stream;
 pub mod timer;
 pub mod util;
 
@@ -56,3 +61,4 @@ pub mod testkit;
 
 #[cfg(test)]
 pub mod testkit;
+

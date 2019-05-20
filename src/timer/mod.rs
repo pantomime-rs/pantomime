@@ -1,6 +1,6 @@
 //! Timers are used to schedule work to be performed in the future
 mod ticker;
-mod timer;
+mod timer_coordinator;
 mod timer_wheel;
 
 use crate::dispatcher::{Dispatcher, ThunkWithSync};
@@ -8,7 +8,7 @@ use crate::dispatcher::{Dispatcher, ThunkWithSync};
 /// A unit of work to be executed with an optional dispatcher to run it on
 pub(crate) struct TimerThunk {
     thunk: ThunkWithSync,
-    dispatcher: Option<Box<Dispatcher + Send + 'static>>,
+    dispatcher: Option<Dispatcher>,
 }
 
 impl TimerThunk {
@@ -20,4 +20,4 @@ impl TimerThunk {
     }
 }
 
-pub(crate) use self::timer::{Timer, TimerMsg};
+pub(crate) use self::timer_coordinator::{Timer, TimerMsg};

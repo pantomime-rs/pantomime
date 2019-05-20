@@ -1,7 +1,7 @@
 use self::actor_watcher::ActorWatcherMessage;
 use super::*;
 use crate::mailbox::*;
-use parking_lot::Mutex;
+use crossbeam::atomic::AtomicCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -42,7 +42,12 @@ impl<M: 'static + Send> ActorWithMessage for ActorCellWithMessage<M> {
         // also note that the shard mutex is only acquired when
         // an AtomicBool is flipped, so contention on it is
         // minimal
-        let mut contents = self.actor_cell.contents.lock();
+
+        let mut contents = self
+            .actor_cell
+            .contents
+            .swap(None)
+            .expect("pantomime bug: actor_cell#contents missing");
 
         match self.msg {
             ActorCellMessage::Message(msg) => {
@@ -73,6 +78,8 @@ impl<M: 'static + Send> ActorWithMessage for ActorCellWithMessage<M> {
 
             _ => {}
         }
+
+        self.actor_cell.contents.swap(Some(contents));
     }
 }
 
@@ -88,7 +95,7 @@ pub(in crate::actor) struct ActorCellContents<M: 'static + Send> {
     state: ActorCellState,
     stash: Vec<StashedMsg<M>>,
     done: bool,
-    custom_mailbox: Option<Box<Mailbox<M> + 'static + Send + Sync>>,
+    custom_mailbox: Option<Mailbox<M>>,
 }
 
 enum StashedMsg<M: 'static + Send> {
@@ -100,7 +107,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
     fn new<A: Actor<M> + 'static + Send>(
         actor: A,
         context: ActorContext<M>,
-        custom_mailbox: Option<Box<Mailbox<M> + 'static + Send + Sync>>,
+        custom_mailbox: Option<Mailbox<M>>,
     ) -> Self {
         Self {
             actor: Box::new(actor),
@@ -122,11 +129,12 @@ impl<M: 'static + Send> ActorCellContents<M> {
     pub(in crate::actor) fn initialize(&mut self, actor_ref: ActorRef<M>) {
         self.context.actor_ref = Some(actor_ref);
 
-        if let Some(ref watcher_ref) = self.context.actor_ref().system_context().watcher_ref {
+        if let Some(ref watcher_ref) = self.context.actor_ref().system_context().watcher_ref() {
             let actor_ref = self.context.actor_ref();
 
             watcher_ref.tell(ActorWatcherMessage::Started(
                 actor_ref.id(),
+                actor_ref.parent_ref(),
                 actor_ref.system_ref(),
             ));
         } else {
@@ -151,7 +159,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
                 self.stash.push(StashedMsg::Msg(msg));
             }
 
-            ActorCellState::Stopping { failure: _ }
+            ActorCellState::Stopping { .. }
             | ActorCellState::Stopped
             | ActorCellState::Failed => {
                 // @TODO dead letters
@@ -315,7 +323,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
                 self.transition(ActorCellState::Failed);
             }
 
-            (_, SystemMsg::Stop { failure: _ }) => {
+            (_, SystemMsg::Stop { .. }) => {
                 // @TODO think about what it means to have received this
                 // if we're currently Stopped (ie not Failed)
             }
@@ -348,13 +356,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
     }
 
     fn tell_watcher(&self, message: ActorWatcherMessage) {
-        if let Some(watcher_ref) = self
-            .context
-            .actor_ref()
-            .system_context()
-            .watcher_ref
-            .as_ref()
-        {
+        if let Some(watcher_ref) = self.context.actor_ref().system_context().watcher_ref() {
             watcher_ref.tell(message);
         } else {
             // @TODO
@@ -398,7 +400,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
 }
 
 pub(in crate::actor) struct ActorCell<M: 'static + Send> {
-    pub contents: Mutex<ActorCellContents<M>>,
+    pub contents: AtomicCell<Option<ActorCellContents<M>>>,
     pub parent_ref: SystemActorRef,
 }
 
@@ -407,10 +409,10 @@ impl<M: 'static + Send> ActorCell<M> {
         actor: A,
         parent_ref: SystemActorRef,
         context: ActorContext<M>,
-        custom_mailbox: Option<Box<Mailbox<M> + 'static + Send + Sync>>,
+        custom_mailbox: Option<Mailbox<M>>,
     ) -> Self {
         Self {
-            contents: Mutex::new(ActorCellContents::new(actor, context, custom_mailbox)),
+            contents: AtomicCell::new(Some(ActorCellContents::new(actor, context, custom_mailbox))),
 
             parent_ref,
         }
@@ -425,9 +427,11 @@ impl<M: 'static + Send> ActorCellWithSystemMessage<M> {
 
 impl<M: 'static + Send> ActorWithSystemMessage for ActorCellWithSystemMessage<M> {
     fn apply(self: Box<Self>) {
-        // note: as with ActorCellWithMessage, contention here is non-existent
-
-        let mut contents = self.actor_cell.contents.lock();
+        let mut contents = self
+            .actor_cell
+            .contents
+            .swap(None)
+            .expect("pantomime bug: actor_cell#contents missing");
 
         contents.receive_system(*self.msg);
 
@@ -442,5 +446,7 @@ impl<M: 'static + Send> ActorWithSystemMessage for ActorCellWithSystemMessage<M>
 
             _ => {}
         }
+
+        self.actor_cell.contents.swap(Some(contents));
     }
 }

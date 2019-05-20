@@ -1,5 +1,5 @@
 use super::*;
-use crate::mailbox::{CrossbeamSegQueueMailbox, CrossbeamSegQueueMailboxAppender};
+use crate::mailbox::CrossbeamSegQueueMailboxLogic;
 use std::{thread, time};
 
 /// Provides a means of receiving messages from a non-actor context.
@@ -8,11 +8,11 @@ use std::{thread, time};
 /// specified type, and places them into a buffer that is consumed
 /// by the caller.
 ///
-/// When a `Probe` is dropped, its underlying actor is automatically
-/// stopped.
+/// When a `Probe` is dropped, its underlying actor is stopped.
 pub struct Probe<M: 'static + Send> {
     pub actor_ref: ActorRef<M>,
-    mailbox: CrossbeamSegQueueMailbox<M>,
+    mailbox: Mailbox<M>,
+    poll_interval: time::Duration,
 }
 
 pub trait SpawnProbe {
@@ -21,17 +21,41 @@ pub trait SpawnProbe {
 
 impl SpawnProbe for ActiveActorSystem {
     fn spawn_probe<M: 'static + Send>(&mut self) -> Probe<M> {
-        Probe::new(self)
+        let (probe_actor, mailbox) = ProbeActor::new();
+
+        let actor_ref = self.spawn(probe_actor);
+
+        Probe::new(actor_ref, mailbox)
+    }
+}
+
+impl<N> SpawnProbe for ActorContext<N>
+where
+    N: 'static + Send,
+{
+    fn spawn_probe<M: 'static + Send>(&mut self) -> Probe<M> {
+        let (probe_actor, mailbox) = ProbeActor::new();
+
+        let actor_ref = self.spawn(probe_actor);
+
+        Probe::new(actor_ref, mailbox)
     }
 }
 
 impl<M: 'static + Send> Probe<M> {
-    fn new(system: &mut ActiveActorSystem) -> Self {
-        let (probe_actor, mailbox) = ProbeActor::new();
+    fn new(actor_ref: ActorRef<M>, mailbox: Mailbox<M>) -> Self {
+        Self {
+            actor_ref,
+            mailbox,
+            poll_interval: time::Duration::from_millis(10),
+        }
+    }
 
-        let actor_ref = system.spawn(probe_actor);
-
-        Self { actor_ref, mailbox }
+    /// Sets the poll interval for this probe. This defines the time that the probe
+    /// will sleep when its mailbox is empty.
+    pub fn with_poll_interval(mut self, poll_interval: time::Duration) -> Self {
+        self.poll_interval = poll_interval;
+        self
     }
 
     /// Receive a message from the mailbox, waiting upto the specified
@@ -50,7 +74,7 @@ impl<M: 'static + Send> Probe<M> {
             } else if start.elapsed() > limit {
                 panic!("provided function hasn't returned true within {:?}", limit);
             } else {
-                thread::sleep(time::Duration::from_millis(30));
+                thread::sleep(self.poll_interval);
             }
         }
     }
@@ -67,12 +91,13 @@ impl<M: 'static + Send> Drop for Probe<M> {
 }
 
 struct ProbeActor<M> {
-    appender: CrossbeamSegQueueMailboxAppender<M>,
+    appender: MailboxAppender<M>,
 }
 
 impl<M: 'static + Send> ProbeActor<M> {
-    fn new() -> (Self, CrossbeamSegQueueMailbox<M>) {
-        let mailbox = CrossbeamSegQueueMailbox::new();
+    fn new() -> (Self, Mailbox<M>) {
+        let mut mailbox = Mailbox::new(CrossbeamSegQueueMailboxLogic::new());
+
         let probe_actor = Self {
             appender: mailbox.appender(),
         };
@@ -90,7 +115,6 @@ impl<M: 'static + Send> Actor<M> for ProbeActor<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{thread, time};
 
     struct Doubler;
 
@@ -110,30 +134,29 @@ mod tests {
 
     #[test]
     fn test_probe() {
-        let mut system = ActorSystem::new().start();
+        struct TestReaper;
 
-        let mut probe = system.spawn_probe::<usize>();
+        impl Actor<()> for TestReaper {
+            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-        let doubler = system.spawn(Doubler);
+            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+                if let Signal::Started = signal {
+                    let mut probe = ctx.spawn_probe::<usize>();
 
-        doubler.tell(DoublerMsg::Double(4, probe.actor_ref.clone()));
+                    let doubler = ctx.spawn(Doubler);
 
-        assert_eq!(probe.receive(time::Duration::from_secs(10)), 8);
+                    doubler.tell(DoublerMsg::Double(4, probe.actor_ref.clone()));
 
-        drop(probe);
+                    assert_eq!(probe.receive(time::Duration::from_secs(10)), 8);
 
-        {
-            let context = system.context.clone();
+                    // @TODO can we improve this test to assert that dropping
+                    // the probe stops the actor?
 
-            thread::spawn(move || {
-                let c = context.clone();
-
-                context.dispatcher.execute(Box::new(move || {
-                    c.drain();
-                }));
-            });
+                    ctx.actor_ref().drain();
+                }
+            }
         }
 
-        system.join();
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::dispatcher::{Thunk, WorkStealingDispatcher};
+use crate::dispatcher::{Dispatcher, Thunk};
 use crate::util::Cancellable;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -27,6 +27,8 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         }
     }
 
+    /// Obtain a reference to the ActorRef that this context
+    /// is attached to.
     pub fn actor_ref(&self) -> &ActorRef<M> {
         self.actor_ref
             .as_ref()
@@ -66,7 +68,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
             let cancellable = cancellable.clone();
 
             Self::periodic_delivery(
-                &self.actor_ref().inner.system_context(),
+                self.system_context().clone(),
                 self.actor_ref().clone(),
                 msg,
                 interval,
@@ -83,7 +85,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     }
 
     fn periodic_delivery<F: Fn() -> M>(
-        context: &Arc<ActorSystemContext>,
+        context: ActorSystemContext,
         actor_ref: ActorRef<M>,
         msg: F,
         interval: Duration,
@@ -109,7 +111,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
                         // messages
 
                         Self::periodic_delivery(
-                            &next_context,
+                            next_context,
                             actor_ref,
                             msg,
                             interval,
@@ -173,10 +175,13 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     where
         F: 'static + Send + Sync,
     {
-        self.actor_ref()
-            .inner
-            .system_context()
-            .schedule_thunk(timeout, f);
+        self.system_context().schedule_thunk(timeout, f);
+    }
+
+    /// Obtain a reference to the ActorSystemContext that this
+    /// ActorContext is attached to.
+    pub fn system_context(&self) -> &ActorSystemContext {
+        self.actor_ref().inner.system_context()
     }
 
     /// Subscribe to lifecycle events for the supplied actor.
@@ -186,16 +191,19 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     ///
     /// If the supplied actor has already failed or stopped, a signal will
     /// still be delivered, but the reason will be unknown.
-    pub fn watch<N: 'static + Send, A: AsRef<ActorRef<N>>>(&mut self, actor_ref: A) {
-        let actor_ref = actor_ref.as_ref();
-
-        match self.actor_ref().inner.system_context().watcher_ref.as_ref() {
+    ///
+    /// Note that it is not necessary to watch your own direct children
+    /// as they are automatically watched. Additionally, a parent is guaranteed
+    /// to know if its child stopped due to failure.
+    pub fn watch<N: 'static + Send>(&mut self, actor_ref: &ActorRef<N>) {
+        match self.system_context().watcher_ref() {
             Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
                 self.actor_ref().system_ref(),
                 actor_ref.system_ref(),
             )),
 
             None => {
+                // @TODO panic instead
                 error!(
                         "#[{watcher}] attempted to watch #[{watching}] but it does not have a reference to ActorWatcher; this is unexpected",
                         watcher = self.actor_ref().id(),
@@ -207,7 +215,8 @@ impl<'a, M: 'static + Send> ActorContext<M> {
 
     #[cfg(feature = "posix-signals-support")]
     pub fn watch_posix_signals(&mut self) {
-        if let Some(ref watcher_ref) = self.actor_ref().inner.system_context().watcher_ref {
+        // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
+        if let Some(ref watcher_ref) = self.actor_ref().inner.system_context().watcher_ref() {
             watcher_ref.tell(ActorWatcherMessage::SubscribePosixSignals(
                 self.actor_ref().system_ref(),
             ));
@@ -226,7 +235,7 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         self.actor_ref()
             .inner
             .system_context()
-            .dispatcher
+            .dispatcher()
             .spawn_future(future);
     }
 
@@ -234,6 +243,10 @@ impl<'a, M: 'static + Send> ActorContext<M> {
     /// to this context. An `ActorRef` is returned, which
     /// can be used to message the child and manage its
     /// lifecycle.
+    ///
+    /// The actor will be watched, so this actor (the parent)
+    /// is guaranteed to receive a signal when the child
+    /// stops or fails.
     pub fn spawn<A: 'static + Send, N: 'static + Send>(&mut self, actor: A) -> ActorRef<N>
     where
         A: Actor<N>,
@@ -248,12 +261,6 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         self.children.insert(child.id(), child.system_ref());
 
         child
-    }
-
-    /// Returns a reference to the dispatcher for the system, which is not
-    /// configurable.
-    pub fn system_dispatcher(&self) -> WorkStealingDispatcher {
-        self.actor_ref().inner.system_context().dispatcher.clone()
     }
 }
 
@@ -352,7 +359,7 @@ pub(in crate::actor) trait ActorRefInnerShim<M: 'static + Send> {
     fn initialize(&mut self, cell: Weak<ActorCell<M>>);
     fn parent_ref(&self) -> SystemActorRef;
     fn shard(&self) -> &Arc<ActorShard>;
-    fn system_context(&self) -> &Arc<ActorSystemContext>;
+    fn system_context(&self) -> &ActorSystemContext;
 }
 
 /// A reference to an underlying actor through which messages can be sent.
@@ -416,7 +423,7 @@ impl<F: 'static + Send, M: 'static + Send> ActorRefInnerShim<F> for WrappedActor
         self.inner.shard()
     }
 
-    fn system_context(&self) -> &Arc<ActorSystemContext> {
+    fn system_context(&self) -> &ActorSystemContext {
         self.inner.system_context()
     }
 }
@@ -426,9 +433,45 @@ pub(in crate::actor) struct ActorRefInner<M: 'static + Send> {
     pub(in crate::actor) id: usize,
     pub(in crate::actor) new_cell: Weak<ActorCell<M>>,
     pub(in crate::actor) shard: Arc<ActorShard>,
-    pub(in crate::actor) system_context: Arc<ActorSystemContext>,
-    pub(in crate::actor) custom_mailbox_appender:
-        Option<Box<'static + MailboxAppender<M> + Send + Sync>>,
+    pub(in crate::actor) system_context: ActorSystemContext,
+    pub(in crate::actor) custom_mailbox_appender: Option<MailboxAppender<M>>,
+}
+
+struct EmptyActorRefInner;
+
+impl<M: 'static + Send> ActorRefInnerShim<M> for EmptyActorRefInner {
+    fn actor_type(&self) -> ActorType {
+        ActorType::Root
+    }
+
+    fn enqueue(&self, _: M) {}
+
+    fn enqueue_cancellable(&self, _: Cancellable, _: M, _: Option<Thunk>) {}
+
+    fn enqueue_done(&self) {}
+
+    fn enqueue_system(&self, _: SystemMsg) {}
+
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn initialize(&mut self, _: Weak<ActorCell<M>>) {}
+
+    fn parent_ref(&self) -> SystemActorRef {
+        SystemActorRef {
+            id: 1,
+            scheduler: Box::new(NoopActorRefScheduler),
+        }
+    }
+
+    fn shard(&self) -> &Arc<ActorShard> {
+        panic!("pantomime bug: shard called on empty ActorRef")
+    }
+
+    fn system_context(&self) -> &ActorSystemContext {
+        panic!("pantomime bug: shard called on empty ActorRef")
+    }
 }
 
 impl<M: 'static + Send> ActorRefInnerShim<M> for ActorRefInner<M> {
@@ -547,7 +590,7 @@ impl<M: 'static + Send> ActorRefInnerShim<M> for ActorRefInner<M> {
         &self.shard
     }
 
-    fn system_context(&self) -> &Arc<ActorSystemContext> {
+    fn system_context(&self) -> &ActorSystemContext {
         &self.system_context
     }
 }
@@ -555,6 +598,15 @@ impl<M: 'static + Send> ActorRefInnerShim<M> for ActorRefInner<M> {
 impl<M: 'static + Send> ActorRef<M> {
     pub(in crate::actor) fn new(inner: Arc<ActorRefInnerShim<M> + 'static + Send + Sync>) -> Self {
         Self { inner }
+    }
+
+    /// Returns an empty ActorRef that can't receive messages. This is useful
+    /// as a placeholder that will at some later point be replaced with a
+    /// real actor.
+    pub fn empty() -> Self {
+        Self {
+            inner: Arc::new(EmptyActorRefInner),
+        }
     }
 
     pub(in crate::actor) fn actor_type(&self) -> ActorType {
@@ -588,14 +640,10 @@ impl<M: 'static + Send> ActorRef<M> {
     /// there is one. Even if that results in a new call to execute_system, that will
     /// be started from within the custom_dispatcher, so this is okay.
     #[inline(always)]
-    fn shard_execute(
-        &self,
-        event: ActorShardEvent,
-        dispatcher: Option<Box<'static + Dispatcher + Send + Sync>>,
-    ) {
+    fn shard_execute(&self, event: ActorShardEvent, dispatcher: Option<Dispatcher>) {
         let follow_up = match event {
             ActorShardEvent::Messaged => self.shard().messaged(),
-            ActorShardEvent::Scheduled => self.shard().scheduled(10), // @TODO throughput
+            ActorShardEvent::Scheduled(kernel) => self.shard().scheduled(kernel, 10), // @TODO throughput
         };
 
         if let Some(follow_up) = follow_up {
@@ -603,17 +651,17 @@ impl<M: 'static + Send> ActorRef<M> {
 
             match dispatcher {
                 None => {
-                    self.system_context().dispatcher.execute(Box::new(move || {
+                    self.system_context().dispatcher().execute(move || {
                         next_self.shard_execute(follow_up, None);
-                    }));
+                    });
                 }
 
                 Some(ref d) => {
-                    let d2 = d.safe_clone();
+                    let d2 = d.clone();
 
-                    d.execute(Box::new(move || {
+                    d.execute(move || {
                         next_self.shard_execute(follow_up, Some(d2));
-                    }));
+                    });
                 }
             }
         }
@@ -676,7 +724,7 @@ impl<M: 'static + Send> ActorRef<M> {
     }
 
     #[inline(always)]
-    pub(crate) fn system_context(&self) -> &Arc<ActorSystemContext> {
+    pub(crate) fn system_context(&self) -> &ActorSystemContext {
         &self.inner.system_context()
     }
 
