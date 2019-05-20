@@ -88,6 +88,12 @@ impl SingleThreadedDispatcher {
     }
 }
 
+impl Default for SingleThreadedDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DispatcherLogic for SingleThreadedDispatcher {
     fn clone_box(&self) -> Box<DispatcherLogic + 'static + Send + Sync> {
         Box::new(Self {

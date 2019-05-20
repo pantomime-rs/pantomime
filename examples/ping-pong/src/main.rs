@@ -106,5 +106,5 @@ impl Actor<()> for Reaper {
 }
 
 fn main() -> io::Result<()> {
-    ActorSystem::spawn(Reaper)
+    ActorSystem::new().spawn(Reaper)
 }

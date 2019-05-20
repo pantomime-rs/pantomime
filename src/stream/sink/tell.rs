@@ -94,7 +94,7 @@ where
 {
     fn attach(
         &mut self,
-        ctx: &StreamContext,
+        _: &StreamContext,
         actor_ref: &ActorRef<AsyncAction<(), TellCommand>>,
     ) -> Option<AsyncAction<(), TellCommand>> {
         self.logic_ref = actor_ref.clone();

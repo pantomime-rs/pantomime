@@ -43,6 +43,12 @@ where
     }
 }
 
+impl<M: 'static + Send> Default for CrossbeamChannelMailboxLogic<M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<M: 'static + Send> MailboxAppenderLogic<M> for CrossbeamChannelMailboxAppenderLogic<M> {
     fn append(&self, message: M) {
         if let Err(_e) = self.sender.send(MaybeCancelled::new(message, None, None)) {
@@ -107,7 +113,7 @@ impl<M: 'static + Send> MailboxLogic<M> for CrossbeamChannelMailboxLogic<M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mailbox::{CrossbeamChannelMailboxLogic, Mailbox, MailboxAppender};
+    use crate::mailbox::{CrossbeamChannelMailboxLogic, Mailbox};
     use std::thread;
 
     #[test]

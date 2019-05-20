@@ -165,6 +165,7 @@ where
     Msg: 'static + Send,
     Logic: 'static + Send,
 {
+    #[allow(clippy::cyclomatic_complexity)]
     fn receive(
         &mut self,
         msg: DetachedActorMsg<A, B, Msg>,

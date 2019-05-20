@@ -1,4 +1,4 @@
-use crate::dispatcher::{BoxedFn1In0Out, Thunk, Trampoline};
+use crate::dispatcher::{BoxedFn1In0Out, Trampoline};
 use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
@@ -58,7 +58,7 @@ where
 
     fn completed(self) -> Trampoline {
         if let Some(f) = self.on_termination {
-            if let Err(e) = catch_unwind(move || f.apply(Terminated::Completed)) {
+            if let Err(_e) = catch_unwind(move || f.apply(Terminated::Completed)) {
                 // @TODO we should have some mechanism for this
                 debug!("user-supplied watch_termination function panicked");
             }
@@ -69,7 +69,7 @@ where
 
     fn failed(self, e: Error) -> Trampoline {
         if let Some(f) = self.on_termination {
-            if let Err(e) = catch_unwind(move || f.apply(Terminated::Failed(e))) {
+            if let Err(_e) = catch_unwind(move || f.apply(Terminated::Failed(e))) {
                 // @TODO we should have some mechanism for this
                 debug!("user-supplied watch_termination function panicked");
             }

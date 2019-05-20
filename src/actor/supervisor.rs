@@ -137,7 +137,7 @@ mod tests {
             }
         }
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 
     // @TODO test failures in signal handling

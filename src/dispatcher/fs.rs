@@ -31,7 +31,8 @@ where
 {
     fn execute(&self, future: F) -> Result<(), future::ExecuteError<F>> {
         // @TODO error?
-        Ok(self.spawn_future(future))
+        self.spawn_future(future);
+        Ok(())
     }
 }
 

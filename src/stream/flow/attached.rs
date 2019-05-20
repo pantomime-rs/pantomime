@@ -99,7 +99,7 @@ where
             logic,
             connected: false,
             cycles: 0,
-            upstream: upstream,
+            upstream,
             downstream: Disconnected,
             phantom: PhantomData,
         }

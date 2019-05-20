@@ -1,4 +1,4 @@
-use crate::actor::{Actor, ActorContext, ActorRef, ActorSystemContext, Signal};
+use crate::actor::{Actor, ActorContext, ActorRef, Signal};
 use futures::*;
 use std::time::Duration;
 
@@ -127,8 +127,7 @@ impl<Resp: 'static + Send> Actor<Resp> for AskActor<Resp> {
 mod tests {
     use super::*;
     use crate::prelude::*;
-    use crate::testkit::*;
-    use std::{thread, time};
+    use std::time;
 
     struct Greeter;
 
@@ -161,7 +160,7 @@ mod tests {
                     let greeter = ctx.spawn(Greeter);
 
                     let reply = greeter
-                        .ask_infinite(|reply| Msg::Hello(reply))
+                        .ask_infinite(Msg::Hello)
                         .wait()
                         .expect("actor didn't reply");
 
@@ -172,7 +171,7 @@ mod tests {
             }
         }
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 
     #[test]
@@ -187,7 +186,7 @@ mod tests {
                     let greeter = ctx.spawn(Greeter);
 
                     let is_err = greeter
-                        .ask(time::Duration::from_millis(100), |reply| Msg::Rude(reply))
+                        .ask(time::Duration::from_millis(100), Msg::Rude)
                         .wait()
                         .is_err();
 
@@ -198,6 +197,6 @@ mod tests {
             }
         }
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 }

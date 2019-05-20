@@ -115,7 +115,6 @@ impl<M: 'static + Send> Actor<M> for ProbeActor<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{thread, time};
 
     struct Doubler;
 
@@ -158,6 +157,6 @@ mod tests {
             }
         }
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 }

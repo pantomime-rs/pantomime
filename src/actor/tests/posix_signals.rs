@@ -40,9 +40,17 @@ impl Actor<()> for MyActor {
 #[test]
 #[cfg(not(windows))]
 fn basic_test() {
-    let mut system = ActorSystem::new().start();
+    struct TestReaper;
 
-    system.spawn(MyActor);
+    impl Actor<()> for TestReaper {
+        fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-    system.join();
+        fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+            if let Signal::Started = signal {
+                ctx.spawn(MyActor);
+            }
+        }
+    }
+
+    assert!(ActorSystem::new().spawn(TestReaper).is_ok());
 }

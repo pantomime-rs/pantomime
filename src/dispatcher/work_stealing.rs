@@ -79,7 +79,7 @@ impl WorkStealingDispatcher {
             let injector = injector.clone();
 
             let mut stealers: Vec<Stealer<WorkStealingDispatcherMessage>> =
-                stealers.iter().map(|s| s.clone()).collect();
+                stealers.to_vec();
 
             let w = workers.remove(i);
             let _ = stealers.remove(i);
@@ -110,7 +110,7 @@ impl WorkStealingDispatcher {
                         if let Some(worker) = w.replace(None) {
                             let mut stealers = Vec::new();
 
-                            for stealer in self.stealers.pop() {
+                            if let Some(stealer) = self.stealers.pop() {
                                 stealers.push(stealer);
                             }
 
@@ -177,26 +177,18 @@ impl WorkStealingDispatcher {
                                                     let mut i = 0;
                                                     let mut step = trampoline.step;
 
-                                                    loop {
-                                                        match step {
-                                                            TrampolineStep::Bounce(next_step) => {
-                                                                if i == trampoline_limit {
-                                                                    worker.push(
-                                                                        WorkStealingDispatcherMessage::ExecuteTrampoline(
-                                                                            Trampoline { step: TrampolineStep::Bounce(next_step) }
-                                                                        )
-                                                                    );
+                                                    while let TrampolineStep::Bounce(next_step) = step {
+                                                        if i == trampoline_limit {
+                                                            worker.push(
+                                                                WorkStealingDispatcherMessage::ExecuteTrampoline(
+                                                                    Trampoline { step: TrampolineStep::Bounce(next_step) }
+                                                                )
+                                                            );
 
-                                                                    break;
-                                                                } else {
-                                                                    i += 1;
-                                                                    step = next_step.apply().step;
-                                                                }
-                                                            }
-
-                                                            TrampolineStep::Done => {
-                                                                break;
-                                                            }
+                                                            break;
+                                                        } else {
+                                                            i += 1;
+                                                            step = next_step.apply().step;
                                                         }
                                                     }
                                                 }
@@ -318,26 +310,18 @@ impl WorkStealingDispatcher {
                                                     let mut i = 0;
                                                     let mut step = trampoline.step;
 
-                                                    loop {
-                                                        match step {
-                                                            TrampolineStep::Bounce(next_step) => {
-                                                                if i == trampoline_limit {
-                                                                    worker.push(
-                                                                        WorkStealingDispatcherMessage::ExecuteTrampoline(
-                                                                            Trampoline { step: TrampolineStep::Bounce(next_step) }
-                                                                        )
-                                                                    );
+                                                    while let TrampolineStep::Bounce(next_step) = step {
+                                                        if i == trampoline_limit {
+                                                            worker.push(
+                                                                WorkStealingDispatcherMessage::ExecuteTrampoline(
+                                                                    Trampoline { step: TrampolineStep::Bounce(next_step) }
+                                                                )
+                                                            );
 
-                                                                    break;
-                                                                } else {
-                                                                    i += 1;
-                                                                    step = next_step.apply().step;
-                                                                }
-                                                            }
-
-                                                            TrampolineStep::Done => {
-                                                                break;
-                                                            }
+                                                            break;
+                                                        } else {
+                                                            i += 1;
+                                                            step = next_step.apply().step;
                                                         }
                                                     }
                                                 }

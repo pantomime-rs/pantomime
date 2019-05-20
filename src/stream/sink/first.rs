@@ -1,8 +1,7 @@
-use crate::dispatcher::{BoxedFn2In0Out, Thunk, Trampoline};
+use crate::dispatcher::{BoxedFn2In0Out, Trampoline};
 use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, UnwindSafe};
 
 /// A `Sink` that stores the first emitted element, offering it to
 /// the registered termination handler when it terminates.
