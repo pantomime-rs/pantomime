@@ -35,8 +35,6 @@ where
         if (self.func)(&elem) {
             Action::Push(elem)
         } else {
-            println!("will cancel");
-
             Action::Cancel
         }
     }
@@ -46,7 +44,6 @@ where
     }
 
     fn completed(&mut self) -> Action<A> {
-        println!("done");
         Action::Complete
     }
 

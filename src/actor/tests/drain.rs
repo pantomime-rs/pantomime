@@ -1,8 +1,8 @@
 use crate::actor::*;
 use std::time::Duration;
 
-const LIMIT: usize = 1024;
-const TIMES: usize = 128;
+const LIMIT: usize = 8;
+const TIMES: usize = 4;
 
 struct MyActor {
     id: usize,
@@ -27,7 +27,7 @@ impl Actor<usize> for MyActor {
         match signal {
             Signal::Started => {
                 if self.id == 0 {
-                    for id in 1..LIMIT + 1 {
+                    for id in 1..=LIMIT {
                         let a = context.spawn(MyActor {
                             id,
                             actor_ref: context.actor_ref().clone(),
@@ -56,19 +56,39 @@ impl Actor<usize> for MyActor {
 
 #[test]
 fn test() {
-    let mut system = ActorSystem::new().start();
+    struct TestReaper;
 
-    let mut probe = system.spawn_probe::<usize>();
+    impl Actor<()> for TestReaper {
+        fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-    system.spawn(MyActor {
-        id: 0,
-        actor_ref: probe.actor_ref.clone(),
-        count: 0,
-    });
+        fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+            if let Signal::Started = signal {
+                let mut probe = ctx.spawn_probe::<usize>();
 
-    assert_eq!(probe.receive(Duration::from_secs(10)), LIMIT * TIMES);
+                ctx.spawn(MyActor {
+                    id: 0,
+                    actor_ref: probe.actor_ref.clone(),
+                    count: 0,
+                });
 
-    system.context.drain();
+                assert_eq!(probe.receive(Duration::from_secs(10)), LIMIT * TIMES);
 
-    system.join();
+                ctx.actor_ref().drain();
+            }
+        }
+    }
+
+    // @TODO revisit this -- the main shard is blocking execution, so we configure
+    //       each actor to be on its own shard
+    //
+    //       however, im not convinced shards should stay around, will investigate
+    //       next
+
+    assert!(ActorSystem::new()
+        .with_config_defaults(&[
+            ("PANTOMIME_SHARDS_MIN", "16384"),
+            ("PANTOMIME_SHARDS_MAX", "16384")
+        ])
+        .spawn(TestReaper)
+        .is_ok());
 }

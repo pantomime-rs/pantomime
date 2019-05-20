@@ -1,8 +1,8 @@
-use crate::dispatcher::{BoxedFn1In0Out, Thunk, Trampoline};
+use crate::dispatcher::{BoxedFn1In0Out, Trampoline};
 use crate::stream::detached::*;
 use crate::stream::*;
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, UnwindSafe};
+use std::panic::UnwindSafe;
 
 /// A `Sink` that terminates the provided logic, dropping anything
 /// it may emit.
@@ -43,6 +43,7 @@ where
     }
 }
 
+// @TODO document this thing
 impl<A, M, L: DetachedLogic<A, (), M>, Up: Producer<A>> Consumer<A>
     for DetachedLogicSink<A, M, L, Up>
 where
@@ -52,13 +53,13 @@ where
 {
     fn started<Produce: Producer<A>>(
         self,
-        producer: Produce,
-        context: &StreamContext,
+        _producer: Produce,
+        _context: &StreamContext,
     ) -> Trampoline {
         panic!()
     }
 
-    fn produced<Produce: Producer<A>>(self, producer: Produce, _: A) -> Trampoline {
+    fn produced<Produce: Producer<A>>(self, _producer: Produce, _: A) -> Trampoline {
         panic!()
     }
 
@@ -66,7 +67,7 @@ where
         panic!()
     }
 
-    fn failed(self, e: Error) -> Trampoline {
+    fn failed(self, _e: Error) -> Trampoline {
         panic!()
     }
 }

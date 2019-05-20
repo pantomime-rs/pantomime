@@ -4,6 +4,7 @@ use crate::dispatcher::{Dispatcher, WorkStealingDispatcher};
 use crate::io::{IoCoordinator, IoCoordinatorMsg};
 use crossbeam::channel;
 use fern::colors::{Color, ColoredLevelConfig};
+use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -20,7 +21,10 @@ static INITIALIZE_ONCE: Once = Once::new();
 ///
 /// Effectively, an `ActorSystem` is a collection of references to the
 /// various datastructures that support the execution of its actors.
-pub struct ActorSystem {}
+#[derive(Default)]
+pub struct ActorSystem {
+    config_defaults: Option<HashMap<String, String>>,
+}
 
 #[derive(Clone)]
 pub struct ActorSystemContext {
@@ -28,6 +32,7 @@ pub struct ActorSystemContext {
 }
 
 impl ActorSystemContext {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         config: ActorSystemConfig,
         dispatcher: Dispatcher,
@@ -180,6 +185,7 @@ pub struct ActorSystemContextInner {
 }
 
 impl ActorSystemContextInner {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         config: ActorSystemConfig,
         dispatcher: Dispatcher,
@@ -215,14 +221,6 @@ impl ActorSystemContextInner {
         }
     }
 
-    fn config(&self) -> &ActorSystemConfig {
-        &self.config
-    }
-
-    fn dispatcher(&self) -> &Dispatcher {
-        &self.dispatcher
-    }
-
     fn drain(&self) {
         let _ = self.sender.send(ActorSystemMsg::Drain);
     }
@@ -244,7 +242,7 @@ impl ActorSystemContextInner {
         if let Some(ref timer_ref) = self.timer_ref {
             timer_ref.tell(TimerMsg::Schedule {
                 after: timeout,
-                thunk: TimerThunk::new(Box::new(move || f())),
+                thunk: TimerThunk::new(Box::new(f)),
             });
         } else {
             panic!("pantomime bug: schedule_thunk called on internal context");
@@ -398,6 +396,8 @@ impl ActiveActorSystem {
             if self.context.inner.config.process_exit {
                 ::std::process::exit(exit_code);
             }
+
+            0
         };
     }
 
@@ -438,10 +438,6 @@ where
             phantom: PhantomData,
         }
     }
-
-    fn failed(&self) -> bool {
-        self.failed.load(Ordering::SeqCst)
-    }
 }
 
 impl<M, A: Actor<M>> Actor<()> for ReaperMonitor<M, A>
@@ -476,6 +472,27 @@ where
 }
 
 impl ActorSystem {
+    pub fn new() -> Self {
+        Self {
+            config_defaults: None,
+        }
+    }
+
+    pub fn with_config_defaults(mut self, defaults: &[(&str, &str)]) -> Self {
+        let config_defaults = {
+            let mut map = HashMap::new();
+
+            for (key, value) in defaults.iter() {
+                map.insert(key.to_string(), value.to_string());
+            }
+
+            map
+        };
+
+        self.config_defaults = Some(config_defaults);
+        self
+    }
+
     /// Spawns an ActorSystem on the current thread. A reaper actor must
     /// be provided whose job is to spawn other actors and optionally
     /// watch them.
@@ -485,11 +502,11 @@ impl ActorSystem {
     /// A suggested pattern is to spawn and watch all of your top level actors
     /// with the reaper, and react to any termination signals of those actors
     /// via the `receive_signal` method.
-    pub fn spawn<M: 'static + Send, A: 'static + Send>(actor: A) -> Result<(), Error>
+    pub fn spawn<M: 'static + Send, A: 'static + Send>(self, actor: A) -> Result<(), Error>
     where
         A: Actor<M>,
     {
-        let mut system = ActorSystem::new().start();
+        let mut system = self.start();
 
         let failed = Arc::new(AtomicBool::new(false));
 
@@ -504,18 +521,14 @@ impl ActorSystem {
         }
     }
 
-    fn new() -> Self {
-        Self {}
-    }
-
-    fn start(self) -> ActiveActorSystem {
+    fn start(mut self) -> ActiveActorSystem {
         INITIALIZE_ONCE.call_once(|| {
             if let Some(log_err) = Self::setup_logger().err() {
                 panic!("pantomime bug: cannot initialize logger; {}", log_err);
             }
         });
 
-        let config = ActorSystemConfig::parse();
+        let config = ActorSystemConfig::parse(self.config_defaults.take());
 
         let dispatcher_logic = WorkStealingDispatcher::new(
             config.default_dispatcher_parallelism(),
@@ -575,7 +588,7 @@ impl ActorSystem {
         let context = ActorSystemContext::new(
             config.clone(),
             dispatcher.clone(),
-            usize::MIN + 100, // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
+            100, // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
             Some(timer_ref.clone()),
             Some(io_coordinator_ref),
             Some(actor_watcher_ref),

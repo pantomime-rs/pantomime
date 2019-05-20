@@ -6,6 +6,7 @@
 extern crate pantomime;
 
 use pantomime::prelude::*;
+use std::io;
 
 struct MyActor;
 
@@ -27,10 +28,6 @@ impl Actor<()> for MyActor {
     }
 }
 
-fn main() {
-    let mut system = ActorSystem::new().start();
-
-    let _my_actor = system.spawn(MyActor);
-
-    system.join();
+fn main() -> io::Result<()> {
+    ActorSystem::new().spawn(MyActor)
 }

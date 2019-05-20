@@ -50,15 +50,6 @@ impl Dispatcher {
     pub fn execute_trampoline(&self, trampoline: Trampoline) {
         self.inner.execute_trampoline(trampoline);
     }
-
-    fn shutdown(self) {
-        self.inner.shutdown()
-        // @TODO
-    }
-
-    fn throughput(&self) -> usize {
-        self.inner.throughput()
-    }
 }
 
 impl Clone for Dispatcher {

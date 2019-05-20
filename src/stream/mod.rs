@@ -9,6 +9,7 @@ mod tests;
 
 pub use disconnected::Disconnected;
 pub use flow::*;
+pub use sink::tell::TellEvent;
 pub use sink::*;
 pub use source::*;
 
@@ -16,7 +17,6 @@ use crate::actor::{ActorContext, ActorSystemContext};
 use crate::dispatcher::{Dispatcher, Trampoline};
 use filter::Filter;
 use oxidized::{Consumer, Producer};
-use sink::tell::TellEvent;
 
 pub struct StreamContext {
     dispatcher: Dispatcher,
@@ -202,7 +202,6 @@ impl SpawnStream for StreamContext {
 #[cfg(test)]
 mod temp_tests {
     use crate::actor::*;
-    use crate::stream::flow::detached::Detached;
     use crate::stream::for_each::ForEach;
     use crate::stream::iter::Iter;
     use crate::stream::*;
@@ -266,7 +265,7 @@ mod temp_tests {
             return;
         };
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 
     #[test]
@@ -280,16 +279,11 @@ mod temp_tests {
                 if let Signal::Started = signal {
                     let iterator = 0..2000;
 
-                    let completed = Arc::new(AtomicBool::new(false));
-                    let sum = Arc::new(AtomicUsize::new(0));
-
                     let stream = Iter::new(iterator)
                         .map(spin)
                         .detach()
                         .map(spin)
-                        .to(ForEach::new(|n| {
-                            println!("sink received {}", n);
-                        }));
+                        .to(ForEach::new(|_n| {}));
 
                     ctx.spawn_stream(stream);
 
@@ -305,7 +299,7 @@ mod temp_tests {
             return;
         };
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 
     #[test]
@@ -342,7 +336,7 @@ mod temp_tests {
             return;
         };
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 
     #[test]
@@ -363,9 +357,7 @@ mod temp_tests {
                             .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
                             .map(|n| n * 2)
                             .map(|n| {
-                                if false && n % 1_000_000 == 0 {
-                                    println!("n: {}", n)
-                                } else if n == 399999960 {
+                                if n == 399_999_960 {
                                     std::process::exit(0);
                                 }
                             })
@@ -387,6 +379,6 @@ mod temp_tests {
             return;
         }
 
-        assert!(ActorSystem::spawn(TestReaper).is_ok());
+        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 }

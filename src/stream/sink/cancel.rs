@@ -1,8 +1,7 @@
-use crate::dispatcher::{BoxedFn1In0Out, Thunk, Trampoline};
+use crate::dispatcher::{BoxedFn1In0Out, Trampoline};
 use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, UnwindSafe};
 
 /// `Cancel` immediately cancels its upstream.
 pub struct Cancel<A, Up: Producer<A>>

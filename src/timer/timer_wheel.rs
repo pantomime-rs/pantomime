@@ -322,7 +322,7 @@ impl TimerWheel {
     /// Converts the supplied `time::Duration` to a u64 value representing the
     /// number of milliseconds since the wheel was started.
     fn duration_ms(duration: Duration) -> u64 {
-        (duration.as_secs() * 1_000) + (duration.subsec_nanos() / 1_000_000) as u64
+        (duration.as_secs() * 1_000) + u64::from(duration.subsec_millis())
     }
 }
 

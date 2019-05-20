@@ -1,5 +1,6 @@
 //! Configuration
 
+use std::collections::HashMap;
 use std::{cmp, env, str};
 
 #[derive(Clone, Debug)]
@@ -39,40 +40,46 @@ pub struct ActorSystemConfig {
 // @TODO need to validate
 
 impl ActorSystemConfig {
-    pub fn parse() -> Self {
+    pub fn parse(mut defaults: Option<HashMap<String, String>>) -> Self {
         Self {
             default_dispatcher_parallelism_min: config(
+                &mut defaults,
                 "PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN",
                 4,
             ),
             default_dispatcher_parallelism_max: config(
+                &mut defaults,
                 "PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX",
                 64,
             ),
             default_dispatcher_parallelism_factor: config(
+                &mut defaults,
                 "PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR",
                 1.0,
             ),
             default_dispatcher_task_queue_fifo: config(
+                &mut defaults,
                 "PANTOMIME_DEFAULT_DISPATCHER_TASK_QUEUE_FIFO",
                 true,
             ),
-            log_config_on_start: config("PANTOMIME_LOG_CONFIG_ON_START", false),
-            num_cpus: config("PANTOMIME_NUM_CPUS", num_cpus::get()),
-            process_exit: config("PANTOMIME_PROCESS_EXIT", true),
-            shards_min: config("PANTOMIME_SHARDS_MIN", 128),
-            shards_factor: config("PANTOMIME_SHARDS_FACTOR", 32.0),
-            shards_max: config("PANTOMIME_SHARDS_MAX", 2048),
-            ticker_interval_ms: config("PANTOMIME_TICKER_INTERVAL_MS", 10),
+            log_config_on_start: config(&mut defaults, "PANTOMIME_LOG_CONFIG_ON_START", false),
+            num_cpus: config(&mut defaults, "PANTOMIME_NUM_CPUS", num_cpus::get()),
+            process_exit: config(&mut defaults, "PANTOMIME_PROCESS_EXIT", true),
+            shards_min: config(&mut defaults, "PANTOMIME_SHARDS_MIN", 4),
+            shards_factor: config(&mut defaults, "PANTOMIME_SHARDS_FACTOR", 32.0),
+            shards_max: config(&mut defaults, "PANTOMIME_SHARDS_MAX", 4),
+            ticker_interval_ms: config(&mut defaults, "PANTOMIME_TICKER_INTERVAL_MS", 10),
 
             #[cfg(feature = "posix-signals-support")]
             posix_signals: parse_posix_signals(config(
+                &mut defaults,
                 "PANTOMIME_POSIX_SIGNALS",
                 "SIGINT,SIGTERM,SIGHUP,SIGUSR1,SIGUSR2".to_string(),
             )),
 
             #[cfg(feature = "posix-signals-support")]
             posix_shutdown_signals: parse_posix_signals(config(
+                &mut defaults,
                 "PANTOMIME_POSIX_EXIT_SIGNALS",
                 "SIGINT,SIGTERM".to_string(),
             )),
@@ -101,10 +108,20 @@ impl ActorSystemConfig {
 }
 
 /// A helper function for extracting configuration values
-/// from the environment. This can slightly simplify
-/// a similar pattern to the above in applications.
-pub fn config<T: str::FromStr>(name: &str, default: T) -> T {
-    match env::var(name).ok() {
+/// from the environment or an optional map of overrides. This
+/// can slightly simplify a similar pattern to the above in applications.
+#[allow(clippy::implicit_hasher)]
+pub fn config<T: str::FromStr>(
+    defaults: &mut Option<HashMap<String, String>>,
+    name: &str,
+    default: T,
+) -> T {
+    let extract_default = || match defaults {
+        Some(ref mut m) => m.remove(name),
+        None => None,
+    };
+
+    match env::var(name).ok().or_else(extract_default) {
         None => default,
 
         Some(v) => v.parse().ok().unwrap_or_else(|| {
@@ -119,7 +136,7 @@ pub fn config<T: str::FromStr>(name: &str, default: T) -> T {
 fn parse_posix_signals(list: String) -> Vec<i32> {
     let mut signals = Vec::new();
 
-    for sig in list.split(",").map(|s| s.trim().to_uppercase()) {
+    for sig in list.split(',').map(|s| s.trim().to_uppercase()) {
         let signal = match sig.as_str() {
             "SIGHUP" => crate::posix_signals::SIGHUP,
             "SIGINT" => crate::posix_signals::SIGINT,
@@ -143,7 +160,14 @@ mod tests {
 
     #[test]
     fn test_config() {
-        assert_eq!(config("_NOT_SET", 10), 10);
+        assert_eq!(config(&mut None, "_NOT_SET", 10), 10);
+
+        let mut defaults = Some(HashMap::new());
+        defaults
+            .as_mut()
+            .unwrap()
+            .insert("SET".to_string(), "11".to_string());
+        assert_eq!(config(&mut defaults, "SET", 10), 11);
     }
 
     #[test]

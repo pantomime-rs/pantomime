@@ -25,6 +25,12 @@ impl<M: Send + Sync + 'static> MailboxAppenderLogic<M> for NoopMailboxAppenderLo
     }
 }
 
+impl<M: 'static + Send> Default for NoopMailboxAppenderLogic<M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct NoopMailboxLogic<M> {
     data: PhantomData<M>,
 }
@@ -32,6 +38,12 @@ pub struct NoopMailboxLogic<M> {
 impl<M> NoopMailboxLogic<M> {
     pub fn new() -> Self {
         Self { data: PhantomData }
+    }
+}
+
+impl<M: 'static + Send> Default for NoopMailboxLogic<M> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

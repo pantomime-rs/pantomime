@@ -1,13 +1,11 @@
+use crate::actor::ActorRef;
 use crate::actor::*;
-use crate::dispatcher::BoxedFn1In0Out;
-use crate::stream::detached::*;
-use crate::stream::*;
-use ext_mio::{net::UdpSocket, Event, Poll, PollOpt, Ready, Token};
-use std::collections::{HashMap, HashSet};
-use std::io;
-use std::marker::PhantomData;
-use std::net::SocketAddr;
+use ext_mio::{Event, Poll};
+use mio::Events;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread;
+use std::time;
 use std::usize;
 
 const RESERVED_TOKENS: usize = 100;
@@ -19,7 +17,6 @@ pub(crate) enum SubscriptionEvent {
 
 pub(crate) enum IoCoordinatorMsg {
     Subscribe(ActorRef<SubscriptionEvent>),
-    Unsubscribe(usize),
     MioEvent(Event),
 }
 
@@ -65,7 +62,7 @@ impl IoCoordinator {
 }
 
 impl Actor<IoCoordinatorMsg> for IoCoordinator {
-    fn receive(&mut self, msg: IoCoordinatorMsg, context: &mut ActorContext<IoCoordinatorMsg>) {
+    fn receive(&mut self, msg: IoCoordinatorMsg, _: &mut ActorContext<IoCoordinatorMsg>) {
         match msg {
             IoCoordinatorMsg::MioEvent(event) => {
                 let token = event.token().0;
@@ -84,95 +81,6 @@ impl Actor<IoCoordinatorMsg> for IoCoordinator {
 
                 self.last_token_id = next_token_id;
             }
-
-            IoCoordinatorMsg::Unsubscribe(id) => {
-                // @TODO any need to notify the subscriber?
-                self.subscribers.remove(&id);
-            }
-        }
-    }
-}
-
-enum BoundUdpMsg {
-    /// The UDP socket was successfully bound. The socket will remain bound until
-    /// the actor ref is stopped.
-    Bound(SystemActorRef),
-
-    /// Data was received via the UDP socket
-    Received(Vec<u8>),
-}
-
-struct UdpReceived {
-    data: Vec<u8>,
-}
-
-struct UdpSend {
-    data: Vec<u8>,
-}
-
-struct UdpBind {
-    address: SocketAddr,
-    reply_to: ActorRef<BoundUdpMsg>,
-}
-
-struct IoUdp {}
-
-impl IoUdp {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Actor<UdpBind> for IoUdp {
-    fn receive(&mut self, msg: UdpBind, context: &mut ActorContext<UdpBind>) {
-        let bound_udp = context.spawn(BoundUdp::new(msg.reply_to));
-    }
-}
-
-struct BoundUdp {
-    dest: ActorRef<BoundUdpMsg>,
-}
-
-impl BoundUdp {
-    fn new(dest: ActorRef<BoundUdpMsg>) -> Self {
-        Self { dest }
-    }
-}
-
-impl Actor<BoundUdpMsg> for BoundUdp {
-    fn receive(&mut self, msg: BoundUdpMsg, context: &mut ActorContext<BoundUdpMsg>) {}
-
-    fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<BoundUdpMsg>) {
-        match signal {
-            Signal::Started => {
-                self.dest
-                    .tell(BoundUdpMsg::Bound(context.actor_ref().system_ref()));
-            }
-
-            _ => (),
-        }
-    }
-}
-
-use crate::actor::ActorRef;
-use crossbeam::channel;
-use mio::Events;
-use std::thread;
-use std::time;
-
-enum PollerEvent {
-    Stop,
-}
-
-pub(crate) struct ActivePoller {
-    pub(crate) poll: Arc<Poll>,
-    sender: channel::Sender<PollerEvent>,
-}
-
-impl ActivePoller {
-    pub(crate) fn stop(self) {
-        if let Some(e) = self.sender.send(PollerEvent::Stop).err() {
-            error!("failed to stop poller: {}", e)
         }
     }
 }
@@ -183,15 +91,16 @@ pub(crate) struct Poller {
 
 impl Poller {
     pub(crate) fn new() -> Self {
-        let poll = Arc::new(Poll::new().expect("TODO"));
+        // @TODO this should be explicitly modeled...
+        let poll = Arc::new(Poll::new().expect("pantomime bug: cannot create Poll"));
 
         Self { poll }
     }
 
-    pub(crate) fn run(self, actor_ref: &ActorRef<IoCoordinatorMsg>) -> ActivePoller {
+    pub(crate) fn run(self, actor_ref: &ActorRef<IoCoordinatorMsg>) {
         let poll = self.poll;
 
-        let (sender, receiver) = channel::unbounded();
+        // @TODO revisit stopping
 
         {
             let actor_ref = actor_ref.clone();
@@ -201,46 +110,20 @@ impl Poller {
                 let mut events = Events::with_capacity(1024);
 
                 loop {
+                    // @TODO rethink expect below
                     poll.poll_interruptible(&mut events, Some(time::Duration::from_millis(1000)))
-                        .expect("TODO");
+                        .expect("pantomime bug: poll_interruptible failed");
 
                     for event in &events {
                         actor_ref.tell(IoCoordinatorMsg::MioEvent(event));
                     }
-
-                    if true {
-                        loop {
-                            match receiver.try_recv() {
-                                Ok(PollerEvent::Stop) => {
-                                    println!("done");
-                                    return;
-                                }
-
-                                Err(channel::TryRecvError::Empty) => {
-                                    println!("empty");
-                                    break;
-                                }
-
-                                Err(channel::TryRecvError::Disconnected) if false => {
-                                    // @TODO
-                                    println!("disconnected");
-                                    return;
-                                }
-
-                                _ => {
-                                    break;
-                                }
-                            }
-                        }
-                    }
                 }
             });
         }
-
-        ActivePoller { poll, sender }
     }
 }
 
+// @TODO reactivate tests below
 /*
 #[cfg(test)]
 mod tests {

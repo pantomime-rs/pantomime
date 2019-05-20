@@ -46,7 +46,7 @@ impl UdpSource {
                     None
                 }
 
-                Err(e) => {
+                Err(_e) => {
                     // @TODO error
                     Some(AsyncAction::Fail(Error))
                 }
@@ -166,7 +166,7 @@ impl UdpSink {
                         None
                     }
 
-                    Err(e) => {
+                    Err(_e) => {
                         // @TODO error
                         None
                     }

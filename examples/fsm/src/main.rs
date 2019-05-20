@@ -1,19 +1,18 @@
 /// This example shows one way you could model an FSM with
 /// Pantomime actors.
-
 extern crate pantomime;
 
 use pantomime::prelude::*;
-use std::time::Duration;
+use std::{io, time::Duration};
 
 enum State {
     A,
-    B
+    B,
 }
 
 enum Msg {
     Tick,
-    Transition
+    Transition,
 }
 
 struct MyActor {
@@ -50,7 +49,6 @@ impl MyActor {
     }
 }
 
-
 impl Actor<Msg> for MyActor {
     fn receive(&mut self, message: Msg, context: &mut ActorContext<Msg>) {
         match self.state {
@@ -65,22 +63,15 @@ impl Actor<Msg> for MyActor {
     }
 
     fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<Msg>) {
-        match signal {
-            Signal::Started => {
-                context.schedule_periodic_delivery("transition", Duration::from_millis(2000), || Msg::Transition);
-                context.schedule_periodic_delivery("tick", Duration::from_millis(100), || Msg::Tick);
-            }
-
-            _ => {}
+        if let Signal::Started = signal {
+            context.schedule_periodic_delivery("transition", Duration::from_millis(2000), || {
+                Msg::Transition
+            });
+            context.schedule_periodic_delivery("tick", Duration::from_millis(100), || Msg::Tick);
         }
     }
 }
 
-fn main() {
-    let mut system = ActorSystem::new().start();
-
-    let _my_actor = system.spawn(MyActor::new());
-
-    system.join();
+fn main() -> io::Result<()> {
+    ActorSystem::new().spawn(MyActor::new())
 }
-

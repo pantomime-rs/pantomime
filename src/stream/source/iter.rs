@@ -41,8 +41,6 @@ where
     }
 
     fn cancel<Consume: Consumer<A>>(self, consumer: Consume) -> Trampoline {
-        println!("cancel!");
-
         consumer.completed()
     }
 }

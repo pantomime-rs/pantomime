@@ -34,6 +34,7 @@ pub struct CrossbeamSegQueueMailboxLogic<M: 'static + Send> {
     queue: Arc<SegQueue<MaybeCancelled<M>>>,
 }
 
+
 impl<M: 'static> CrossbeamSegQueueMailboxLogic<M>
 where
     M: Send,
@@ -42,6 +43,12 @@ where
         Self {
             queue: Arc::new(SegQueue::new()),
         }
+    }
+}
+
+impl<M: 'static + Send> Default for CrossbeamSegQueueMailboxLogic<M> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -81,7 +88,7 @@ impl<M: 'static + Send> MailboxLogic<M> for CrossbeamSegQueueMailboxLogic<M> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Mailbox, MailboxAppender};
+    use super::super::Mailbox;
     use super::*;
     use std::thread;
 

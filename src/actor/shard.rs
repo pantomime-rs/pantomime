@@ -50,7 +50,7 @@ impl ActorShard {
     }
 
     pub(in crate::actor) fn custom_dispatcher(&self) -> Option<Dispatcher> {
-        self.custom_dispatcher.as_ref().map(|d| d.clone())
+        self.custom_dispatcher.as_ref().cloned()
     }
 
     #[inline(always)]

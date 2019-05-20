@@ -159,7 +159,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
                 self.stash.push(StashedMsg::Msg(msg));
             }
 
-            ActorCellState::Stopping { failure: _ }
+            ActorCellState::Stopping { .. }
             | ActorCellState::Stopped
             | ActorCellState::Failed => {
                 // @TODO dead letters
@@ -323,7 +323,7 @@ impl<M: 'static + Send> ActorCellContents<M> {
                 self.transition(ActorCellState::Failed);
             }
 
-            (_, SystemMsg::Stop { failure: _ }) => {
+            (_, SystemMsg::Stop { .. }) => {
                 // @TODO think about what it means to have received this
                 // if we're currently Stopped (ie not Failed)
             }

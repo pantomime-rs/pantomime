@@ -1,8 +1,7 @@
-use crate::dispatcher::{BoxedFn2In0Out, Thunk, Trampoline};
+use crate::dispatcher::{BoxedFn2In0Out, Trampoline};
 use crate::stream::oxidized::*;
 use crate::stream::*;
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, UnwindSafe};
 
 /// A `Sink` that stores the last emitted element, offering it to
 /// the registered termination handler when it terminates.
@@ -85,7 +84,7 @@ impl<A, Up: Producer<A>> Sink<A> for Last<A, Up>
 where
     A: 'static + Send,
 {
-    fn start(mut self, stream_context: &StreamContext) -> Trampoline {
+    fn start(self, stream_context: &StreamContext) -> Trampoline {
         let sink = Last {
             element: self.element,
             on_termination: self.on_termination,

@@ -16,48 +16,53 @@ impl Actor<MyMsg> for MyActor {
 
 #[test]
 fn basic_test() {
-    let mut system = ActorSystem::new().start();
+    struct TestReaper;
 
-    let mut probe = system.spawn_probe::<bool>();
+    impl Actor<()> for TestReaper {
+        fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
-    let actor = system.spawn(MyActor);
+        fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+            if let Signal::Started = signal {
+                let mut probe = ctx.spawn_probe();
 
-    // Create an actor ref that can receive usize, and turn them into bool
-    // that our probe understands
-    let probe_recv = probe
-        .actor_ref
-        .convert(|n| if n == 0 { false } else { true });
+                let actor = ctx.spawn(MyActor);
 
-    // Create an actor ref that can receive bool, and turn them into usize
-    // that our actor understands
-    let actor_send = actor.convert(move |n: bool| {
-        if n {
-            MyMsg {
-                num: 1,
-                reply_to: probe_recv.clone(),
-            }
-        } else {
-            MyMsg {
-                num: 0,
-                reply_to: probe_recv.clone(),
+                // Create an actor ref that can receive usize, and turn them into bool
+                // that our probe understands
+                let probe_recv = probe
+                    .actor_ref
+                    .convert(|n| n != 0);
+                // Create an actor ref that can receive bool, and turn them into usize
+                // that our actor understands
+                let actor_send = actor.convert(move |n: bool| {
+                    if n {
+                        MyMsg {
+                            num: 1,
+                            reply_to: probe_recv.clone(),
+                        }
+                    } else {
+                        MyMsg {
+                            num: 0,
+                            reply_to: probe_recv.clone(),
+                        }
+                    }
+                });
+
+                // Tell our actor to tell our probe a result
+                actor_send.tell(true);
+
+                // Our probe should get a true
+                assert!(probe.receive(Duration::from_secs(10)));
+
+                // And the inverse
+
+                actor_send.tell(false);
+                assert!(!probe.receive(Duration::from_secs(10)));
+
+                ctx.actor_ref().drain();
             }
         }
-    });
+    }
 
-    // Tell our actor to tell our probe a result
-    actor_send.tell(true);
-
-    // Our probe should get a true
-    assert!(probe.receive(Duration::from_secs(10)));
-
-    // And the inverse
-
-    actor_send.tell(false);
-    assert!(!probe.receive(Duration::from_secs(10)));
-
-    // Dispatch shutdown
-    system.context.stop();
-
-    // Ensure that system messages (e.g. shutdown) are handled
-    system.join();
+    assert!(ActorSystem::new().spawn(TestReaper).is_ok());
 }

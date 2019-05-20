@@ -2,9 +2,9 @@ use crate::actor::*;
 use crate::io::*;
 use crate::stream::detached::*;
 use crate::stream::*;
-use ext_mio::{tcp::*, Poll, PollOpt, Ready, Token};
+use ext_mio::{net::*, Poll, PollOpt, Ready, Token};
 use std::io::{Read, Write};
-use std::net::SocketAddr;
+use std::net::Shutdown;
 use std::sync::Arc;
 use std::usize;
 
@@ -45,7 +45,7 @@ impl TcpSource {
                     None
                 }
 
-                Err(e) => {
+                Err(_e) => {
                     // @TODO error
                     Some(AsyncAction::Fail(Error))
                 }
@@ -116,8 +116,6 @@ impl DetachedLogic<(), Payload, TcpSourceMsg> for TcpSource {
     }
 
     fn completed(&mut self) -> Option<AsyncAction<Payload, TcpSourceMsg>> {
-        println!("completed!");
-
         Some(AsyncAction::Complete)
     }
 
@@ -168,7 +166,7 @@ impl TcpSink {
                         None
                     }
 
-                    Err(e) => {
+                    Err(_e) => {
                         // @TODO error
                         None
                     }
@@ -242,17 +240,17 @@ impl DetachedLogic<Payload, (), TcpSinkMsg> for TcpSink {
     }
 
     fn completed(&mut self) -> Option<AsyncAction<(), TcpSinkMsg>> {
-        if let Err(e) = self.stream.shutdown(Shutdown::Write) {
+        if let Err(_e) = self.stream.shutdown(Shutdown::Write) {
             // @TODO
         } else {
-            println!("closed write");
+            // @TODO
         }
 
         Some(AsyncAction::Complete)
     }
 
     fn failed(&mut self, error: Error) -> Option<AsyncAction<(), TcpSinkMsg>> {
-        if let Err(e) = self.stream.shutdown(Shutdown::Write) {
+        if let Err(_e) = self.stream.shutdown(Shutdown::Write) {
             // @TODO
         }
 
