@@ -47,7 +47,7 @@ impl<M: 'static + Send> ActorWithMessage for ActorCellWithMessage<M> {
             .actor_cell
             .contents
             .swap(None)
-            .expect("pantomime bug: actor_cell#contents missing");
+            .expect("pantomime bug: received message but contents are missing");
 
         match self.msg {
             ActorCellMessage::Message(msg) => {
@@ -129,19 +129,12 @@ impl<M: 'static + Send> ActorCellContents<M> {
     pub(in crate::actor) fn initialize(&mut self, actor_ref: ActorRef<M>) {
         self.context.actor_ref = Some(actor_ref);
 
-        if let Some(ref watcher_ref) = self.context.actor_ref().system_context().watcher_ref() {
-            let actor_ref = self.context.actor_ref();
-
-            watcher_ref.tell(ActorWatcherMessage::Started(
-                actor_ref.id(),
-                actor_ref.parent_ref(),
-                actor_ref.system_ref(),
-            ));
-        } else {
+        if self.context.actor_ref().system_context().watcher_ref().is_none() {
             // these are internal actors, so they cannot be watched
             self.state = ActorCellState::Active;
         }
     }
+
 
     fn receive(&mut self, msg: M) {
         match self.state {
@@ -417,6 +410,16 @@ impl<M: 'static + Send> ActorCell<M> {
             parent_ref,
         }
     }
+
+    pub(in crate::actor) fn register(&self, actor_ref: &ActorRef<M>) {
+        if let Some(ref watcher_ref) = actor_ref.system_context().watcher_ref() {
+            watcher_ref.tell(ActorWatcherMessage::Started(
+                actor_ref.id(),
+                actor_ref.parent_ref(),
+                actor_ref.system_ref(),
+            ));
+        }
+    }
 }
 
 impl<M: 'static + Send> ActorCellWithSystemMessage<M> {
@@ -431,7 +434,7 @@ impl<M: 'static + Send> ActorWithSystemMessage for ActorCellWithSystemMessage<M>
             .actor_cell
             .contents
             .swap(None)
-            .expect("pantomime bug: actor_cell#contents missing");
+            .expect("pantomime bug: received system message but contents are missing");
 
         contents.receive_system(*self.msg);
 
