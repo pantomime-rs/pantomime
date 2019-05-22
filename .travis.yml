@@ -1,0 +1,9 @@
+language: rust
+
+rust:
+  - 1.34.2
+
+os:
+  - linux
+    #  - osx
+    #- windows

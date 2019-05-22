@@ -1,6 +1,6 @@
 [package]
 name = "pantomime"
-version = "0.1.0"
+version = "0.1.0" # ci-verify-version
 authors = ["Jason Longshore <hello@jasonlongshore.com>"]
 edition = "2018"
 readme = "README.md"
