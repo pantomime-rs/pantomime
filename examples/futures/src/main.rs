@@ -50,7 +50,7 @@ impl Actor<Msg> for MyActor {
                     process::exit(0);
                 }
 
-                context.spawn_future(
+                context.dispatcher().spawn_future(
                     slow_double(&context, value)
                         .then(|r| future::ok(Msg::Double(r.ok().unwrap_or(0))))
                         .pipe_to(context.actor_ref().clone()),
@@ -70,12 +70,15 @@ impl Actor<Msg> for MyActor {
 
     fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<Msg>) {
         if let Signal::Started = signal {
-            context.spawn_future(
+            context.dispatcher().clone().spawn_future(
                 context
                     .actor_ref()
-                    .ask(time::Duration::from_secs(10), |reply_to| {
-                        Msg::SendDouble(42, reply_to)
-                    })
+                    .clone()
+                    .ask(
+                        context,
+                        |reply_to| Msg::SendDouble(42, reply_to),
+                        time::Duration::from_secs(10),
+                    )
                     .then(|r| future::ok(Msg::ReceivedDouble(r.ok().unwrap_or(0))))
                     .pipe_to(context.actor_ref().clone()),
             );

@@ -1,60 +1,106 @@
-use super::*;
+use crate::actor::actor_watcher::ActorWatcherMessage;
+use crate::actor::*;
 use crate::dispatcher::{Dispatcher, Thunk};
+use crate::mailbox::Mailbox;
+use crate::timer::{TimerMsg, TimerThunk};
 use crate::util::Cancellable;
-use std::collections::HashMap;
+use crossbeam::atomic::AtomicCell;
+use downcast_rs::Downcast;
+use std::collections::{HashMap, VecDeque};
+use std::panic;
+use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "futures-support")]
-use crate::dispatcher::FutureDispatcherBridge;
-
-#[cfg(feature = "futures-support")]
-use futures::Future;
-
-/// Provides references to the actor's context when it is executing, allowing
-/// it to dispatcher work, stash messages, etc.
-pub struct ActorContext<M: 'static + Send> {
-    pub(in crate::actor) actor_ref: Option<ActorRef<M>>,
-    pub(in crate::actor) children: HashMap<usize, SystemActorRef>,
-    deliveries: HashMap<String, Cancellable>,
+pub enum SystemMsg {
+    Stop(bool),
+    ChildStopped(usize),
+    Signaled(Signal),
 }
 
-impl<'a, M: 'static + Send> ActorContext<M> {
-    pub(in crate::actor) fn new() -> Self {
-        Self {
-            actor_ref: None,
-            children: HashMap::new(),
-            deliveries: HashMap::new(),
-        }
+pub enum Envelope<Msg>
+where
+    Msg: Send,
+{
+    Msg(Msg),
+    SystemMsg(SystemMsg),
+}
+
+pub enum StopReason {
+    /// Signifies that the actor was stopped normally.
+    Stopped,
+
+    /// Signifies that the actor was stopped due to a failure.
+    Failed,
+
+    /// Signifies that the actor was already stopped but the cause is unknown.
+    AlreadyStopped,
+}
+
+pub enum Signal {
+    Started,
+    Stopped,
+    Failed,
+    ActorStopped(SystemActorRef, StopReason),
+
+    #[cfg(feature = "posix-signals-support")]
+    PosixSignal(i32),
+}
+
+pub trait Actor<Msg>: Send
+/* + panic::UnwindSafe + panic::RefUnwindSafe*/ // @TODO unwind safe
+where
+    Msg: Send,
+{
+    fn config_dispatcher(&self, _: &ActorSystemContext) -> Option<Dispatcher> {
+        None
     }
 
+    fn config_mailbox(&self, _: &ActorSystemContext) -> Option<Mailbox<Envelope<Msg>>> {
+        None
+    }
+
+    fn receive(&mut self, msg: Msg, context: &mut ActorContext<Msg>);
+
+    fn receive_signal(&mut self, _: Signal, _: &mut ActorContext<Msg>) {}
+}
+
+pub struct ActorContext<Msg>
+where
+    Msg: Send,
+{
+    pub(in crate::actor) actor_ref: ActorRef<Msg>,
+    pub(in crate::actor) children: HashMap<usize, SystemActorRef>,
+    pub(in crate::actor) deliveries: HashMap<String, Cancellable>,
+    pub(in crate::actor) dispatcher: Dispatcher,
+    pub(in crate::actor) system_context: ActorSystemContext,
+}
+
+impl<Msg> ActorContext<Msg>
+where
+    Msg: 'static + Send,
+{
     /// Obtain a reference to the ActorRef that this context
     /// is attached to.
-    pub fn actor_ref(&self) -> &ActorRef<M> {
-        self.actor_ref
-            .as_ref()
-            .expect("pantomime bug: actor_ref not initialized")
+    pub fn actor_ref(&self) -> &ActorRef<Msg> {
+        &self.actor_ref
     }
 
-    /// Cancels the specified delivery.
+    /// Obtain a reference to the `Dispatcher` that this context
+    /// is attached to.
     ///
-    /// It is guaranteed that any messages produced by the delivery will not be received by the
-    /// actor (given compliant mailbox implementations).
+    /// Typically this will be equal to the system's dispatcher,
+    /// but may differ if the actor has configured a custom one.
+    pub fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
+    }
+
     pub fn cancel_delivery<S: AsRef<str>>(&mut self, name: S) {
         if let Some(c) = self.deliveries.remove(name.as_ref()) {
             c.cancel();
         }
     }
 
-    /// Schedule the delivery of a message. The initial delivery will happen after `interval` has
-    /// elapsed. Each subsequent delivery is scheduled immediately before the actor processes it.
-    ///
-    /// Thus, if an actor takes a long time to process the message, it will only receive one "tick"
-    /// even if multiple intervals have elapsed.
-    ///
-    /// Deliveries are identified by a name. If a previous delivery with the same name was already
-    /// scheduled, it is cancelled and there is a guarantee that any messages from it will not be
-    /// received by the actor.
-    pub fn schedule_periodic_delivery<F: Fn() -> M, S: AsRef<str>>(
+    pub fn schedule_periodic_delivery<F: Fn() -> Msg, S: AsRef<str>>(
         &mut self,
         name: S,
         interval: Duration,
@@ -84,9 +130,160 @@ impl<'a, M: 'static + Send> ActorContext<M> {
         }
     }
 
-    fn periodic_delivery<F: Fn() -> M>(
+    pub fn schedule_delivery<F: Fn() -> Msg, S: AsRef<str>>(
+        &mut self,
+        name: S,
+        timeout: Duration,
+        msg: F,
+    ) where
+        F: 'static + Send + Sync,
+    {
+        let cancellable = Cancellable::new();
+
+        {
+            let actor_ref = self.actor_ref().clone();
+            let cancellable = cancellable.clone();
+
+            self.system_context().schedule_thunk(timeout, move || {
+                // we explicitly cancel to ensure that our entry will be
+                // cleaned up, as cancelled entries are filtered out
+                // periodically
+                // @TODO make above reality
+
+                let delivered = {
+                    let cancellable = cancellable.clone();
+
+                    Box::new(move || cancellable.cancel())
+                };
+
+                actor_ref.tell_cancellable(cancellable, msg(), Some(delivered));
+            });
+        }
+
+        if let Some(c) = self
+            .deliveries
+            .insert(name.as_ref().to_owned(), cancellable)
+        {
+            c.cancel();
+        }
+    }
+
+    pub fn schedule_thunk<F: FnOnce()>(&self, timeout: Duration, f: F)
+    where
+        F: 'static + Send + Sync, // @TODO why sync
+    {
+        if let Some(ref timer_ref) = self.system_context.timer_ref() {
+            timer_ref.tell(TimerMsg::Schedule {
+                after: timeout,
+                thunk: TimerThunk::new(Box::new(f)),
+            });
+        } else {
+            panic!("pantomime bug: schedule_thunk called on internal context");
+        }
+    }
+
+    pub fn watch<N>(&mut self, actor_ref: &ActorRef<N>)
+    where
+        N: 'static + Send,
+    {
+        match self.system_context().watcher_ref() {
+            Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
+                self.actor_ref().system_ref(),
+                actor_ref.system_ref(),
+            )),
+
+            None => {
+                // @TODO panic instead
+                error!(
+                        "#[{watcher}] attempted to watch #[{watching}] but it does not have a reference to ActorWatcher; this is unexpected",
+                        watcher = self.actor_ref().id(),
+                        watching = actor_ref.id()
+                    );
+            }
+        }
+    }
+
+    #[cfg(feature = "posix-signals-support")]
+    pub fn watch_posix_signals(&mut self) {
+        // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
+
+        if let Some(ref watcher_ref) = self.system_context().watcher_ref() {
+            watcher_ref.tell(ActorWatcherMessage::SubscribePosixSignals(
+                self.actor_ref().system_ref(),
+            ));
+        }
+    }
+
+    pub fn spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
+    where
+        A: 'static + Send,
+        AMsg: 'static + Send,
+        Msg: 'static + Send,
+    {
+        ///////////////////////////////////////////////////////////////////////////////////////////////
+        // NOTE: this is quite similiar to ActorSystemContext::spawn, and changes should be mirrored //
+        ///////////////////////////////////////////////////////////////////////////////////////////////
+
+        let empty_ref = ActorRef::empty();
+        let dispatcher = actor
+            .config_dispatcher(&self.system_context)
+            .unwrap_or_else(|| self.system_context.new_actor_dispatcher());
+        let mailbox = actor
+            .config_mailbox(&self.system_context)
+            .unwrap_or_else(|| self.system_context.new_actor_mailbox());
+
+        let mut spawned_actor = SpawnedActor {
+            actor: Box::new(actor),
+            context: ActorContext {
+                actor_ref: empty_ref,
+                children: HashMap::new(),
+                deliveries: HashMap::new(),
+                dispatcher: dispatcher.clone(),
+                system_context: self.system_context.clone(),
+            },
+            dispatcher,
+            execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
+            mailbox,
+            parent_ref: self.actor_ref.system_ref(),
+            stash: VecDeque::new(),
+            state: SpawnedActorState::Spawned,
+        };
+
+        let actor_ref = ActorRef {
+            inner: Arc::new(Box::new(ActorRefCell {
+                id: self.system_context.new_actor_id(),
+                state: spawned_actor.execution_state.clone(),
+                mailbox_appender: spawned_actor.mailbox.appender(),
+            })),
+        };
+
+        spawned_actor.context.actor_ref = actor_ref.clone();
+
+        spawned_actor
+            .execution_state
+            .clone()
+            .store(SpawnedActorExecutionState::Idle(Box::new(spawned_actor)));
+
+        self.children.insert(actor_ref.id(), actor_ref.system_ref());
+
+        if let Some(ref watcher_ref) = self.system_context.watcher_ref() {
+            watcher_ref.tell(ActorWatcherMessage::Started(
+                actor_ref.id(),
+                actor_ref.system_ref(),
+                false,
+            ));
+        }
+
+        actor_ref
+    }
+
+    pub(crate) fn system_context(&self) -> &ActorSystemContext {
+        &self.system_context
+    }
+
+    fn periodic_delivery<F: Fn() -> Msg>(
         context: ActorSystemContext,
-        actor_ref: ActorRef<M>,
+        actor_ref: ActorRef<Msg>,
         msg: F,
         interval: Duration,
         cancellable: Cancellable,
@@ -124,700 +321,566 @@ impl<'a, M: 'static + Send> ActorContext<M> {
             actor_ref.tell_cancellable(cancellable, m, Some(delivered));
         });
     }
-
-    /// Schedule the delivery of a message after `timeout` has elapsed.
-    ///
-    /// Deliveries are identified by a name. If a previous delivery with the same name was already
-    /// scheduled, it is cancelled and there is a guarantee that any messages from it will not be
-    /// received by the actor.
-    pub fn schedule_delivery<F: Fn() -> M, S: AsRef<str>>(
-        &mut self,
-        name: S,
-        timeout: Duration,
-        msg: F,
-    ) where
-        F: 'static + Send + Sync,
-    {
-        let cancellable = Cancellable::new();
-
-        {
-            let actor_ref = self.actor_ref().clone();
-            let cancellable = cancellable.clone();
-
-            self.actor_ref()
-                .inner
-                .system_context()
-                .schedule_thunk(timeout, move || {
-                    // we explicitly cancel to ensure that our entry will be
-                    // cleaned up, as cancelled entries are filtered out
-                    // periodically
-                    // @TODO make above reality
-
-                    let delivered = {
-                        let cancellable = cancellable.clone();
-
-                        Box::new(move || cancellable.cancel())
-                    };
-
-                    actor_ref.tell_cancellable(cancellable, msg(), Some(delivered));
-                });
-        }
-
-        if let Some(c) = self
-            .deliveries
-            .insert(name.as_ref().to_owned(), cancellable)
-        {
-            c.cancel();
-        }
-    }
-
-    pub fn schedule_thunk<F: FnOnce()>(&self, timeout: Duration, f: F)
-    where
-        F: 'static + Send + Sync,
-    {
-        self.system_context().schedule_thunk(timeout, f);
-    }
-
-    /// Obtain a reference to the ActorSystemContext that this
-    /// ActorContext is attached to.
-    pub fn system_context(&self) -> &ActorSystemContext {
-        self.actor_ref().inner.system_context()
-    }
-
-    /// Subscribe to lifecycle events for the supplied actor.
-    ///
-    /// If the supplied actor fails or is stopped, a signal will be sent to
-    /// the actor that this context represents.
-    ///
-    /// If the supplied actor has already failed or stopped, a signal will
-    /// still be delivered, but the reason will be unknown.
-    ///
-    /// Note that it is not necessary to watch your own direct children
-    /// as they are automatically watched. Additionally, a parent is guaranteed
-    /// to know if its child stopped due to failure.
-    pub fn watch<N: 'static + Send>(&mut self, actor_ref: &ActorRef<N>) {
-        match self.system_context().watcher_ref() {
-            Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
-                self.actor_ref().system_ref(),
-                actor_ref.system_ref(),
-            )),
-
-            None => {
-                // @TODO panic instead
-                error!(
-                        "#[{watcher}] attempted to watch #[{watching}] but it does not have a reference to ActorWatcher; this is unexpected",
-                        watcher = self.actor_ref().id(),
-                        watching = actor_ref.id()
-                    );
-            }
-        }
-    }
-
-    #[cfg(feature = "posix-signals-support")]
-    pub fn watch_posix_signals(&mut self) {
-        // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
-        if let Some(ref watcher_ref) = self.actor_ref().inner.system_context().watcher_ref() {
-            watcher_ref.tell(ActorWatcherMessage::SubscribePosixSignals(
-                self.actor_ref().system_ref(),
-            ));
-        }
-    }
-
-    /// Schedule a Future for immediate execution. Usually this
-    /// is used in conjunction with pipe_result, but can be
-    /// used for any arbitrary futures.
-    /// @TODO use a trait?
-    #[cfg(feature = "futures-support")]
-    pub fn spawn_future<F>(&mut self, future: F)
-    where
-        F: Future<Item = (), Error = ()> + 'static + Send,
-    {
-        self.actor_ref()
-            .inner
-            .system_context()
-            .dispatcher()
-            .spawn_future(future);
-    }
-
-    /// Spawn an actor as a child of the actor attached
-    /// to this context. An `ActorRef` is returned, which
-    /// can be used to message the child and manage its
-    /// lifecycle.
-    ///
-    /// The actor will be watched, so this actor (the parent)
-    /// is guaranteed to receive a signal when the child
-    /// stops or fails.
-    pub fn spawn<A: 'static + Send, N: 'static + Send>(&mut self, actor: A) -> ActorRef<N>
-    where
-        A: Actor<N>,
-    {
-        let child = ActorSystemContext::spawn_actor(
-            &self.actor_ref().inner.system_context(),
-            ActorType::Child,
-            actor,
-            self.actor_ref().system_ref(),
-        );
-
-        self.children.insert(child.id(), child.system_ref());
-
-        child
-    }
 }
 
-pub(in crate::actor) trait ActorRefScheduler: Downcast {
-    fn actor_type(&self) -> ActorType;
-    fn drain(&self);
-    fn safe_clone(&self) -> Box<ActorRefScheduler + Send + Sync>;
-    fn shard(&self) -> &Arc<ActorShard>;
-    fn stop(&self);
-    fn tell_system(&self, message: SystemMsg);
-}
-
-impl_downcast!(ActorRefScheduler);
-
-pub(in crate::actor) struct NoopActorRefScheduler;
-
-impl ActorRefScheduler for NoopActorRefScheduler {
-    fn actor_type(&self) -> ActorType {
-        panic!("pantomime bug: actor_type called on NoopActorRefScheduler");
-    }
-
-    fn drain(&self) {}
-
-    fn safe_clone(&self) -> Box<ActorRefScheduler + Send + Sync> {
-        Box::new(NoopActorRefScheduler)
-    }
-
-    fn shard(&self) -> &Arc<ActorShard> {
-        panic!("pantomime bug: shard called on NoopActorRefScheduler");
-    }
-
-    fn stop(&self) {}
-
-    fn tell_system(&self, _message: SystemMsg) {}
-}
-
-/// A generic type of actor reference that permits the delivery of system
-/// messages.
-///
-/// It can be upgraded by a call to `actor_ref`.
 pub struct SystemActorRef {
-    pub id: usize,
-    pub(in crate::actor) scheduler: Box<ActorRefScheduler + Send + Sync>,
+    pub(in crate::actor) inner: Arc<Box<SystemActorRefInner + Send + Sync>>,
 }
 
 impl SystemActorRef {
-    /// "Downcast" this reference to a typed ActorRef, which can be used
-    /// to send it domain messages.
-    ///
-    /// If the specified type does not match the underlying actor, this
-    /// will return None.
-    pub fn actor_ref<N: 'static + Send>(&self) -> Option<ActorRef<N>> {
-        self.scheduler
-            .safe_clone()
+    pub fn actor_ref<N>(&self) -> Option<ActorRef<N>>
+    where
+        N: 'static + Send,
+    {
+        self.inner
+            .clone_box()
             .into_any()
             .downcast::<ActorRef<N>>()
             .map(|v| *v)
             .ok()
     }
 
-    pub(in crate::actor) fn actor_type(&self) -> ActorType {
-        self.scheduler.actor_type()
-    }
-
-    pub fn drain(&self) {
-        self.scheduler.drain();
-    }
-
-    pub fn stop(&self) {
-        self.scheduler.stop();
-    }
-
-    /// Enqueues a `SystemMsg` into this actor's mailbox and schedules
-    /// it for execution (if it hasn't been already).
-    pub(in crate::actor) fn tell_system(&self, message: SystemMsg) {
-        self.scheduler.tell_system(message);
-    }
-}
-
-impl Clone for SystemActorRef {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            scheduler: self.scheduler.safe_clone(),
-        }
-    }
-}
-
-pub(in crate::actor) trait ActorRefInnerShim<M: 'static + Send> {
-    fn actor_type(&self) -> ActorType;
-    fn enqueue(&self, msg: M);
-    fn enqueue_cancellable(&self, cancellable: Cancellable, msg: M, thunk: Option<Thunk>);
-    fn enqueue_done(&self);
-    fn enqueue_system(&self, msg: SystemMsg);
-    fn id(&self) -> usize;
-    fn initialize(&mut self, cell: Weak<ActorCell<M>>);
-    fn parent_ref(&self) -> SystemActorRef;
-    fn shard(&self) -> &Arc<ActorShard>;
-    fn system_context(&self) -> &ActorSystemContext;
-}
-
-/// A reference to an underlying actor through which messages can be sent.
-///
-/// All interactions with an actor are done through an `ActorRef`. If
-/// an actor is stopped, any messages sent to actor refs will be
-/// delivered to dead letters intead.
-pub struct ActorRef<M: 'static + Send> {
-    inner: Arc<ActorRefInnerShim<M> + 'static + Send + Sync>,
-}
-
-pub(in crate::actor) struct WrappedActorRefInner<F: 'static + Send, M: 'static + Send> {
-    pub(in crate::actor) inner: Arc<ActorRefInnerShim<M> + 'static + Send + Sync>,
-    pub(in crate::actor) converter: Box<Fn(F) -> M + 'static + Send + Sync>,
-}
-
-impl<F: 'static + Send, M: 'static + Send> WrappedActorRefInner<F, M> {
-    fn new(
-        inner: Arc<ActorRefInnerShim<M> + 'static + Send + Sync>,
-        converter: Box<Fn(F) -> M + 'static + Send + Sync>,
-    ) -> Self {
-        Self { inner, converter }
-    }
-}
-
-impl<F: 'static + Send, M: 'static + Send> ActorRefInnerShim<F> for WrappedActorRefInner<F, M> {
-    fn actor_type(&self) -> ActorType {
-        self.inner.actor_type()
-    }
-
-    fn enqueue(&self, msg: F) {
-        self.inner.enqueue((self.converter)(msg));
-    }
-
-    fn enqueue_cancellable(&self, cancellable: Cancellable, msg: F, thunk: Option<Thunk>) {
-        self.inner
-            .enqueue_cancellable(cancellable, (self.converter)(msg), thunk);
-    }
-
-    fn enqueue_done(&self) {
-        self.inner.enqueue_done();
-    }
-
-    fn enqueue_system(&self, msg: SystemMsg) {
-        self.inner.enqueue_system(msg);
-    }
-
-    fn id(&self) -> usize {
+    pub fn id(&self) -> usize {
         self.inner.id()
     }
 
-    fn initialize(&mut self, _cell: Weak<ActorCell<F>>) {
-        panic!("pantomime bug: initialize called on WrappedActorRefInner")
+    pub fn stop(&self) {
+        self.inner.stop();
     }
 
-    fn parent_ref(&self) -> SystemActorRef {
-        self.inner.parent_ref()
-    }
-
-    fn shard(&self) -> &Arc<ActorShard> {
-        self.inner.shard()
-    }
-
-    fn system_context(&self) -> &ActorSystemContext {
-        self.inner.system_context()
+    pub(in crate::actor) fn tell_system(&self, msg: SystemMsg) {
+        self.inner.tell_system(msg);
     }
 }
 
-pub(in crate::actor) struct ActorRefInner<M: 'static + Send> {
-    pub(in crate::actor) actor_type: ActorType,
-    pub(in crate::actor) id: usize,
-    pub(in crate::actor) new_cell: Weak<ActorCell<M>>,
-    pub(in crate::actor) shard: Arc<ActorShard>,
-    pub(in crate::actor) system_context: ActorSystemContext,
-    pub(in crate::actor) custom_mailbox_appender: Option<MailboxAppender<M>>,
-}
+impl_downcast!(SystemActorRefInner);
 
-struct EmptyActorRefInner;
-
-impl<M: 'static + Send> ActorRefInnerShim<M> for EmptyActorRefInner {
-    fn actor_type(&self) -> ActorType {
-        ActorType::Root
-    }
-
-    fn enqueue(&self, _: M) {}
-
-    fn enqueue_cancellable(&self, _: Cancellable, _: M, _: Option<Thunk>) {}
-
-    fn enqueue_done(&self) {}
-
-    fn enqueue_system(&self, _: SystemMsg) {}
-
-    fn id(&self) -> usize {
-        0
-    }
-
-    fn initialize(&mut self, _: Weak<ActorCell<M>>) {}
-
-    fn parent_ref(&self) -> SystemActorRef {
+impl Clone for SystemActorRef {
+    fn clone(&self) -> Self {
         SystemActorRef {
-            id: 1,
-            scheduler: Box::new(NoopActorRefScheduler),
+            inner: self.inner.clone(),
         }
-    }
-
-    fn shard(&self) -> &Arc<ActorShard> {
-        panic!("pantomime bug: shard called on empty ActorRef")
-    }
-
-    fn system_context(&self) -> &ActorSystemContext {
-        panic!("pantomime bug: shard called on empty ActorRef")
     }
 }
 
-impl<M: 'static + Send> ActorRefInnerShim<M> for ActorRefInner<M> {
-    fn actor_type(&self) -> ActorType {
-        self.actor_type
-    }
-
-    fn enqueue(&self, msg: M) {
-        if let Some(cell) = self.new_cell.upgrade() {
-            match self.custom_mailbox_appender {
-                None => {
-                    self.shard().tell(Box::new(ActorCellWithMessage::new(
-                        cell,
-                        ActorCellMessage::Message(msg),
-                    )));
-                }
-
-                Some(ref a) => {
-                    a.append(msg);
-
-                    self.shard().tell(Box::new(ActorCellWithMessage::new(
-                        cell,
-                        ActorCellMessage::CustomMessage,
-                    )));
-                }
-            }
-        } else {
-            // @TODO dead letters
-        }
-    }
-
-    fn enqueue_cancellable(&self, cancellable: Cancellable, msg: M, thunk: Option<Thunk>) {
-        // @FIXME feels a bit too similar to above
-
-        if let Some(cell) = self.new_cell.upgrade() {
-            match self.custom_mailbox_appender {
-                None => self.shard().tell_cancellable(
-                    cancellable,
-                    Box::new(ActorCellWithMessage::new(
-                        cell,
-                        ActorCellMessage::Message(msg),
-                    )),
-                    thunk,
-                ),
-
-                Some(ref a) => {
-                    a.append_cancellable(cancellable, msg, thunk);
-
-                    self.shard().tell(Box::new(ActorCellWithMessage::new(
-                        cell,
-                        ActorCellMessage::CustomMessage,
-                    )));
-                }
-            };
-        } else {
-            // @TODO dead letters
-        }
-    }
-
-    /// Internal method.
-    ///
-    /// This is used to signal to the actor that draining
-    /// has been initiated. The actor will process any messages
-    /// that are destined to it first before stopping itself.
-    fn enqueue_done(&self) {
-        if let Some(cell) = self.new_cell.upgrade() {
-            self.shard().tell(Box::new(ActorCellWithMessage::new(
-                cell,
-                ActorCellMessage::Done,
-            )));
-        } else {
-            // @TODO dead letters
-        }
-    }
-
-    /// Internal method for sending a system message
-    /// to the actor. System messages are concerned
-    /// with the lifecycle of the actor and affect
-    /// state that the system tracks, rather than
-    /// state that the actor owns.
-    ///
-    /// Some system messages materialize as signals
-    /// that the specific actors can consume.
-    fn enqueue_system(&self, msg: SystemMsg) {
-        let msg = Box::new(msg);
-
-        if let Some(cell) = self.new_cell.upgrade() {
-            self.shard()
-                .tell_system(Box::new(ActorCellWithSystemMessage::new(cell.clone(), msg)));
-        } else {
-            // @TODO dead letters
-        }
-    }
-
-    fn id(&self) -> usize {
-        self.id
-    }
-
-    fn initialize(&mut self, cell: Weak<ActorCell<M>>) {
-        self.new_cell = cell;
-    }
-
-    fn parent_ref(&self) -> SystemActorRef {
-        if let Some(cell) = self.new_cell.upgrade() {
-            cell.parent_ref.clone()
-        } else {
-            // @TODO is this right?
-            SystemActorRef {
-                id: 1,
-                scheduler: Box::new(NoopActorRefScheduler),
-            }
-        }
-    }
-
-    fn shard(&self) -> &Arc<ActorShard> {
-        &self.shard
-    }
-
-    fn system_context(&self) -> &ActorSystemContext {
-        &self.system_context
-    }
+pub struct ActorRef<M>
+where
+    M: Send,
+{
+    pub(in crate::actor) inner: Arc<Box<ActorRefInner<M> + Send + Sync>>,
 }
 
-impl<M: 'static + Send> ActorRef<M> {
-    pub(in crate::actor) fn new(inner: Arc<ActorRefInnerShim<M> + 'static + Send + Sync>) -> Self {
-        Self { inner }
-    }
-
-    /// Returns an empty ActorRef that can't receive messages. This is useful
-    /// as a placeholder that will at some later point be replaced with a
-    /// real actor.
+impl<Msg> ActorRef<Msg>
+where
+    Msg: 'static + Send,
+{
     pub fn empty() -> Self {
         Self {
-            inner: Arc::new(EmptyActorRefInner),
+            inner: Arc::new(Box::new(EmptyActorRefCell)),
         }
-    }
-
-    pub(in crate::actor) fn actor_type(&self) -> ActorType {
-        self.inner.actor_type()
     }
 
     /// Convert this ActorRef into one that handles another type of message by
     /// providing a conversion function.
-    pub fn convert<N: 'static + Send, F: 'static + Fn(N) -> M + Send + Sync>(
-        &self,
-        converter: F,
-    ) -> ActorRef<N> {
-        ActorRef::new(Arc::new(WrappedActorRefInner::new(
-            self.inner.clone(),
-            Box::new(converter),
-        )))
+    pub fn convert<N, Convert: Fn(N) -> Msg>(&self, converter: Convert) -> ActorRef<N>
+    where
+        N: 'static + Send,
+        Msg: 'static + Send,
+        Convert: 'static + Send + Sync,
+    {
+        ActorRef {
+            inner: Arc::new(Box::new(StackedActorRefCell {
+                converter: Arc::new(converter),
+                inner: self.inner.clone(),
+            })),
+        }
     }
 
     pub fn id(&self) -> usize {
         self.inner.id()
     }
 
-    /// Executes an event, and optionally a followup on the provided dispatcher.
-    ///
-    /// The first execution is done on the current thread immediately. This is
-    /// okay though! An actor will only ever be woken on the custom dispatcher
-    /// if one is configured.
-    ///
-    /// This is guaranteed because ActorScheduled is only ever done as a followup
-    /// message, and followup messages are always run on the custom dispatcher if
-    /// there is one. Even if that results in a new call to execute_system, that will
-    /// be started from within the custom_dispatcher, so this is okay.
-    #[inline(always)]
-    fn shard_execute(&self, event: ActorShardEvent, dispatcher: Option<Dispatcher>) {
-        let follow_up = match event {
-            ActorShardEvent::Messaged => self.shard().messaged(),
-            ActorShardEvent::Scheduled(kernel) => self.shard().scheduled(kernel, 10), // @TODO throughput
-        };
-
-        if let Some(follow_up) = follow_up {
-            let next_self = self.clone();
-
-            match dispatcher {
-                None => {
-                    self.system_context().dispatcher().execute(move || {
-                        next_self.shard_execute(follow_up, None);
-                    });
-                }
-
-                Some(ref d) => {
-                    let d2 = d.clone();
-
-                    d.execute(move || {
-                        next_self.shard_execute(follow_up, Some(d2));
-                    });
-                }
-            }
-        }
+    pub fn tell(&self, msg: Msg) {
+        self.inner.tell(msg);
     }
-
-    /// Send a message to this actor. The actor will
-    /// then be scheduled for execution.
-    ///
-    /// Ordering of message delivery depends on mailbox
-    /// implementation. The default mailbox is based
-    /// on a Crossbeam channel. If the same thread
-    /// enqueues "A" and then "B", A will be received by
-    /// the actor before B.
-    ///
-    #[inline(always)]
-    pub fn tell(&self, msg: M) {
-        self.inner.enqueue(msg);
-        self.shard_execute(ActorShardEvent::Messaged, self.shard().custom_dispatcher());
-    }
-
-    #[inline(always)]
     pub(in crate::actor) fn tell_cancellable(
         &self,
         cancellable: Cancellable,
-        msg: M,
+        msg: Msg,
         thunk: Option<Thunk>,
     ) {
-        self.inner.enqueue_cancellable(cancellable, msg, thunk);
-
-        self.shard_execute(ActorShardEvent::Messaged, self.shard().custom_dispatcher());
+        self.inner.tell_cancellable(cancellable, msg, thunk);
     }
 
-    /// Stop this actor, first processing all of the
-    /// messages in its mailbox.
-    ///
-    /// First, all children are drained. Once a given
-    /// child has processed all of its messages, and
-    /// all of its children have been stopped, it stops
-    /// itself.
-    ///
-    /// Once all of this actor's children have stopped,
-    /// all messages in the mailbox are processed and
-    /// then the actor is stopped.
-    ///
-    /// If any messages are enqueued after the call to
-    /// drain, they are sent to dead letters.
-    pub fn drain(&self) {
-        self.tell_system(SystemMsg::Drain);
-    }
-
-    // @TODO not sure about this method's need to exist
-    #[inline(always)]
-    pub fn parent_ref(&self) -> SystemActorRef {
-        self.inner.parent_ref()
-    }
-
-    #[inline(always)]
-    pub(in crate::actor) fn shard(&self) -> &Arc<ActorShard> {
-        &self.inner.shard()
-    }
-
-    #[inline(always)]
-    pub(crate) fn system_context(&self) -> &ActorSystemContext {
-        &self.inner.system_context()
-    }
-
-    /// Stop this actor. This is an asynchronous
-    /// operation -- any messages (upto throughput) that
-    /// the actor is currently processing will be consumed
-    /// first before it is stopped.
-    ///
-    /// When stopping an actor, it transitions into a stopping
-    /// state upon which no other regular messages in its
-    /// mailbox are processed.
-    ///
-    /// Then, all children are told to stop (recursively). When
-    /// a child has stopped, it notifies its parent actor.
-    ///
-    /// When an actor is in the stopping state and has been
-    /// notified that all of its children have stopped, it too
-    /// transitions to a Stopped state and notifies its parent.
     pub fn stop(&self) {
-        self.tell_system(SystemMsg::Stop { failure: false });
+        self.inner.stop();
     }
 
-    /// Internal method.
-    ///
-    /// This is used to signal to the actor that draining
-    /// has been initiated. The actor will process any messages
-    /// that are destined to it first before stopping itself.
-    pub(in crate::actor) fn tell_done(&self) {
-        self.inner.enqueue_done();
-
-        self.shard_execute(ActorShardEvent::Messaged, self.shard().custom_dispatcher());
-    }
-
-    /// Internal method for sending a system message
-    /// to the actor. System messages are concerned
-    /// with the lifecycle of the actor and affect
-    /// state that the system tracks, rather than
-    /// state that the actor owns.
-    ///
-    /// Some system messages materialize as signals
-    /// that the specific actors can consume.
-    pub(in crate::actor) fn tell_system(&self, msg: SystemMsg) {
-        self.inner.enqueue_system(msg);
-
-        self.shard_execute(ActorShardEvent::Messaged, self.shard().custom_dispatcher());
-    }
-
-    /// Creates an actor ref that can be used to
-    /// deliver system messages to this actor.
-    ///
-    /// If the actor is stopped, messages are sent
-    /// to dead letters instead.
-    pub fn system_ref(&self) -> SystemActorRef {
+    pub(in crate::actor) fn system_ref(&self) -> SystemActorRef {
+        // @ TODO it's a shame we have to allocate here
         SystemActorRef {
-            id: self.id(),
-            scheduler: Box::new(self.clone()),
+            inner: Arc::new(Box::new(self.clone())),
         }
     }
 }
 
-impl<M: 'static + Send> Clone for ActorRef<M> {
-    #[inline(always)]
-    fn clone(&self) -> ActorRef<M> {
+impl<Msg> Clone for ActorRef<Msg>
+where
+    Msg: Send,
+{
+    fn clone(&self) -> ActorRef<Msg> {
         Self {
             inner: self.inner.clone(),
         }
     }
 }
 
-// @TODO probably should be a StrongActorRefScheduler such bouncing atm
-
-impl<M: 'static + Send> ActorRefScheduler for ActorRef<M> {
-    fn actor_type(&self) -> ActorType {
-        self.actor_type()
-    }
-
-    fn drain(&self) {
-        self.drain();
-    }
-
-    fn safe_clone(&self) -> Box<ActorRefScheduler + Send + Sync> {
+impl<Msg> SystemActorRefInner for ActorRef<Msg>
+where
+    Msg: 'static + Send,
+{
+    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
         Box::new(self.clone())
     }
 
-    fn shard(&self) -> &Arc<ActorShard> {
-        self.shard()
+    fn id(&self) -> usize {
+        self.inner.id()
     }
 
     fn stop(&self) {
-        self.stop();
+        self.inner.stop();
     }
 
-    fn tell_system(&self, message: SystemMsg) {
-        self.tell_system(message);
+    fn tell_system(&self, msg: SystemMsg) {
+        self.inner.tell_system(msg);
     }
+}
+
+pub(in crate::actor) enum SpawnedActorExecutionState<Msg>
+where
+    Msg: Send,
+{
+    Idle(Box<SpawnedActor<Msg>>),
+    Messaged,
+    Running,
+}
+
+pub(in crate::actor) enum SpawnedActorState {
+    Spawned,
+    Active,
+    Stopping(bool),
+    Stopped,
+    Failed,
+}
+
+pub(in crate::actor) struct SpawnedActor<Msg>
+where
+    Msg: Send,
+{
+    pub(in crate::actor) actor: Box<Actor<Msg>>,
+    pub(in crate::actor) context: ActorContext<Msg>,
+    pub(in crate::actor) dispatcher: Dispatcher,
+    pub(in crate::actor) execution_state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>,
+    pub(in crate::actor) mailbox: Mailbox<Envelope<Msg>>,
+    pub(in crate::actor) parent_ref: SystemActorRef,
+    pub(in crate::actor) stash: VecDeque<Envelope<Msg>>,
+    pub(in crate::actor) state: SpawnedActorState,
+}
+
+impl<Msg> SpawnedActor<Msg>
+where
+    Msg: 'static + Send,
+{
+    fn receive(&mut self, msg: Msg) {
+        match self.state {
+            SpawnedActorState::Active => {
+                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                    self.actor.receive(msg, &mut self.context)
+                })) {
+                    self.receive_system(SystemMsg::Stop(true));
+                }
+            }
+
+            SpawnedActorState::Spawned => {
+                self.stash.push_back(Envelope::Msg(msg));
+            }
+
+            SpawnedActorState::Stopping(_)
+            | SpawnedActorState::Stopped
+            | SpawnedActorState::Failed => {
+                // @TODO dead letters
+            }
+        }
+    }
+
+    fn receive_system(&mut self, msg: SystemMsg) {
+        match (&self.state, msg) {
+            (SpawnedActorState::Spawned, SystemMsg::Signaled(Signal::Started)) => {
+                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                    self.actor
+                        .receive_signal(Signal::Started, &mut self.context)
+                })) {
+                    self.receive_system(SystemMsg::Stop(true));
+                }
+
+                self.transition(SpawnedActorState::Active);
+
+                self.unstash_all();
+            }
+
+            (SpawnedActorState::Spawned, other) => {
+                // all other messages are irrelevant right now, so put
+                // them back into the mailbox until we get our start
+                // signal (which comes from the watcher)
+                //
+                // we don't need to reschedule ourselves for execution
+                // as the arrival of the start signal will do that
+                self.stash.push_back(Envelope::SystemMsg(other));
+            }
+
+            (SpawnedActorState::Active, SystemMsg::Stop(failure)) => {
+                if self.context.children.is_empty() {
+                    self.transition(if failure {
+                        SpawnedActorState::Failed
+                    } else {
+                        SpawnedActorState::Stopped
+                    });
+
+                    self.parent_ref
+                        .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
+                } else {
+                    self.transition(SpawnedActorState::Stopping(failure));
+
+                    for (_child_id, actor_ref) in self.context.children.iter() {
+                        // @TODO think about whether children should be failed
+                        actor_ref.tell_system(SystemMsg::Stop(false));
+                    }
+                }
+            }
+
+            (SpawnedActorState::Stopping(failure), SystemMsg::ChildStopped(id)) => {
+                self.context.children.remove(&id);
+
+                if self.context.children.is_empty() {
+                    self.transition(if *failure {
+                        SpawnedActorState::Failed
+                    } else {
+                        SpawnedActorState::Stopped
+                    });
+
+                    self.parent_ref
+                        .tell_system(SystemMsg::ChildStopped(self.context.actor_ref.id()));
+                }
+            }
+
+            (SpawnedActorState::Failed, _) => {}
+
+            (SpawnedActorState::Stopped, _) => {}
+
+            (_, SystemMsg::Signaled(signal)) => {
+                // @TODO do something with e
+                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                    self.actor.receive_signal(signal, &mut self.context)
+                })) {
+                    self.receive_system(SystemMsg::Stop(true));
+                }
+            }
+
+            (SpawnedActorState::Stopping(false), SystemMsg::Stop(true)) => {
+                // We've failed while we were stopping, which means that a signal
+                // handler paniced. Ensure that we flag ourselves as failed.
+                self.transition(SpawnedActorState::Stopping(true));
+            }
+
+            (_, SystemMsg::Stop { .. }) => {
+                // @TODO think about what it means to have received this
+                // if we're currently Stopped (ie not Failed)
+            }
+
+            (_, SystemMsg::ChildStopped(child_id)) => {
+                self.context.children.remove(&child_id);
+                self.context.children.shrink_to_fit();
+
+                // @TODO log this? shouldnt happe
+            }
+        }
+    }
+
+    fn run(mut self: Box<Self>) {
+        self.execution_state
+            .store(SpawnedActorExecutionState::Running);
+
+        let throughput = 1000; // @TODO config
+
+        let mut processed = 0;
+
+        while processed < throughput {
+            match self.mailbox.retrieve() {
+                Some(Envelope::Msg(msg)) => {
+                    self.receive(msg);
+                    processed += 1;
+                }
+
+                Some(Envelope::SystemMsg(msg)) => {
+                    self.receive_system(msg);
+                    processed += 1;
+                }
+
+                None => {
+                    break;
+                }
+            }
+        }
+
+        let execution_state = self.execution_state.clone();
+
+        let cont = match self
+            .execution_state
+            .clone()
+            .swap(SpawnedActorExecutionState::Idle(self))
+        {
+            SpawnedActorExecutionState::Idle(actor) => {
+                actor.dispatcher.clone().execute(|| actor.run());
+                false
+            }
+
+            SpawnedActorExecutionState::Running => false,
+
+            SpawnedActorExecutionState::Messaged => true,
+        } || processed == throughput;
+
+        if cont {
+            match execution_state.swap(SpawnedActorExecutionState::Messaged) {
+                SpawnedActorExecutionState::Idle(actor) => {
+                    actor.dispatcher.clone().execute(|| actor.run());
+                }
+
+                SpawnedActorExecutionState::Messaged => {}
+
+                SpawnedActorExecutionState::Running => {}
+            }
+        }
+    }
+
+    fn tell_watcher(&self, message: ActorWatcherMessage) {
+        if let Some(watcher_ref) = self.context.system_context().watcher_ref() {
+            watcher_ref.tell(message);
+        } else {
+            // @TODO
+        }
+    }
+
+    fn transition(&mut self, next: SpawnedActorState) {
+        self.state = next;
+
+        match self.state {
+            SpawnedActorState::Stopped => {
+                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                    self.actor
+                        .receive_signal(Signal::Stopped, &mut self.context)
+                })) {
+                    // @TODO _e
+                    self.transition(SpawnedActorState::Failed);
+                } else {
+                    self.tell_watcher(ActorWatcherMessage::Stopped(
+                        self.context.actor_ref().system_ref(),
+                    ));
+                }
+            }
+
+            SpawnedActorState::Failed => {
+                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                    self.actor.receive_signal(Signal::Failed, &mut self.context);
+                })) {
+                    // @TODO _e ? noting to do here really since we're already failed, it's like
+                    // swallowing an exception
+                }
+
+                self.tell_watcher(ActorWatcherMessage::Failed(
+                    self.context.actor_ref().system_ref(),
+                ));
+            }
+
+            _ => {}
+        }
+    }
+
+    fn unstash_all(&mut self) {
+        // @TODO if there are tons of messages, this can stall other actors from making progress.
+        //       it's important that ordering guarantees remain the same though, so punt this
+        //       for now and document the limitation
+        while let Some(msg) = self.stash.pop_front() {
+            match msg {
+                Envelope::Msg(msg) => {
+                    self.receive(msg);
+                }
+
+                Envelope::SystemMsg(msg) => {
+                    self.receive_system(msg);
+                }
+            }
+        }
+    }
+}
+
+pub(in crate::actor) trait ActorRefInner<Msg>: SystemActorRefInner
+where
+    Self: Send,
+    Msg: Send,
+{
+    fn tell(&self, msg: Msg);
+
+    fn tell_cancellable(&self, cancellable: Cancellable, msg: Msg, thunk: Option<Thunk>);
+}
+
+pub(in crate::actor) trait SystemActorRefInner: Downcast {
+    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync>;
+
+    fn stop(&self);
+
+    fn id(&self) -> usize;
+
+    fn tell_system(&self, msg: SystemMsg);
+}
+
+pub(in crate::actor) struct ActorRefCell<Msg>
+where
+    Msg: 'static + Send,
+{
+    pub(in crate::actor) id: usize,
+    pub(in crate::actor) state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>,
+    pub(in crate::actor) mailbox_appender: MailboxAppender<Envelope<Msg>>,
+}
+
+impl<Msg> ActorRefCell<Msg>
+where
+    Msg: 'static + Send,
+{
+    fn messaged(&self) {
+        match self.state.swap(SpawnedActorExecutionState::Messaged) {
+            SpawnedActorExecutionState::Idle(actor) => {
+                actor.dispatcher.clone().execute(|| actor.run());
+            }
+
+            SpawnedActorExecutionState::Running => {}
+
+            SpawnedActorExecutionState::Messaged => {}
+        }
+    }
+}
+
+impl<Msg> SystemActorRefInner for ActorRefCell<Msg>
+where
+    Msg: 'static + Send,
+{
+    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
+        Box::new(ActorRefCell {
+            id: self.id,
+            state: self.state.clone(),
+            mailbox_appender: self.mailbox_appender.clone(),
+        })
+    }
+
+    fn stop(&self) {
+        self.tell_system(SystemMsg::Stop(false));
+    }
+
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn tell_system(&self, msg: SystemMsg) {
+        self.mailbox_appender.append(Envelope::SystemMsg(msg));
+        self.messaged();
+    }
+}
+
+impl<Msg> ActorRefInner<Msg> for ActorRefCell<Msg>
+where
+    Msg: 'static + Send,
+{
+    fn tell(&self, msg: Msg) {
+        self.mailbox_appender.append(Envelope::Msg(msg));
+        self.messaged();
+    }
+
+    fn tell_cancellable(&self, cancellable: Cancellable, msg: Msg, thunk: Option<Thunk>) {
+        self.mailbox_appender
+            .append_cancellable(cancellable, Envelope::Msg(msg), thunk);
+        self.messaged();
+    }
+}
+
+struct StackedActorRefCell<NewMsg, Msg>
+where
+    NewMsg: Send,
+    Msg: Send,
+{
+    converter: Arc<Fn(NewMsg) -> Msg + Send + Sync>,
+    inner: Arc<Box<ActorRefInner<Msg> + Send + Sync>>,
+}
+
+impl<NewMsg, Msg> SystemActorRefInner for StackedActorRefCell<NewMsg, Msg>
+where
+    NewMsg: 'static + Send,
+    Msg: 'static + Send,
+{
+    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
+        Box::new(StackedActorRefCell {
+            converter: self.converter.clone(),
+            inner: self.inner.clone(),
+        })
+    }
+
+    fn stop(&self) {
+        self.inner.stop();
+    }
+
+    fn id(&self) -> usize {
+        self.inner.id()
+    }
+
+    fn tell_system(&self, msg: SystemMsg) {
+        self.inner.tell_system(msg);
+    }
+}
+
+impl<NewMsg, Msg> ActorRefInner<NewMsg> for StackedActorRefCell<NewMsg, Msg>
+where
+    NewMsg: 'static + Send,
+    Msg: 'static + Send,
+{
+    fn tell(&self, msg: NewMsg) {
+        self.inner.tell((self.converter)(msg));
+    }
+
+    fn tell_cancellable(&self, cancellable: Cancellable, msg: NewMsg, thunk: Option<Thunk>) {
+        self.inner
+            .tell_cancellable(cancellable, (self.converter)(msg), thunk);
+    }
+}
+
+struct EmptyActorRefCell;
+
+impl<Msg> ActorRefInner<Msg> for EmptyActorRefCell
+where
+    Msg: 'static + Send,
+{
+    fn tell(&self, _: Msg) {}
+
+    fn tell_cancellable(&self, _: Cancellable, _: Msg, _: Option<Thunk>) {}
+}
+
+impl SystemActorRefInner for EmptyActorRefCell {
+    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
+        Box::new(EmptyActorRefCell)
+    }
+
+    fn stop(&self) {}
+
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn tell_system(&self, _: SystemMsg) {}
 }

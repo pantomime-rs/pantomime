@@ -12,12 +12,14 @@ pub trait Ask<Req: 'static + Send, Resp: 'static + Send> {
     ///
     /// If `timeout` elapses without the actor sending a reply, the returned `Future` will
     /// contain an error of `Canceled`.
-    fn ask<F: FnOnce(ActorRef<Resp>) -> Req>(
+    fn ask<Msg, F: FnOnce(ActorRef<Resp>) -> Req>(
         &self,
-        timeout: Duration,
+        context: &mut ActorContext<Msg>,
         f: F,
+        timeout: Duration,
     ) -> Box<Future<Item = Resp, Error = Canceled> + 'static + Send>
     where
+        Msg: 'static + Send,
         F: 'static + Send;
 
     /// Send a message to an actor and asynchronously wait for a response. Futures integration.
@@ -29,26 +31,31 @@ pub trait Ask<Req: 'static + Send, Resp: 'static + Send> {
     ///
     /// This wait's (asynchronously) for an indefinite amount of time. This is usually not what
     /// you want, but can be useful for some internal communcation scenarios.
-    fn ask_infinite<F: FnOnce(ActorRef<Resp>) -> Req>(
+    fn ask_infinite<Msg, F: FnOnce(ActorRef<Resp>) -> Req>(
         &self,
+        context: &mut ActorContext<Msg>,
         f: F,
     ) -> Box<Future<Item = Resp, Error = ()> + 'static + Send>
     where
+        Msg: 'static + Send,
         F: 'static + Send;
 }
 
 impl<Req: 'static + Send, Resp: 'static + Send> Ask<Req, Resp> for ActorRef<Req> {
-    fn ask<F: FnOnce(ActorRef<Resp>) -> Req>(
+    #[must_use]
+    fn ask<Msg, F: FnOnce(ActorRef<Resp>) -> Req>(
         &self,
-        timeout: Duration,
+        context: &mut ActorContext<Msg>,
         f: F,
+        timeout: Duration,
     ) -> Box<Future<Item = Resp, Error = Canceled> + 'static + Send>
     where
+        Msg: 'static + Send,
         F: 'static + Send,
     {
         let (c, p) = oneshot::<Resp>();
 
-        let actor_ref = self.system_context().spawn(AskActor::new(c, Some(timeout)));
+        let actor_ref = context.spawn(AskActor::new(c, Some(timeout)));
 
         let msg = f(actor_ref);
 
@@ -57,16 +64,19 @@ impl<Req: 'static + Send, Resp: 'static + Send> Ask<Req, Resp> for ActorRef<Req>
         Box::new(p)
     }
 
-    fn ask_infinite<F: FnOnce(ActorRef<Resp>) -> Req>(
+    #[must_use]
+    fn ask_infinite<Msg, F: FnOnce(ActorRef<Resp>) -> Req>(
         &self,
+        context: &mut ActorContext<Msg>,
         f: F,
     ) -> Box<Future<Item = Resp, Error = ()> + 'static + Send>
     where
+        Msg: 'static + Send,
         F: 'static + Send,
     {
         let (c, p) = oneshot::<Resp>();
 
-        let actor_ref = self.system_context().spawn(AskActor::new(c, None));
+        let actor_ref = context.spawn(AskActor::new(c, None));
 
         let msg = f(actor_ref);
 
@@ -160,13 +170,13 @@ mod tests {
                     let greeter = ctx.spawn(Greeter);
 
                     let reply = greeter
-                        .ask_infinite(Msg::Hello)
+                        .ask_infinite(ctx, Msg::Hello)
                         .wait()
                         .expect("actor didn't reply");
 
                     assert_eq!(reply, "Hello!");
 
-                    ctx.actor_ref().drain();
+                    ctx.actor_ref().stop();
                 }
             }
         }
@@ -186,13 +196,13 @@ mod tests {
                     let greeter = ctx.spawn(Greeter);
 
                     let is_err = greeter
-                        .ask(time::Duration::from_millis(100), Msg::Rude)
+                        .ask(ctx, Msg::Rude, time::Duration::from_millis(100))
                         .wait()
                         .is_err();
 
                     assert!(is_err);
 
-                    ctx.actor_ref().drain();
+                    ctx.actor_ref().stop();
                 }
             }
         }

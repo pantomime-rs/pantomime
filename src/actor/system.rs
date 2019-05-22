@@ -2,9 +2,10 @@ use self::actor_watcher::{ActorWatcher, ActorWatcherMessage};
 use super::*;
 use crate::dispatcher::{Dispatcher, WorkStealingDispatcher};
 use crate::io::{IoCoordinator, IoCoordinatorMsg};
+use crossbeam::atomic::AtomicCell;
 use crossbeam::channel;
 use fern::colors::{Color, ColoredLevelConfig};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -26,47 +27,23 @@ pub struct ActorSystem {
     config_defaults: Option<HashMap<String, String>>,
 }
 
-#[derive(Clone)]
 pub struct ActorSystemContext {
-    inner: Arc<ActorSystemContextInner>,
+    config: Arc<ActorSystemConfig>,
+    dispatcher: Dispatcher,
+    next_actor_id: Arc<AtomicUsize>,
+    sender: channel::Sender<ActorSystemMsg>,
+    timer_ref: Option<ActorRef<TimerMsg>>,
+    io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
+    watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
 }
 
 impl ActorSystemContext {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        config: ActorSystemConfig,
-        dispatcher: Dispatcher,
-        initial_id: usize,
-        timer_ref: Option<ActorRef<TimerMsg>>,
-        io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
-        watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
-        sender: channel::Sender<ActorSystemMsg>,
-        shards: Option<usize>,
-    ) -> Self {
-        Self {
-            inner: Arc::new(ActorSystemContextInner::new(
-                config,
-                dispatcher,
-                initial_id,
-                timer_ref,
-                io_coordinator_ref,
-                watcher_ref,
-                sender,
-                shards,
-            )),
-        }
-    }
-
     pub fn dispatcher(&self) -> &Dispatcher {
-        &self.inner.dispatcher
-    }
-
-    pub fn drain(&self) {
-        self.inner.drain();
+        &self.dispatcher
     }
 
     pub fn stop(&self) {
-        self.inner.stop();
+        let _ = self.sender.send(ActorSystemMsg::Stop);
     }
 
     /// Schedule a function to be invoked after the timeout has elapsed.
@@ -75,173 +52,11 @@ impl ActorSystemContext {
     ///
     /// Internally, this uses a wheel-based timer that by default can
     /// schedule tasks upto a granularity of 10 milliseconds (by default).
-    pub fn schedule_thunk<F: FnOnce()>(&self, timeout: time::Duration, f: F)
+    pub fn schedule_thunk<F: FnOnce()>(&self, timeout: std::time::Duration, f: F)
     where
-        F: 'static + Send + Sync,
+        F: 'static + Send + Sync, // @TODO why Sync?
     {
-        self.inner.schedule_thunk(timeout, f);
-    }
-
-    pub(in crate::actor) fn spawn_actor<M: 'static + Send, A: 'static + Send>(
-        &self,
-        actor_type: ActorType,
-        actor: A,
-        parent_ref: SystemActorRef,
-    ) -> ActorRef<M>
-    where
-        A: Actor<M>,
-    {
-        let actor_id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
-
-        let custom_dispatcher = actor.config_dispatcher(self);
-
-        let mut custom_mailbox = actor.config_mailbox(self);
-
-        let custom_mailbox_appender = match custom_mailbox {
-            None => None,
-            Some(ref mut m) => Some(m.appender()),
-        };
-
-        let shard = match custom_dispatcher {
-            None => {
-                let s = self.inner.shards.len();
-
-                if s == 0 {
-                    self.inner.system_shard.clone()
-                } else {
-                    self.inner.shards[actor_id % s].clone()
-                }
-            }
-
-            Some(d) => Arc::new(ActorShard::new().with_dispatcher(d)),
-        };
-
-        let actor_context = ActorContext::new();
-
-        let cell = Arc::new(ActorCell::new(
-            actor,
-            parent_ref,
-            actor_context,
-            custom_mailbox,
-        ));
-
-        let actor_ref = ActorRef::new(Arc::new(ActorRefInner {
-            actor_type,
-            id: actor_id,
-            new_cell: Arc::downgrade(&cell),
-            shard,
-            system_context: self.clone(),
-            custom_mailbox_appender,
-        }));
-
-        let mut contents = cell
-            .contents
-            .swap(None)
-            .expect("pantomime bug: cell#contents missing");
-
-        contents.store(cell.clone());
-
-        contents.initialize(actor_ref.clone());
-
-        cell.contents.swap(Some(contents));
-
-        cell.register(&actor_ref);
-
-        actor_ref
-    }
-
-    pub(crate) fn spawn<M: 'static + Send, A: 'static + Send>(&self, actor: A) -> ActorRef<M>
-    where
-        A: Actor<M>,
-    {
-        // @TODO doesnt seem right
-        let parent_ref = SystemActorRef {
-            id: 0,
-            scheduler: Box::new(NoopActorRefScheduler),
-        };
-
-        self.spawn_actor(ActorType::Root, actor, parent_ref)
-    }
-
-    pub(crate) fn io_coordinator_ref(&self) -> Option<&ActorRef<IoCoordinatorMsg>> {
-        self.inner.io_coordinator_ref.as_ref()
-    }
-
-    pub(in crate::actor) fn watcher_ref(&self) -> Option<&ActorRef<ActorWatcherMessage>> {
-        self.inner.watcher_ref.as_ref()
-    }
-}
-
-/// Holds references to the system's configuration, global dispatcher,
-/// and various internal data structures.
-pub struct ActorSystemContextInner {
-    config: ActorSystemConfig,
-    dispatcher: Dispatcher,
-    next_id: AtomicUsize,
-    timer_ref: Option<ActorRef<TimerMsg>>,
-    pub(crate) io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
-    pub(in crate::actor) watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
-    system_shard: Arc<ActorShard>,
-    shards: Vec<Arc<ActorShard>>,
-    sender: channel::Sender<ActorSystemMsg>,
-}
-
-impl ActorSystemContextInner {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        config: ActorSystemConfig,
-        dispatcher: Dispatcher,
-        initial_id: usize,
-        timer_ref: Option<ActorRef<TimerMsg>>,
-        io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
-        watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
-        sender: channel::Sender<ActorSystemMsg>,
-        shards: Option<usize>,
-    ) -> Self {
-        let shards = {
-            let mut shards = Vec::with_capacity(shards.unwrap_or_else(|| config.shards()));
-
-            for _ in 0..shards.capacity() {
-                shards.push(Arc::new(ActorShard::new()));
-            }
-
-            shards
-        };
-
-        let system_shard = Arc::new(ActorShard::new());
-
-        Self {
-            config,
-            dispatcher,
-            next_id: AtomicUsize::new(initial_id),
-            timer_ref,
-            io_coordinator_ref,
-            watcher_ref,
-            system_shard,
-            shards,
-            sender,
-        }
-    }
-
-    fn drain(&self) {
-        let _ = self.sender.send(ActorSystemMsg::Drain);
-    }
-
-    fn stop(&self) {
-        let _ = self.sender.send(ActorSystemMsg::Stop);
-    }
-
-    /// Schedule a function to be invoked after the timeout has elapsed.
-    ///
-    /// The supplied function will be executed on the system dispatcher.
-    ///
-    /// Internally, this uses a wheel-based timer that by default can schedule tasks upto a
-    /// granularity of 10 milliseconds.
-    pub fn schedule_thunk<F: FnOnce()>(&self, timeout: time::Duration, f: F)
-    where
-        F: 'static + Send + Sync,
-    {
-        if let Some(ref timer_ref) = self.timer_ref {
+        if let Some(ref timer_ref) = self.timer_ref() {
             timer_ref.tell(TimerMsg::Schedule {
                 after: timeout,
                 thunk: TimerThunk::new(Box::new(f)),
@@ -250,40 +65,133 @@ impl ActorSystemContextInner {
             panic!("pantomime bug: schedule_thunk called on internal context");
         }
     }
+
+    pub(crate) fn io_coordinator_ref(&self) -> Option<&ActorRef<IoCoordinatorMsg>> {
+        self.io_coordinator_ref.as_ref()
+    }
+
+    pub(crate) fn spawn<M, A: Actor<M>>(&self, actor: A) -> ActorRef<M>
+    where
+        A: 'static + Send,
+        M: 'static + Send,
+    {
+        /////////////////////////////////////////////////////////////////////////////////////////
+        // NOTE: this is quite similiar to ActorContext::spawn, and changes should be mirrored //
+        /////////////////////////////////////////////////////////////////////////////////////////
+
+        use crate::actor::actor_ref::*;
+
+        let empty_ref = ActorRef::empty();
+        let dispatcher = actor
+            .config_dispatcher(&self)
+            .unwrap_or_else(|| self.new_actor_dispatcher());
+        let mailbox = actor
+            .config_mailbox(&self)
+            .unwrap_or_else(|| self.new_actor_mailbox());
+
+        let mut spawned_actor = SpawnedActor {
+            actor: Box::new(actor),
+            context: ActorContext {
+                actor_ref: empty_ref.clone(),
+                children: HashMap::new(),
+                deliveries: HashMap::new(),
+                dispatcher: dispatcher.clone(),
+                system_context: self.clone(),
+            },
+            dispatcher,
+            execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
+            mailbox,
+            parent_ref: empty_ref.system_ref(),
+            stash: VecDeque::new(),
+            state: SpawnedActorState::Spawned,
+        };
+
+        let actor_ref = ActorRef {
+            inner: Arc::new(Box::new(ActorRefCell {
+                id: self.new_actor_id(),
+                state: spawned_actor.execution_state.clone(),
+                mailbox_appender: spawned_actor.mailbox.appender(),
+            })),
+        };
+
+        spawned_actor.context.actor_ref = actor_ref.clone();
+
+        if let Some(ref watcher_ref) = self.watcher_ref() {
+            watcher_ref.tell(ActorWatcherMessage::Started(
+                actor_ref.id(),
+                actor_ref.system_ref(),
+                true,
+            ));
+        } else {
+            // these are internal actors, so they cannot be watched
+            spawned_actor.state = SpawnedActorState::Active;
+        }
+
+        spawned_actor
+            .execution_state
+            .clone()
+            .store(SpawnedActorExecutionState::Idle(Box::new(spawned_actor)));
+
+        actor_ref
+    }
+
+    pub(in crate::actor) fn new_actor_id(&self) -> usize {
+        self.next_actor_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub(in crate::actor) fn new_actor_dispatcher(&self) -> Dispatcher {
+        self.dispatcher.clone()
+    }
+
+    pub(in crate::actor) fn new_actor_mailbox<Msg>(&self) -> Mailbox<Msg>
+    where
+        Msg: 'static + Send,
+    {
+        Mailbox::new(CrossbeamSegQueueMailboxLogic::new())
+    }
+
+    pub(in crate::actor) fn timer_ref(&self) -> Option<&ActorRef<TimerMsg>> {
+        self.timer_ref.as_ref()
+    }
+
+    pub(in crate::actor) fn watcher_ref(&self) -> Option<&ActorRef<ActorWatcherMessage>> {
+        self.watcher_ref.as_ref()
+    }
+}
+
+impl Clone for ActorSystemContext {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            dispatcher: self.dispatcher.clone(),
+            next_actor_id: self.next_actor_id.clone(),
+            sender: self.sender.clone(),
+            timer_ref: self.timer_ref.clone(),
+            io_coordinator_ref: self.io_coordinator_ref.clone(),
+            watcher_ref: self.watcher_ref.clone(),
+        }
+    }
 }
 
 // @TODO signaled
 enum ActorSystemMsg {
-    Drain,
     Stop,
     Done,
 }
 
 pub struct ActiveActorSystem {
-    pub context: ActorSystemContext,
+    context: ActorSystemContext,
     receiver: channel::Receiver<ActorSystemMsg>,
     sender: channel::Sender<ActorSystemMsg>,
 }
 
 impl ActiveActorSystem {
-    fn new(
-        context: ActorSystemContext,
-        receiver: channel::Receiver<ActorSystemMsg>,
-        sender: channel::Sender<ActorSystemMsg>,
-    ) -> Self {
-        Self {
-            context,
-            receiver,
-            sender,
-        }
-    }
-
     /// Process system messages, taking over the thread in the process.
     ///
     /// For most applications, this will be the final call in main.
     ///
     /// This will return once the actor system has stopped, which happens
-    /// after a request to stop/drain has occurred, and all root actors
+    /// after a request to stop has occurred, and all root actors
     /// have terminated.
     ///
     /// If your application requires some special processing on main thread
@@ -297,7 +205,7 @@ impl ActiveActorSystem {
         use signal_hook::iterator::Signals;
 
         #[cfg(feature = "posix-signals-support")]
-        let signals = Signals::new(&self.context.inner.config.posix_signals)
+        let signals = Signals::new(&self.context.config.posix_signals)
             .expect("pantomime bug: cannot setup POSIX signal handling");
 
         // this provides a mechanism to occasionally check for signals that
@@ -314,18 +222,12 @@ impl ActiveActorSystem {
         loop {
             #[cfg(feature = "posix-signals-support")]
             for signal in signals.pending() {
-                if let Some(ref watcher_ref) = self.context.inner.watcher_ref {
+                if let Some(ref watcher_ref) = self.context.watcher_ref() {
                     watcher_ref.tell(ActorWatcherMessage::ReceivedPosixSignal(signal));
                 }
 
-                if self
-                    .context
-                    .inner
-                    .config
-                    .posix_shutdown_signals
-                    .contains(&signal)
-                {
-                    let _ = self.sender.send(ActorSystemMsg::Drain);
+                if self.context.config.posix_shutdown_signals.contains(&signal) {
+                    let _ = self.sender.send(ActorSystemMsg::Stop);
                     exit_code = 128 + signal;
                 }
             }
@@ -339,24 +241,8 @@ impl ActiveActorSystem {
                     break;
                 }
 
-                Ok(ActorSystemMsg::Drain) => {
-                    if let Some(ref watcher_ref) = self.context.inner.watcher_ref {
-                        let sender = self.sender.clone();
-
-                        watcher_ref.tell(ActorWatcherMessage::DrainSystem(Box::new(move || {
-                            if let Err(_e) = sender.send(ActorSystemMsg::Done) {
-                                // @TODO handle _e
-                            }
-                        })));
-                    } else {
-                        panic!(
-                            "pantomime bug: received drain request for actor without watcher_ref"
-                        );
-                    }
-                }
-
                 Ok(ActorSystemMsg::Stop) => {
-                    if let Some(ref watcher_ref) = self.context.inner.watcher_ref {
+                    if let Some(ref watcher_ref) = self.context.watcher_ref() {
                         let sender = self.sender.clone();
 
                         watcher_ref.tell(ActorWatcherMessage::StopSystem(Box::new(move || {
@@ -381,7 +267,7 @@ impl ActiveActorSystem {
                     // "special" actors are added in the future, they should be stopped here
                     // too. stopping is on a best-effort basis but should usually succeed
 
-                    if let Some(ref timer_ref) = self.context.inner.timer_ref {
+                    if let Some(ref timer_ref) = self.context.timer_ref() {
                         timer_ref.tell(TimerMsg::Stop);
                     }
 
@@ -395,7 +281,7 @@ impl ActiveActorSystem {
 
         #[cfg(not(test))]
         let _ = {
-            if self.context.inner.config.process_exit {
+            if self.context.config.process_exit {
                 ::std::process::exit(exit_code);
             }
 
@@ -407,14 +293,7 @@ impl ActiveActorSystem {
     where
         A: Actor<M>,
     {
-        // @TODO use a real parent
-
-        let parent_ref = SystemActorRef {
-            id: 0,
-            scheduler: Box::new(NoopActorRefScheduler),
-        };
-
-        ActorSystemContext::spawn_actor(&self.context, ActorType::Root, actor, parent_ref)
+        self.context.spawn(actor)
     }
 }
 
@@ -452,20 +331,22 @@ where
     fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
         match signal {
             Signal::Started => {
-                ctx.spawn(
+                let actor_ref = ctx.spawn(
                     self.actor
                         .take()
                         .expect("pantomime bug: ReaperMonitor cannot get actor"),
                 );
+
+                ctx.watch(&actor_ref);
             }
 
             Signal::ActorStopped(_, StopReason::Failed) => {
                 self.failed.store(true, Ordering::Release);
-                ctx.system_context().drain();
+                ctx.system_context().stop();
             }
 
             Signal::ActorStopped(_, _) => {
-                ctx.system_context().drain();
+                ctx.system_context().stop();
             }
 
             _ => {}
@@ -530,7 +411,7 @@ impl ActorSystem {
             }
         });
 
-        let config = ActorSystemConfig::parse(self.config_defaults.take());
+        let config = Arc::new(ActorSystemConfig::parse(self.config_defaults.take()));
 
         let dispatcher_logic = WorkStealingDispatcher::new(
             config.default_dispatcher_parallelism(),
@@ -541,70 +422,49 @@ impl ActorSystem {
 
         let (sender, receiver) = channel::unbounded();
 
-        let system_context = Arc::new(ActorSystemContext::new(
-            config.clone(),
-            dispatcher.clone(),
-            1,
-            None,
-            None,
-            None,
-            sender.clone(),
-            Some(0),
-        ));
-
-        let parent_ref = SystemActorRef {
-            id: 0,
-            scheduler: Box::new(NoopActorRefScheduler),
+        let internal_system_context = ActorSystemContext {
+            config: config.clone(),
+            dispatcher: dispatcher.clone(),
+            next_actor_id: Arc::new(AtomicUsize::new(1)),
+            sender: sender.clone(),
+            timer_ref: None,
+            io_coordinator_ref: None,
+            watcher_ref: None,
         };
 
-        let ticker_interval =
-            time::Duration::from_millis(system_context.inner.config.ticker_interval_ms);
+        let ticker_interval = time::Duration::from_millis(config.ticker_interval_ms);
 
-        let timer_ref = ActorSystemContext::spawn_actor(
-            &system_context,
-            ActorType::System,
-            Timer::new(ticker_interval),
-            parent_ref.clone(),
-        );
+        let timer_ref = internal_system_context.spawn(Timer::new(ticker_interval));
 
-        let actor_watcher_ref = ActorSystemContext::spawn_actor(
-            &system_context,
-            ActorType::System,
-            ActorWatcher::new(),
-            parent_ref.clone(),
-        );
+        let actor_watcher_ref = internal_system_context.spawn(ActorWatcher::new());
 
         let poller = crate::io::Poller::new();
 
         let poll = poller.poll.clone();
 
-        let io_coordinator_ref = ActorSystemContext::spawn_actor(
-            &system_context,
-            ActorType::System,
-            IoCoordinator::new(poll),
-            parent_ref,
-        );
+        let io_coordinator_ref = internal_system_context.spawn(IoCoordinator::new(poll));
 
         poller.run(&io_coordinator_ref);
 
-        let context = ActorSystemContext::new(
-            config.clone(),
-            dispatcher.clone(),
-            100, // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
-            Some(timer_ref.clone()),
-            Some(io_coordinator_ref),
-            Some(actor_watcher_ref),
-            sender.clone(),
-            None,
-        );
+        let context = ActorSystemContext {
+            config,
+            dispatcher,
+            next_actor_id: Arc::new(AtomicUsize::new(100)), // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
+            sender: sender.clone(),
+            timer_ref: Some(timer_ref.clone()),
+            io_coordinator_ref: Some(io_coordinator_ref),
+            watcher_ref: Some(actor_watcher_ref),
+        };
 
-        if context.inner.config.log_config_on_start {
-            info!("configuration: {:?}", context.inner.config);
+        if context.config.log_config_on_start {
+            info!("configuration: {:?}", context.config);
         }
 
-        // @TODO use a real parent
-
-        ActiveActorSystem::new(context, receiver, sender)
+        ActiveActorSystem {
+            context,
+            receiver,
+            sender,
+        }
     }
 
     fn setup_logger() -> Result<(), fern::InitError> {

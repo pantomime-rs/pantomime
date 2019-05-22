@@ -1,8 +1,8 @@
 use crate::actor::*;
 use std::time::Duration;
 
-const LIMIT: usize = 8;
-const TIMES: usize = 4;
+const LIMIT: usize = 1024;
+const TIMES: usize = 128;
 
 struct MyActor {
     id: usize,
@@ -19,6 +19,7 @@ impl Actor<usize> for MyActor {
 
             if self.count == LIMIT * TIMES {
                 self.actor_ref.tell(self.count);
+            } else {
             }
         }
     }
@@ -38,7 +39,7 @@ impl Actor<usize> for MyActor {
                             a.tell(1);
                         }
 
-                        a.drain();
+                        a.stop();
                     }
                 }
             }
@@ -73,22 +74,10 @@ fn test() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), LIMIT * TIMES);
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
 
-    // @TODO revisit this -- the main shard is blocking execution, so we configure
-    //       each actor to be on its own shard
-    //
-    //       however, im not convinced shards should stay around, will investigate
-    //       next
-
-    assert!(ActorSystem::new()
-        .with_config_defaults(&[
-            ("PANTOMIME_SHARDS_MIN", "16384"),
-            ("PANTOMIME_SHARDS_MAX", "16384")
-        ])
-        .spawn(TestReaper)
-        .is_ok());
+    assert!(ActorSystem::new().spawn(TestReaper).is_ok());
 }

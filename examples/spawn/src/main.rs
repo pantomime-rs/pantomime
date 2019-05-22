@@ -3,7 +3,7 @@ extern crate pantomime;
 use pantomime::prelude::*;
 use std::io;
 
-const NUM_WORKERS: usize = 10_000_000;
+const NUM_WORKERS: usize = 1_000_000;
 
 struct Worker {
     _id: usize,

@@ -30,7 +30,7 @@ fn test_sink_for_each_watch_termination() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), Some(()));
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
@@ -66,7 +66,7 @@ fn test_sink_last_watch_termination() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), Some(10000));
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
@@ -115,7 +115,7 @@ fn test_sink_tell() {
 
                 assert_eq!(a, 50_005_000);
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
@@ -151,7 +151,7 @@ fn test_sources_iterator_sink_cancel_watch_termination() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), true);
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
@@ -187,7 +187,7 @@ fn test_sources_iterator_sink_first_watch_termination() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), Some(1));
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
@@ -223,7 +223,7 @@ fn test_sources_empty_sink_last_watch_termination() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), None);
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
@@ -262,7 +262,7 @@ fn test_sources_iter_flow_take_while_sink_last_watch_termination() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), Some(10000));
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }
@@ -304,7 +304,7 @@ fn test_many() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), Some(59_999_940));
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }

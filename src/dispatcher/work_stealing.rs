@@ -78,8 +78,7 @@ impl WorkStealingDispatcher {
         for i in (0..parallelism).rev() {
             let injector = injector.clone();
 
-            let mut stealers: Vec<Stealer<WorkStealingDispatcherMessage>> =
-                stealers.to_vec();
+            let mut stealers: Vec<Stealer<WorkStealingDispatcherMessage>> = stealers.to_vec();
 
             let w = workers.remove(i);
             let _ = stealers.remove(i);

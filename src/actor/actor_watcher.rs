@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 pub(in crate::actor) enum ActorWatcherMessage {
     Subscribe(SystemActorRef, SystemActorRef),
-    Started(usize, SystemActorRef, SystemActorRef),
+    Started(usize, SystemActorRef, bool),
     Stopped(SystemActorRef),
     Failed(SystemActorRef),
 
@@ -13,7 +13,6 @@ pub(in crate::actor) enum ActorWatcherMessage {
     #[cfg(feature = "posix-signals-support")]
     SubscribePosixSignals(SystemActorRef),
 
-    DrainSystem(ThunkWithSync),
     StopSystem(ThunkWithSync),
 }
 
@@ -64,10 +63,12 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
     ) {
         match message {
             ActorWatcherMessage::Subscribe(watcher, watching) => {
-                if self.system_refs.contains(&watching.id) {
+                let id = watching.id();
+
+                if self.system_refs.contains(&id) {
                     let entry = self
                         .watchers
-                        .entry(watching.id)
+                        .entry(id)
                         .or_insert_with(|| Vec::with_capacity(1));
 
                     entry.push(watcher);
@@ -79,19 +80,12 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                 }
             }
 
-            ActorWatcherMessage::Started(id, parent_system_ref, system_ref) => {
+            ActorWatcherMessage::Started(id, system_ref, is_root) => {
                 system_ref.tell_system(SystemMsg::Signaled(Signal::Started));
 
                 self.system_refs.insert(id);
 
-                let entry = self
-                    .watchers
-                    .entry(system_ref.id)
-                    .or_insert_with(|| Vec::with_capacity(1));
-
-                entry.push(parent_system_ref);
-
-                if system_ref.actor_type() == ActorType::Root {
+                if is_root {
                     self.root_system_refs.insert(id, system_ref);
                 }
             }
@@ -109,12 +103,14 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                 // These fields will be dropped when all ActorRef references
                 // are dropped.
 
-                self.system_refs.remove(&system_ref.id);
-                self.root_system_refs.remove(&system_ref.id);
+                let id = system_ref.id();
+
+                self.system_refs.remove(&id);
+                self.root_system_refs.remove(&id);
                 self.system_refs.shrink_to_fit();
                 self.root_system_refs.shrink_to_fit();
 
-                if let Some(watchers) = self.watchers.remove(&system_ref.id) {
+                if let Some(watchers) = self.watchers.remove(&id) {
                     self.watchers.shrink_to_fit();
 
                     for watcher in watchers {
@@ -126,20 +122,21 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                 }
 
                 #[cfg(feature = "posix-signals-support")]
-                self.posix_signals_watchers.remove(&system_ref.id);
+                self.posix_signals_watchers.remove(&id);
 
                 self.check_stopped();
             }
 
             ActorWatcherMessage::Failed(system_ref) => {
                 // Note that the same message above applies to this case as well
+                let id = system_ref.id();
 
-                self.system_refs.remove(&system_ref.id);
-                self.root_system_refs.remove(&system_ref.id);
+                self.system_refs.remove(&id);
+                self.root_system_refs.remove(&id);
                 self.system_refs.shrink_to_fit();
                 self.root_system_refs.shrink_to_fit();
 
-                if let Some(watchers) = self.watchers.remove(&system_ref.id) {
+                if let Some(watchers) = self.watchers.remove(&id) {
                     self.watchers.shrink_to_fit();
                     for watcher in watchers {
                         watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
@@ -150,19 +147,9 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                 }
 
                 #[cfg(feature = "posix-signals-support")]
-                self.posix_signals_watchers.remove(&system_ref.id);
+                self.posix_signals_watchers.remove(&id);
 
                 self.check_stopped();
-            }
-
-            ActorWatcherMessage::DrainSystem(done) => {
-                if self.when_stopped.is_none() {
-                    for actor in self.root_system_refs.values() {
-                        actor.drain();
-                    }
-
-                    self.when_stopped = Some(done);
-                }
             }
 
             ActorWatcherMessage::StopSystem(done) => {
@@ -185,7 +172,7 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
             #[cfg(feature = "posix-signals-support")]
             ActorWatcherMessage::SubscribePosixSignals(system_ref) => {
                 self.posix_signals_watchers
-                    .insert(system_ref.id, system_ref);
+                    .insert(system_ref.id(), system_ref);
             }
         }
     }

@@ -29,9 +29,7 @@ fn basic_test() {
 
                 // Create an actor ref that can receive usize, and turn them into bool
                 // that our probe understands
-                let probe_recv = probe
-                    .actor_ref
-                    .convert(|n| n != 0);
+                let probe_recv = probe.actor_ref.convert(|n| n != 0);
                 // Create an actor ref that can receive bool, and turn them into usize
                 // that our actor understands
                 let actor_send = actor.convert(move |n: bool| {
@@ -59,7 +57,7 @@ fn basic_test() {
                 actor_send.tell(false);
                 assert!(!probe.receive(Duration::from_secs(10)));
 
-                ctx.actor_ref().drain();
+                ctx.actor_ref().stop();
             }
         }
     }

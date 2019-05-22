@@ -67,7 +67,7 @@ impl ActorSystemConfig {
             process_exit: config(&mut defaults, "PANTOMIME_PROCESS_EXIT", true),
             shards_min: config(&mut defaults, "PANTOMIME_SHARDS_MIN", 4),
             shards_factor: config(&mut defaults, "PANTOMIME_SHARDS_FACTOR", 32.0),
-            shards_max: config(&mut defaults, "PANTOMIME_SHARDS_MAX", 4),
+            shards_max: config(&mut defaults, "PANTOMIME_SHARDS_MAX", 2048),
             ticker_interval_ms: config(&mut defaults, "PANTOMIME_TICKER_INTERVAL_MS", 10),
 
             #[cfg(feature = "posix-signals-support")]
