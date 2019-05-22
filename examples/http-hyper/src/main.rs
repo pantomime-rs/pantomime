@@ -22,14 +22,13 @@ impl Actor<()> for MyReaper {
             let new_svc = || service_fn_ok(hello_world);
 
             let server = Server::bind(&bind_addr)
-                .executor(ctx.system_context().dispatcher().clone())
+                .executor(ctx.dispatcher().clone())
                 .serve(new_svc)
                 .map_err(|e| eprintln!("server error: {}", e));
 
-            ctx.system_context()
-                .dispatcher()
-                .run(server)
-                .expect("cannot run server");
+            ctx.dispatcher()
+               .run(server)
+               .expect("cannot run server");
         }
     }
 }

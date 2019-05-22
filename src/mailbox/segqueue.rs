@@ -34,7 +34,6 @@ pub struct CrossbeamSegQueueMailboxLogic<M: 'static + Send> {
     queue: Arc<SegQueue<MaybeCancelled<M>>>,
 }
 
-
 impl<M: 'static> CrossbeamSegQueueMailboxLogic<M>
 where
     M: Send,

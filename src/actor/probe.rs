@@ -152,7 +152,7 @@ mod tests {
                     // @TODO can we improve this test to assert that dropping
                     // the probe stops the actor?
 
-                    ctx.actor_ref().drain();
+                    ctx.actor_ref().stop();
                 }
             }
         }

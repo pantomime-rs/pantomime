@@ -28,7 +28,7 @@ impl Actor<()> for MyActor {
 
             Signal::PosixSignal(value) => {
                 if value == posix_signals::SIGUSR1 {
-                    context.actor_ref().system_context().drain();
+                    context.system_context().stop();
                 }
             }
 

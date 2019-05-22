@@ -132,7 +132,7 @@ mod tests {
 
                     assert_eq!(probe.receive(time::Duration::from_secs(10)), 4);
 
-                    ctx.actor_ref().drain();
+                    ctx.actor_ref().stop();
                 }
             }
         }
