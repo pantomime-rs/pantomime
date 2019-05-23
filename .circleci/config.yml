@@ -29,7 +29,7 @@ jobs:
       - run:
           name: Run Clippy
           command: |
-            cargo clippy -- -D warnings
+            cargo clippy --features tokio-support --tests -- -D warnings
       - save_cache:
           key: linux-cargo-cache-1
           paths:

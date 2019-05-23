@@ -59,9 +59,9 @@ where
         None
     }
 
-    fn receive(&mut self, msg: Msg, context: &mut ActorContext<Msg>);
-
     fn receive_signal(&mut self, _: Signal, _: &mut ActorContext<Msg>) {}
+
+    fn receive(&mut self, msg: Msg, context: &mut ActorContext<Msg>);
 }
 
 pub struct ActorContext<Msg>
@@ -114,8 +114,8 @@ where
             let cancellable = cancellable.clone();
 
             Self::periodic_delivery(
-                self.system_context().clone(),
-                self.actor_ref().clone(),
+                self.system_context.clone(),
+                self.actor_ref.clone(),
                 msg,
                 interval,
                 cancellable,
@@ -144,7 +144,7 @@ where
             let actor_ref = self.actor_ref().clone();
             let cancellable = cancellable.clone();
 
-            self.system_context().schedule_thunk(timeout, move || {
+            self.system_context.schedule_thunk(timeout, move || {
                 // we explicitly cancel to ensure that our entry will be
                 // cleaned up, as cancelled entries are filtered out
                 // periodically
@@ -186,7 +186,7 @@ where
     where
         N: 'static + Send,
     {
-        match self.system_context().watcher_ref() {
+        match self.system_context.watcher_ref() {
             Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
                 self.actor_ref().system_ref(),
                 actor_ref.system_ref(),
@@ -207,7 +207,7 @@ where
     pub fn watch_posix_signals(&mut self) {
         // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
 
-        if let Some(ref watcher_ref) = self.system_context().watcher_ref() {
+        if let Some(ref watcher_ref) = self.system_context.watcher_ref() {
             watcher_ref.tell(ActorWatcherMessage::SubscribePosixSignals(
                 self.actor_ref().system_ref(),
             ));
@@ -273,6 +273,19 @@ where
                 false,
             ));
         }
+
+        actor_ref
+    }
+
+    pub fn spawn_watched<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
+    where
+        A: 'static + Send,
+        AMsg: 'static + Send,
+        Msg: 'static + Send,
+    {
+        let actor_ref = self.spawn(actor);
+
+        self.watch(&actor_ref);
 
         actor_ref
     }
@@ -516,14 +529,14 @@ where
     fn receive_system(&mut self, msg: SystemMsg) {
         match (&self.state, msg) {
             (SpawnedActorState::Spawned, SystemMsg::Signaled(Signal::Started)) => {
+                self.transition(SpawnedActorState::Active);
+
                 if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                     self.actor
                         .receive_signal(Signal::Started, &mut self.context)
                 })) {
                     self.receive_system(SystemMsg::Stop(true));
                 }
-
-                self.transition(SpawnedActorState::Active);
 
                 self.unstash_all();
             }
@@ -553,7 +566,8 @@ where
 
                     for (_child_id, actor_ref) in self.context.children.iter() {
                         // @TODO think about whether children should be failed
-                        actor_ref.tell_system(SystemMsg::Stop(false));
+
+                        actor_ref.stop();
                     }
                 }
             }
@@ -610,7 +624,7 @@ where
         self.execution_state
             .store(SpawnedActorExecutionState::Running);
 
-        let throughput = 1000; // @TODO config
+        let throughput = self.dispatcher.throughput();
 
         let mut processed = 0;
 
@@ -663,7 +677,7 @@ where
     }
 
     fn tell_watcher(&self, message: ActorWatcherMessage) {
-        if let Some(watcher_ref) = self.context.system_context().watcher_ref() {
+        if let Some(watcher_ref) = self.context.system_context.watcher_ref() {
             watcher_ref.tell(message);
         } else {
             // @TODO
@@ -759,7 +773,7 @@ where
     fn messaged(&self) {
         match self.state.swap(SpawnedActorExecutionState::Messaged) {
             SpawnedActorExecutionState::Idle(actor) => {
-                actor.dispatcher.clone().execute(|| actor.run());
+                actor.dispatcher.clone().execute(|| actor.run())
             }
 
             SpawnedActorExecutionState::Running => {}

@@ -49,8 +49,10 @@ impl ActorWatcher {
     }
 
     fn check_stopped(&mut self) {
-        if let Some(thunk) = self.when_stopped.take() {
-            thunk.apply();
+        if self.root_system_refs.is_empty() {
+            if let Some(thunk) = self.when_stopped.take() {
+                thunk.apply();
+            }
         }
     }
 }
@@ -160,6 +162,8 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
 
                     self.when_stopped = Some(done);
                 }
+
+                self.check_stopped();
             }
 
             #[cfg(feature = "posix-signals-support")]

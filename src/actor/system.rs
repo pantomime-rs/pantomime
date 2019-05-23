@@ -197,7 +197,7 @@ impl ActiveActorSystem {
     /// If your application requires some special processing on main thread
     /// (e.g. some graphics libraries), this should be called in its own
     /// thread instead.
-    pub fn join(self) {
+    fn join(self, failed: &AtomicBool) {
         #[allow(unused_mut)]
         let mut exit_code = 0;
 
@@ -269,6 +269,10 @@ impl ActiveActorSystem {
 
                     if let Some(ref timer_ref) = self.context.timer_ref() {
                         timer_ref.tell(TimerMsg::Stop);
+                    }
+
+                    if failed.load(Ordering::Acquire) && exit_code == 0 {
+                        exit_code = 1;
                     }
 
                     break;
@@ -368,7 +372,12 @@ impl ActorSystem {
     /// be provided whose job is to spawn other actors and optionally
     /// watch them.
     ///
-    /// Returns whether the reaper terminated successfully or not.
+    /// If the test configuration is active, this returns a result indicating
+    /// whether the reaper terminated successfully.
+    ///
+    /// Otherwise, if Pantomime is configured to call exit, this function
+    /// will never return and will instead exit the process with a relevant
+    /// status code.
     ///
     /// A suggested pattern is to spawn and watch all of your top level actors
     /// with the reaper, and react to any termination signals of those actors
@@ -384,7 +393,7 @@ impl ActorSystem {
 
         system.spawn(ReaperMonitor::new(actor, &failed));
 
-        system.join();
+        system.join(&failed);
 
         if failed.load(Ordering::Acquire) {
             Err(Error::new(ErrorKind::Other, "TODO"))
