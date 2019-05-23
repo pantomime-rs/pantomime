@@ -10,7 +10,7 @@ use std::io::{Error, ErrorKind};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
-use std::{time, usize};
+use std::{cmp, time, usize};
 
 static INITIALIZE_ONCE: Once = Once::new();
 
@@ -24,7 +24,7 @@ static INITIALIZE_ONCE: Once = Once::new();
 /// various datastructures that support the execution of its actors.
 #[derive(Default)]
 pub struct ActorSystem {
-    config_defaults: Option<HashMap<String, String>>,
+    config: Option<Config>,
 }
 
 pub struct ActorSystemContext {
@@ -356,23 +356,11 @@ where
 
 impl ActorSystem {
     pub fn new() -> Self {
-        Self {
-            config_defaults: None,
-        }
+        Self { config: None }
     }
 
-    pub fn with_config_defaults(mut self, defaults: &[(&str, &str)]) -> Self {
-        let config_defaults = {
-            let mut map = HashMap::new();
-
-            for (key, value) in defaults.iter() {
-                map.insert(key.to_string(), value.to_string());
-            }
-
-            map
-        };
-
-        self.config_defaults = Some(config_defaults);
+    pub fn with_config(mut self, config: &Config) -> Self {
+        self.config = Some(config.clone());
         self
     }
 
@@ -385,11 +373,12 @@ impl ActorSystem {
     /// A suggested pattern is to spawn and watch all of your top level actors
     /// with the reaper, and react to any termination signals of those actors
     /// via the `receive_signal` method.
-    pub fn spawn<M: 'static + Send, A: 'static + Send>(self, actor: A) -> Result<(), Error>
+    pub fn spawn<M: 'static + Send, A: 'static + Send>(mut self, actor: A) -> Result<(), Error>
     where
         A: Actor<M>,
     {
-        let mut system = self.start();
+        let config = ActorSystemConfig::new(&self.config.take().unwrap_or_default())?;
+        let mut system = self.start(config);
 
         let failed = Arc::new(AtomicBool::new(false));
 
@@ -404,17 +393,25 @@ impl ActorSystem {
         }
     }
 
-    fn start(mut self) -> ActiveActorSystem {
+    fn start(self, config: ActorSystemConfig) -> ActiveActorSystem {
         INITIALIZE_ONCE.call_once(|| {
             if let Some(log_err) = Self::setup_logger().err() {
                 panic!("pantomime bug: cannot initialize logger; {}", log_err);
             }
         });
 
-        let config = Arc::new(ActorSystemConfig::parse(self.config_defaults.take()));
+        let config = Arc::new(config);
+
+        let default_dispatcher_parallelism = cmp::min(
+            config.default_dispatcher_parallelism_max,
+            cmp::max(
+                config.default_dispatcher_parallelism_min,
+                (config.num_cpus as f32 * config.default_dispatcher_parallelism_factor) as usize,
+            ),
+        );
 
         let dispatcher_logic = WorkStealingDispatcher::new(
-            config.default_dispatcher_parallelism(),
+            default_dispatcher_parallelism,
             config.default_dispatcher_task_queue_fifo,
         );
 
