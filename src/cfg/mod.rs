@@ -1,7 +1,143 @@
 //! Configuration
 
 use std::collections::HashMap;
-use std::{cmp, env, str};
+use std::{borrow, env, fmt, io, str};
+
+/// A `Config` holds simple key/value pairings that are sourced
+/// from a few layers, and provides methods to extract values.
+///
+/// A focus is on ergonomics, so copies are frequently employed. It
+/// is intended to only be used during bootstrapping the application,
+/// allowing developers to specify values at a few different layers.
+///
+/// Configuration values are layered, where by the environment
+/// variables take highest precedence, followed by the application's
+/// specified defaults (if any), followed by the libraries fallback
+/// defaults.
+#[derive(Clone)]
+pub struct Config {
+    defaults: HashMap<String, String>,
+}
+
+impl Config {
+    /// Create a new configuration with the specified defaults. These
+    /// defaults are used for extracting configuration values if they
+    /// are not defined in the environment.
+    pub fn new(defaults: &[(&str, &str)]) -> Config {
+        let defaults = {
+            let mut map = HashMap::new();
+
+            for (key, value) in defaults.iter() {
+                map.insert(key.to_string(), value.to_string());
+            }
+
+            map
+        };
+
+        Config { defaults }
+    }
+
+    /// Create a new configuration with the specified fallback defaults. That is,
+    /// they only take effect if not defined by the environment or already supplied
+    /// defaults.
+    pub fn with_fallback(&self, fallback_defaults: &[(&str, &str)]) -> Config {
+        let mut cfg = Config {
+            defaults: self.defaults.clone(),
+        };
+
+        for (key, value) in Self::new(fallback_defaults).defaults.into_iter() {
+            cfg.defaults.entry(key).or_insert(value);
+        }
+
+        cfg
+    }
+
+    pub fn parsed<T: str::FromStr>(&self, name: &str) -> io::Result<T>
+    where
+        T::Err: fmt::Display,
+    {
+        let provided_result = env::var(&name)
+            .ok()
+            .or_else(|| self.defaults.get(name).map(borrow::ToOwned::to_owned))
+            .map(|s| s.parse::<T>());
+
+        match provided_result {
+            None => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("config missing: {}", name),
+            )),
+            Some(Ok(value)) => Ok(value),
+            Some(Err(e)) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("config parse error: {} {}", name, e),
+            )),
+        }
+    }
+
+    pub fn parsed_vec<T: str::FromStr>(&self, name: &str) -> io::Result<Vec<T>>
+    where
+        T::Err: fmt::Display,
+    {
+        self.string_vec(&name).and_then(|values| {
+            values
+                .into_iter()
+                .map(|v| {
+                    v.parse::<T>().map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("config parse error: {} {}", name, e),
+                        )
+                    })
+                })
+                .collect()
+        })
+    }
+
+    pub fn string_vec(&self, name: &str) -> io::Result<Vec<String>> {
+        self.string(name).map(|value| {
+            let mut arg = String::new();
+            let mut args = Vec::new();
+            let mut escaped = false;
+
+            for c in value.chars() {
+                if escaped {
+                    escaped = false;
+                    arg.push(c);
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == ',' {
+                    args.push(arg);
+                    arg = String::new();
+                } else {
+                    arg.push(c);
+                }
+            }
+
+            if !value.is_empty() {
+                args.push(arg);
+            }
+
+            args
+        })
+    }
+
+    pub fn string(&self, name: &str) -> io::Result<String> {
+        env::var(name)
+            .ok()
+            .or_else(|| self.defaults.get(name).map(borrow::ToOwned::to_owned))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, format!("config missing: {}", name))
+            })
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            defaults: HashMap::new(),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ActorSystemConfig {
@@ -12,9 +148,6 @@ pub struct ActorSystemConfig {
     pub log_config_on_start: bool,
     pub num_cpus: usize,
     pub process_exit: bool,
-    pub shards_min: usize,
-    pub shards_max: usize,
-    pub shards_factor: f32,
 
     pub ticker_interval_ms: u64,
 
@@ -40,149 +173,112 @@ pub struct ActorSystemConfig {
 // @TODO need to validate
 
 impl ActorSystemConfig {
-    pub fn parse(mut defaults: Option<HashMap<String, String>>) -> Self {
-        Self {
-            default_dispatcher_parallelism_min: config(
-                &mut defaults,
-                "PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN",
-                4,
-            ),
-            default_dispatcher_parallelism_max: config(
-                &mut defaults,
-                "PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX",
-                64,
-            ),
-            default_dispatcher_parallelism_factor: config(
-                &mut defaults,
-                "PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR",
-                1.0,
-            ),
-            default_dispatcher_task_queue_fifo: config(
-                &mut defaults,
-                "PANTOMIME_DEFAULT_DISPATCHER_TASK_QUEUE_FIFO",
-                true,
-            ),
-            log_config_on_start: config(&mut defaults, "PANTOMIME_LOG_CONFIG_ON_START", false),
-            num_cpus: config(&mut defaults, "PANTOMIME_NUM_CPUS", num_cpus::get()),
-            process_exit: config(&mut defaults, "PANTOMIME_PROCESS_EXIT", true),
-            shards_min: config(&mut defaults, "PANTOMIME_SHARDS_MIN", 4),
-            shards_factor: config(&mut defaults, "PANTOMIME_SHARDS_FACTOR", 32.0),
-            shards_max: config(&mut defaults, "PANTOMIME_SHARDS_MAX", 2048),
-            ticker_interval_ms: config(&mut defaults, "PANTOMIME_TICKER_INTERVAL_MS", 10),
+    #[rustfmt::skip]
+    pub fn new(cfg: &Config) -> io::Result<Self> {
+        #[cfg(feature = "posix-signals-support")]
+        fn posix_signal(sig: String) -> i32 {
+            match sig.as_str() {
+                "SIGHUP"  => crate::posix_signals::SIGHUP,
+                "SIGINT"  => crate::posix_signals::SIGINT,
+                "SIGUSR1" => crate::posix_signals::SIGUSR1,
+                "SIGUSR2" => crate::posix_signals::SIGUSR2,
+                "SIGTERM" => crate::posix_signals::SIGTERM,
+                _         => 0,
+            }
+        }
+
+        let cfg = cfg.with_fallback(&[
+            ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN",    "4"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX",    "64"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR", "1.0"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_TASK_QUEUE_FIFO",    "true"),
+            ("PANTOMIME_LOG_CONFIG_ON_START",                   "false"),
+            ("PANTOMIME_NUM_CPUS",                              "0"),
+            ("PANTOMIME_PROCESS_EXIT",                          "true"),
+            ("PANTOMIME_TICKER_INTERVAL_MS",                    "10"),
+            ("PANTOMIME_POSIX_SIGNALS",                         "SIGINT,SIGTERM,SIGHUP,SIGUSR1,SIGUSR2"),
+            ("PANTOMIME_POSIX_EXIT_SIGNALS",                    "SIGINT,SIGTERM"),
+        ]);
+
+        Ok(Self {
+            default_dispatcher_parallelism_min:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN")?,
+            default_dispatcher_parallelism_max:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX")?,
+            default_dispatcher_parallelism_factor:  cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR")?,
+            default_dispatcher_task_queue_fifo:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_TASK_QUEUE_FIFO")?,
+            log_config_on_start:                    cfg.parsed("PANTOMIME_LOG_CONFIG_ON_START")?,
+            num_cpus:                               cfg.parsed("PANTOMIME_NUM_CPUS")
+                                                       .map(|n| if n == 0 { num_cpus::get() } else { n })?,
+            process_exit:                           cfg.parsed("PANTOMIME_PROCESS_EXIT")?,
+            ticker_interval_ms:                     cfg.parsed("PANTOMIME_TICKER_INTERVAL_MS")?,
 
             #[cfg(feature = "posix-signals-support")]
-            posix_signals: parse_posix_signals(config(
-                &mut defaults,
-                "PANTOMIME_POSIX_SIGNALS",
-                "SIGINT,SIGTERM,SIGHUP,SIGUSR1,SIGUSR2".to_string(),
-            )),
+            posix_signals:                          cfg.string_vec("PANTOMIME_POSIX_SIGNALS")?
+                                                       .into_iter()
+                                                       .map(posix_signal)
+                                                       .filter(|s| *s != 0)
+                                                       .collect(),
 
             #[cfg(feature = "posix-signals-support")]
-            posix_shutdown_signals: parse_posix_signals(config(
-                &mut defaults,
-                "PANTOMIME_POSIX_EXIT_SIGNALS",
-                "SIGINT,SIGTERM".to_string(),
-            )),
-        }
+            posix_shutdown_signals:                 cfg.string_vec("PANTOMIME_POSIX_EXIT_SIGNALS")?
+                                                       .into_iter()
+                                                       .map(posix_signal)
+                                                       .filter(|s| *s != 0)
+                                                       .collect(),
+        })
     }
-
-    pub fn default_dispatcher_parallelism(&self) -> usize {
-        cmp::min(
-            self.default_dispatcher_parallelism_max,
-            cmp::max(
-                self.default_dispatcher_parallelism_min,
-                (self.num_cpus as f32 * self.default_dispatcher_parallelism_factor) as usize,
-            ),
-        )
-    }
-
-    pub fn shards(&self) -> usize {
-        cmp::min(
-            self.shards_max,
-            cmp::max(
-                self.shards_min,
-                (self.num_cpus as f32 * self.shards_factor) as usize,
-            ),
-        )
-    }
-}
-
-/// A helper function for extracting configuration values
-/// from the environment or an optional map of overrides. This
-/// can slightly simplify a similar pattern to the above in applications.
-#[allow(clippy::implicit_hasher)]
-pub fn config<T: str::FromStr>(
-    defaults: &mut Option<HashMap<String, String>>,
-    name: &str,
-    default: T,
-) -> T {
-    let extract_default = || match defaults {
-        Some(ref mut m) => m.remove(name),
-        None => None,
-    };
-
-    match env::var(name).ok().or_else(extract_default) {
-        None => default,
-
-        Some(v) => v.parse().ok().unwrap_or_else(|| {
-            warn!("cannot parse {}, using default", name);
-
-            default
-        }),
-    }
-}
-
-#[cfg(feature = "posix-signals-support")]
-fn parse_posix_signals(list: String) -> Vec<i32> {
-    let mut signals = Vec::new();
-
-    for sig in list.split(',').map(|s| s.trim().to_uppercase()) {
-        let signal = match sig.as_str() {
-            "SIGHUP" => crate::posix_signals::SIGHUP,
-            "SIGINT" => crate::posix_signals::SIGINT,
-            "SIGUSR1" => crate::posix_signals::SIGUSR1,
-            "SIGUSR2" => crate::posix_signals::SIGUSR2,
-            "SIGTERM" => crate::posix_signals::SIGTERM,
-            _ => 0,
-        };
-
-        if signal != 0 {
-            signals.push(signal);
-        }
-    }
-
-    signals
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{io, time};
 
-    #[test]
-    fn test_config() {
-        assert_eq!(config(&mut None, "_NOT_SET", 10), 10);
-
-        let mut defaults = Some(HashMap::new());
-        defaults
-            .as_mut()
-            .unwrap()
-            .insert("SET".to_string(), "11".to_string());
-        assert_eq!(config(&mut defaults, "SET", 10), 11);
+    #[derive(Debug, PartialEq)]
+    struct CustomConfig {
+        latency: u64,
+        time: time::Duration,
+        words: Vec<String>,
+        numbers: Vec<usize>,
     }
 
     #[test]
-    #[cfg(feature = "posix-signals-support")]
-    fn test_parse_posix_signals() {
-        assert_eq!(parse_posix_signals("".to_string()), vec![]);
-        assert_eq!(parse_posix_signals("SIGINT".to_string()), vec![2]);
-        assert_eq!(parse_posix_signals("sigint".to_string()), vec![2]);
-        assert_eq!(parse_posix_signals(" sigint ".to_string()), vec![2]);
+    fn test_config() -> io::Result<()> {
+        let config = Config::new(&[("LATENCY", "10"), ("TIME", "1")]).with_fallback(&[
+            (
+                "WORDS",
+                "one,two,three\\,with a comma,four with \\\\ a backslash",
+            ),
+            ("NUMBERS", "4,5,6,77"),
+            ("TIME", "2"),
+        ]);
 
-        assert_eq!(parse_posix_signals(" unknown ".to_string()), vec![]);
+        let parsed_config = CustomConfig {
+            latency: config.parsed("LATENCY")?,
+            time: config.parsed("TIME").map(time::Duration::from_millis)?,
+            words: config.string_vec("WORDS")?,
+            numbers: config.parsed_vec("NUMBERS")?,
+        };
 
         assert_eq!(
-            parse_posix_signals("SIGHUP,SIGINT,SIGUSR1,SIGUSR2,SIGTERM,UNKNOWN".to_string()),
-            vec![1, 2, 10, 12, 15]
+            parsed_config,
+            CustomConfig {
+                latency: 10,
+                time: time::Duration::from_millis(1),
+                words: vec![
+                    "one".to_string(),
+                    "two".to_string(),
+                    "three,with a comma".to_string(),
+                    "four with \\ a backslash".to_string()
+                ],
+                numbers: vec![4, 5, 6, 77]
+            }
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_actor_config() {
+        assert!(ActorSystemConfig::new(&Config::default()).is_ok());
     }
 }

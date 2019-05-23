@@ -23,9 +23,9 @@ jobs:
       - run:
           name: Build & Test
           command: |
+            cargo clean
             cargo build --release
-            cargo test --release --no-fail-fast
-            cargo test --release --no-fail-fast -- --nocapture --ignored
+            cargo test --release --features tokio-support --no-fail-fast -- --nocapture --ignored
       - run:
           name: Run Clippy
           command: |
@@ -53,9 +53,9 @@ jobs:
       - run:
           name: Build & Test
           command: |
+            cargo clean
             cargo build --release
-            cargo test --release --no-fail-fast
-            cargo test --release --no-fail-fast -- --nocapture --ignored
+            cargo test --release --features tokio-support --no-fail-fast -- --nocapture --ignored
       - save_cache:
           key: mac-cargo-cache-1
           paths:
@@ -81,8 +81,9 @@ jobs:
             fi
 
             # Build and test
+            cargo clean
             cargo build --release
-            cargo test --release --no-fail-fast
+            cargo test --release --features tokio-support --no-fail-fast -- --nocapture --ignored
 
             # Publish to Crates.io
             if [ "$CRATES_API_KEY" != "" ]; then
