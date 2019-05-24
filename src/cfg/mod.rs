@@ -141,6 +141,7 @@ impl Default for Config {
 
 #[derive(Clone, Debug)]
 pub struct ActorSystemConfig {
+    pub default_actor_throughput: usize,
     pub default_dispatcher_parallelism_min: usize,
     pub default_dispatcher_parallelism_max: usize,
     pub default_dispatcher_parallelism_factor: f32,
@@ -186,6 +187,7 @@ impl ActorSystemConfig {
         }
 
         let cfg = cfg.with_fallback(&[
+            ("PANTOMIME_DEFAULT_ACTOR_THROUGHPUT",              "10"),
             ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN",    "4"),
             ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX",    "64"),
             ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR", "1.0"),
@@ -199,6 +201,7 @@ impl ActorSystemConfig {
         ]);
 
         Ok(Self {
+            default_actor_throughput:               cfg.parsed("PANTOMIME_DEFAULT_ACTOR_THROUGHPUT")?,
             default_dispatcher_parallelism_min:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN")?,
             default_dispatcher_parallelism_max:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX")?,
             default_dispatcher_parallelism_factor:  cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR")?,

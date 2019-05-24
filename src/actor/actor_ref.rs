@@ -59,6 +59,10 @@ where
         None
     }
 
+    fn config_throughput(&self, _: &ActorSystemContext) -> Option<usize> {
+        None
+    }
+
     fn receive_signal(&mut self, _: Signal, _: &mut ActorContext<Msg>) {}
 
     fn receive(&mut self, msg: Msg, context: &mut ActorContext<Msg>);
@@ -228,12 +232,18 @@ where
         ///////////////////////////////////////////////////////////////////////////////////////////////
 
         let empty_ref = ActorRef::empty();
+
         let dispatcher = actor
             .config_dispatcher(&self.system_context)
             .unwrap_or_else(|| self.system_context.new_actor_dispatcher());
+
         let mailbox = actor
             .config_mailbox(&self.system_context)
             .unwrap_or_else(|| self.system_context.new_actor_mailbox());
+
+        let throughput = actor
+            .config_throughput(&self.system_context)
+            .unwrap_or(self.system_context.config().default_actor_throughput);
 
         let mut spawned_actor = SpawnedActor {
             actor: Box::new(actor),
@@ -250,6 +260,7 @@ where
             parent_ref: self.actor_ref.system_ref(),
             stash: VecDeque::new(),
             state: SpawnedActorState::Spawned,
+            throughput,
         };
 
         let actor_ref = ActorRef {
@@ -501,6 +512,7 @@ where
     pub(in crate::actor) parent_ref: SystemActorRef,
     pub(in crate::actor) stash: VecDeque<Envelope<Msg>>,
     pub(in crate::actor) state: SpawnedActorState,
+    pub(in crate::actor) throughput: usize,
 }
 
 impl<Msg> SpawnedActor<Msg>
@@ -629,7 +641,7 @@ where
         self.execution_state
             .store(SpawnedActorExecutionState::Running);
 
-        let throughput = self.dispatcher.throughput();
+        let throughput = self.throughput;
 
         let mut processed = 0;
 

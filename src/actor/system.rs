@@ -38,6 +38,10 @@ pub struct ActorSystemContext {
 }
 
 impl ActorSystemContext {
+    pub fn config(&self) -> &ActorSystemConfig {
+        &self.config
+    }
+
     pub fn dispatcher(&self) -> &Dispatcher {
         &self.dispatcher
     }
@@ -82,12 +86,18 @@ impl ActorSystemContext {
         use crate::actor::actor_ref::*;
 
         let empty_ref = ActorRef::empty();
+
         let dispatcher = actor
             .config_dispatcher(&self)
             .unwrap_or_else(|| self.new_actor_dispatcher());
+
         let mailbox = actor
             .config_mailbox(&self)
             .unwrap_or_else(|| self.new_actor_mailbox());
+
+        let throughput = actor
+            .config_throughput(&self)
+            .unwrap_or(self.config.default_actor_throughput);
 
         let mut spawned_actor = SpawnedActor {
             actor: Box::new(actor),
@@ -104,6 +114,7 @@ impl ActorSystemContext {
             parent_ref: empty_ref.system_ref(),
             stash: VecDeque::new(),
             state: SpawnedActorState::Spawned,
+            throughput,
         };
 
         let actor_ref = ActorRef {
