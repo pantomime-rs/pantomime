@@ -8,9 +8,9 @@ pub(in crate::actor) enum ActorWatcherMessage {
     Stopped(SystemActorRef),
     Failed(SystemActorRef),
 
-    #[cfg(feature = "posix-signals-support")]
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     ReceivedPosixSignal(i32),
-    #[cfg(feature = "posix-signals-support")]
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     SubscribePosixSignals(SystemActorRef),
 
     StopSystem(ThunkWithSync),
@@ -32,7 +32,7 @@ pub(in crate::actor) struct ActorWatcher {
     root_system_refs: HashMap<usize, SystemActorRef>,
     when_stopped: Option<ThunkWithSync>,
 
-    #[cfg(feature = "posix-signals-support")]
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     posix_signals_watchers: HashMap<usize, SystemActorRef>,
 }
 
@@ -43,7 +43,7 @@ impl ActorWatcher {
             system_refs: HashSet::new(),
             root_system_refs: HashMap::new(),
             when_stopped: None,
-            #[cfg(feature = "posix-signals-support")]
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             posix_signals_watchers: HashMap::new(),
         }
     }
@@ -121,7 +121,7 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                     }
                 }
 
-                #[cfg(feature = "posix-signals-support")]
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
                 self.posix_signals_watchers.remove(&id);
 
                 self.check_stopped();
@@ -146,7 +146,7 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                     }
                 }
 
-                #[cfg(feature = "posix-signals-support")]
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
                 self.posix_signals_watchers.remove(&id);
 
                 self.check_stopped();
@@ -162,14 +162,14 @@ impl Actor<ActorWatcherMessage> for ActorWatcher {
                 }
             }
 
-            #[cfg(feature = "posix-signals-support")]
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             ActorWatcherMessage::ReceivedPosixSignal(signal) => {
                 for watcher in self.posix_signals_watchers.values() {
                     watcher.tell_system(SystemMsg::Signaled(Signal::PosixSignal(signal)));
                 }
             }
 
-            #[cfg(feature = "posix-signals-support")]
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             ActorWatcherMessage::SubscribePosixSignals(system_ref) => {
                 self.posix_signals_watchers
                     .insert(system_ref.id(), system_ref);

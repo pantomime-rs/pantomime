@@ -201,10 +201,10 @@ impl ActiveActorSystem {
         #[allow(unused_mut)]
         let mut exit_code = 0;
 
-        #[cfg(feature = "posix-signals-support")]
+        #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
         use signal_hook::iterator::Signals;
 
-        #[cfg(feature = "posix-signals-support")]
+        #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
         let signals = Signals::new(&self.context.config.posix_signals)
             .expect("pantomime bug: cannot setup POSIX signal handling");
 
@@ -220,7 +220,7 @@ impl ActiveActorSystem {
         let time_duration = time::Duration::from_millis(100);
 
         loop {
-            #[cfg(feature = "posix-signals-support")]
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             for signal in signals.pending() {
                 if let Some(ref watcher_ref) = self.context.watcher_ref() {
                     watcher_ref.tell(ActorWatcherMessage::ReceivedPosixSignal(signal));

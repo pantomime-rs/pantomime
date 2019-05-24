@@ -10,7 +10,7 @@ impl Actor<()> for MyActor {
         let pid = process::id();
 
         let killed = process::Command::new("kill")
-            .args(&["-s", &posix_signals::SIGUSR1.to_string(), &pid.to_string()])
+            .args(&["-s", "hup", &pid.to_string()])
             .status()
             .expect("failed to invoke kill")
             .success();
@@ -27,7 +27,7 @@ impl Actor<()> for MyActor {
             }
 
             Signal::PosixSignal(value) => {
-                if value == posix_signals::SIGUSR1 {
+                if value == posix_signals::SIGHUP {
                     context.system_context().stop();
                 }
             }

@@ -203,7 +203,7 @@ where
         }
     }
 
-    #[cfg(feature = "posix-signals-support")]
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     pub fn watch_posix_signals(&mut self) {
         // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
 
@@ -213,6 +213,9 @@ where
             ));
         }
     }
+
+    #[cfg(all(feature = "posix-signals-support", target_family = "windows"))]
+    pub fn watch_posix_signals(&mut self) {}
 
     pub fn spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
     where
@@ -562,11 +565,13 @@ where
                 self.context.children.remove(&id);
 
                 if self.context.children.is_empty() {
-                    self.transition(if *failure {
+                    let next_state = if *failure {
                         SpawnedActorState::Failed
                     } else {
                         SpawnedActorState::Stopped
-                    });
+                    };
+
+                    self.transition(next_state);
 
                     self.parent_ref
                         .tell_system(SystemMsg::ChildStopped(self.context.actor_ref.id()));

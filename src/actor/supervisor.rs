@@ -50,8 +50,9 @@ where
     fn failed(&mut self, context: &mut ActorContext<M>) {
         match &self.strategy {
             Strategy::Resume => {
-                if let Some(ref f) = self.on_resume {
+                if let Some(f) = self.on_resume.take() {
                     self.receive(f(), context);
+                    self.on_resume = Some(f);
                 }
             }
         }

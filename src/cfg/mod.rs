@@ -180,8 +180,6 @@ impl ActorSystemConfig {
             match sig.as_str() {
                 "SIGHUP"  => crate::posix_signals::SIGHUP,
                 "SIGINT"  => crate::posix_signals::SIGINT,
-                "SIGUSR1" => crate::posix_signals::SIGUSR1,
-                "SIGUSR2" => crate::posix_signals::SIGUSR2,
                 "SIGTERM" => crate::posix_signals::SIGTERM,
                 _         => 0,
             }
