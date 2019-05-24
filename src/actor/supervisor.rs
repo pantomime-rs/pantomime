@@ -86,6 +86,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::actor::probe::*;
     use crate::prelude::*;
     use std::time;
 
