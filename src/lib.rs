@@ -24,8 +24,8 @@ extern crate futures;
 #[cfg(feature = "mio-support")]
 extern crate mio as ext_mio;
 
-#[cfg(feature = "posix-signals-support")]
-extern crate signal_hook;
+#[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+extern crate signal_hook_shim as signal_hook;
 
 #[cfg(feature = "tokio-support")]
 extern crate tokio as ext_tokio;
