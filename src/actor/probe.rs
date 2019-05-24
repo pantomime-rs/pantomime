@@ -10,7 +10,7 @@ use std::{thread, time};
 ///
 /// When a `Probe` is dropped, its underlying actor is stopped.
 pub struct Probe<M: 'static + Send> {
-    pub actor_ref: ActorRef<M>,
+    actor_ref: ActorRef<M>,
     mailbox: Mailbox<M>,
     poll_interval: time::Duration,
 }
@@ -49,6 +49,10 @@ impl<M: 'static + Send> Probe<M> {
             mailbox,
             poll_interval: time::Duration::from_millis(10),
         }
+    }
+
+    pub fn actor_ref(&self) -> &ActorRef<M> {
+        &self.actor_ref
     }
 
     /// Sets the poll interval for this probe. This defines the time that the probe

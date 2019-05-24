@@ -28,6 +28,11 @@ where
     SystemMsg(SystemMsg),
 }
 
+pub enum FailureAction {
+    Fail,
+    Resume,
+}
+
 pub enum StopReason {
     /// Signifies that the actor was stopped normally.
     Stopped,
@@ -43,6 +48,7 @@ pub enum Signal {
     Started,
     Stopped,
     Failed,
+    Resumed,
     ActorStopped(SystemActorRef, StopReason),
 
     #[cfg(feature = "posix-signals-support")]
@@ -54,19 +60,46 @@ pub trait Actor<Msg>: Send
 where
     Msg: Send,
 {
-    fn config_dispatcher(&self, _: &ActorSystemContext) -> Option<Dispatcher> {
+    fn config_dispatcher(&self, ctx: &ActorSystemContext) -> Option<Dispatcher> {
+        {
+            let _ = ctx;
+        }
+
         None
     }
 
-    fn config_mailbox(&self, _: &ActorSystemContext) -> Option<Mailbox<Envelope<Msg>>> {
+    fn config_mailbox(&self, ctx: &ActorSystemContext) -> Option<Mailbox<Envelope<Msg>>> {
+        {
+            let _ = ctx;
+        }
+
         None
     }
 
-    fn config_throughput(&self, _: &ActorSystemContext) -> Option<usize> {
+    fn config_throughput(&self, ctx: &ActorSystemContext) -> Option<usize> {
+        {
+            let _ = ctx;
+        }
+
         None
     }
 
-    fn receive_signal(&mut self, _: Signal, _: &mut ActorContext<Msg>) {}
+    fn handle_failure(&mut self, ctx: &mut ActorContext<Msg>) -> FailureAction {
+        {
+            let _ = ctx;
+        }
+
+        FailureAction::Fail
+    }
+
+    fn receive_signal(&mut self, sig: Signal, ctx: &mut ActorContext<Msg>) {
+        {
+            let _ = sig;
+        }
+        {
+            let _ = ctx;
+        }
+    }
 
     fn receive(&mut self, msg: Msg, context: &mut ActorContext<Msg>);
 }
@@ -502,6 +535,7 @@ pub(in crate::actor) enum SpawnedActorState {
     Stopping(bool),
     Stopped,
     Failed,
+    Failing,
 }
 
 pub(in crate::actor) struct SpawnedActor<Msg>
@@ -526,6 +560,10 @@ where
     fn receive(&mut self, msg: Msg) {
         match self.state {
             SpawnedActorState::Active => self.actor.receive(msg, &mut self.context),
+
+            SpawnedActorState::Failing => {
+                self.stash.push_back(Envelope::Msg(msg));
+            }
 
             SpawnedActorState::Spawned => {
                 self.stash.push_back(Envelope::Msg(msg));
@@ -558,6 +596,40 @@ where
                 // we don't need to reschedule ourselves for execution
                 // as the arrival of the start signal will do that
                 self.stash.push_back(Envelope::SystemMsg(other));
+            }
+
+            (SpawnedActorState::Failing, SystemMsg::Stop(true)) => {
+                match self.actor.handle_failure(&mut self.context) {
+                    FailureAction::Resume => {
+                        self.state = SpawnedActorState::Active;
+
+                        self.actor
+                            .receive_signal(Signal::Resumed, &mut self.context);
+
+                        self.unstash_all();
+                    }
+
+                    FailureAction::Fail if self.context.children.is_empty() => {
+                        self.transition(SpawnedActorState::Failed);
+
+                        self.parent_ref
+                            .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
+
+                        self.stash.clear();
+                    }
+
+                    FailureAction::Fail => {
+                        self.transition(SpawnedActorState::Stopping(true));
+
+                        for (_child_id, actor_ref) in self.context.children.iter() {
+                            // @TODO think about whether children should be failed
+
+                            actor_ref.stop();
+                        }
+
+                        self.stash.clear();
+                    }
+                }
             }
 
             (SpawnedActorState::Active, SystemMsg::Stop(failure)) => {
@@ -608,8 +680,8 @@ where
 
             (SpawnedActorState::Stopping(false), SystemMsg::Stop(true)) => {
                 // We've failed while we were stopping, which means that a signal
-                // handler paniced. Ensure that we flag ourselves as failed.
-                self.transition(SpawnedActorState::Stopping(true));
+                // handler panicked. We still consider ourselves stopped, to do
+                // otherwise would be strange when considering failure policies.
             }
 
             (_, SystemMsg::Stop { .. }) => {
@@ -639,14 +711,10 @@ where
             let this = this.clone();
 
             Deferred::new(move || {
-                let (this, processed) = Rc::try_unwrap(this)
+                let (mut this, processed) = Rc::try_unwrap(this)
                     .ok()
                     .expect("pantomime bug: cannot retrieve SpawnedActor")
                     .into_inner();
-
-                if thread::panicking() {
-                    this.context.actor_ref.tell_system(SystemMsg::Stop(true));
-                }
 
                 match this.state {
                     SpawnedActorState::Stopped | SpawnedActorState::Failed => {
@@ -655,6 +723,11 @@ where
                     }
 
                     _ => {
+                        if thread::panicking() {
+                            this.state = SpawnedActorState::Failing;
+                            this.context.actor_ref.tell_system(SystemMsg::Stop(true));
+                        }
+
                         let execution_state = this.execution_state.clone();
 
                         let cont = match this
