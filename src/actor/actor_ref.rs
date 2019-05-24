@@ -3,12 +3,15 @@ use crate::actor::*;
 use crate::dispatcher::{Dispatcher, Thunk};
 use crate::mailbox::Mailbox;
 use crate::timer::{TimerMsg, TimerThunk};
-use crate::util::Cancellable;
+use crate::util::{Cancellable, Deferred};
 use crossbeam::atomic::AtomicCell;
 use downcast_rs::Downcast;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::panic;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 pub enum SystemMsg {
@@ -490,6 +493,7 @@ where
     Idle(Box<SpawnedActor<Msg>>),
     Messaged,
     Running,
+    Stopped,
 }
 
 pub(in crate::actor) enum SpawnedActorState {
@@ -521,13 +525,7 @@ where
 {
     fn receive(&mut self, msg: Msg) {
         match self.state {
-            SpawnedActorState::Active => {
-                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    self.actor.receive(msg, &mut self.context)
-                })) {
-                    self.receive_system(SystemMsg::Stop(true));
-                }
-            }
+            SpawnedActorState::Active => self.actor.receive(msg, &mut self.context),
 
             SpawnedActorState::Spawned => {
                 self.stash.push_back(Envelope::Msg(msg));
@@ -546,12 +544,8 @@ where
             (SpawnedActorState::Spawned, SystemMsg::Signaled(Signal::Started)) => {
                 self.transition(SpawnedActorState::Active);
 
-                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    self.actor
-                        .receive_signal(Signal::Started, &mut self.context)
-                })) {
-                    self.receive_system(SystemMsg::Stop(true));
-                }
+                self.actor
+                    .receive_signal(Signal::Started, &mut self.context);
 
                 self.unstash_all();
             }
@@ -609,12 +603,7 @@ where
             (SpawnedActorState::Stopped, _) => {}
 
             (_, SystemMsg::Signaled(signal)) => {
-                // @TODO do something with e
-                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    self.actor.receive_signal(signal, &mut self.context)
-                })) {
-                    self.receive_system(SystemMsg::Stop(true));
-                }
+                self.actor.receive_signal(signal, &mut self.context)
             }
 
             (SpawnedActorState::Stopping(false), SystemMsg::Stop(true)) => {
@@ -637,58 +626,95 @@ where
         }
     }
 
-    fn run(mut self: Box<Self>) {
+    fn run(self: Box<Self>) {
         self.execution_state
             .store(SpawnedActorExecutionState::Running);
 
         let throughput = self.throughput;
 
-        let mut processed = 0;
+        let this = Rc::new(RefCell::new((self, 0)));
 
-        while processed < throughput {
-            match self.mailbox.retrieve() {
-                Some(Envelope::Msg(msg)) => {
-                    self.receive(msg);
-                    processed += 1;
+        #[allow(unused_variables)]
+        let deferred = {
+            let this = this.clone();
+
+            Deferred::new(move || {
+                let (this, processed) = Rc::try_unwrap(this)
+                    .ok()
+                    .expect("pantomime bug: cannot retrieve SpawnedActor")
+                    .into_inner();
+
+                if thread::panicking() {
+                    this.context.actor_ref.tell_system(SystemMsg::Stop(true));
                 }
 
-                Some(Envelope::SystemMsg(msg)) => {
-                    self.receive_system(msg);
-                    processed += 1;
+                match this.state {
+                    SpawnedActorState::Stopped | SpawnedActorState::Failed => {
+                        this.execution_state
+                            .swap(SpawnedActorExecutionState::Stopped);
+                    }
+
+                    _ => {
+                        let execution_state = this.execution_state.clone();
+
+                        let cont = match this
+                            .execution_state
+                            .clone()
+                            .swap(SpawnedActorExecutionState::Idle(this))
+                        {
+                            SpawnedActorExecutionState::Idle(actor) => {
+                                actor.dispatcher.clone().execute(|| actor.run());
+                                false
+                            }
+
+                            SpawnedActorExecutionState::Running => false,
+
+                            SpawnedActorExecutionState::Messaged => true,
+
+                            SpawnedActorExecutionState::Stopped => false,
+                        } || processed == throughput;
+
+                        if cont {
+                            match execution_state.swap(SpawnedActorExecutionState::Messaged) {
+                                SpawnedActorExecutionState::Idle(actor) => {
+                                    actor.dispatcher.clone().execute(|| actor.run());
+                                }
+
+                                SpawnedActorExecutionState::Messaged => {}
+
+                                SpawnedActorExecutionState::Running => {}
+
+                                SpawnedActorExecutionState::Stopped => {}
+                            }
+                        }
+                    }
                 }
+            })
+        };
 
-                None => {
-                    break;
-                }
-            }
-        }
-
-        let execution_state = self.execution_state.clone();
-
-        let cont = match self
-            .execution_state
-            .clone()
-            .swap(SpawnedActorExecutionState::Idle(self))
         {
-            SpawnedActorExecutionState::Idle(actor) => {
-                actor.dispatcher.clone().execute(|| actor.run());
-                false
-            }
+            let next_this = this.clone();
+            drop(this);
+            let this = next_this;
 
-            SpawnedActorExecutionState::Running => false,
+            let mut this = this.borrow_mut();
 
-            SpawnedActorExecutionState::Messaged => true,
-        } || processed == throughput;
+            while this.1 < throughput {
+                match this.0.mailbox.retrieve() {
+                    Some(Envelope::Msg(msg)) => {
+                        this.0.receive(msg);
+                        this.1 += 1;
+                    }
 
-        if cont {
-            match execution_state.swap(SpawnedActorExecutionState::Messaged) {
-                SpawnedActorExecutionState::Idle(actor) => {
-                    actor.dispatcher.clone().execute(|| actor.run());
+                    Some(Envelope::SystemMsg(msg)) => {
+                        this.0.receive_system(msg);
+                        this.1 += 1;
+                    }
+
+                    None => {
+                        break;
+                    }
                 }
-
-                SpawnedActorExecutionState::Messaged => {}
-
-                SpawnedActorExecutionState::Running => {}
             }
         }
     }
@@ -706,26 +732,16 @@ where
 
         match self.state {
             SpawnedActorState::Stopped => {
-                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    self.actor
-                        .receive_signal(Signal::Stopped, &mut self.context)
-                })) {
-                    // @TODO _e
-                    self.transition(SpawnedActorState::Failed);
-                } else {
-                    self.tell_watcher(ActorWatcherMessage::Stopped(
-                        self.context.actor_ref().system_ref(),
-                    ));
-                }
+                self.actor
+                    .receive_signal(Signal::Stopped, &mut self.context);
+
+                self.tell_watcher(ActorWatcherMessage::Stopped(
+                    self.context.actor_ref().system_ref(),
+                ));
             }
 
             SpawnedActorState::Failed => {
-                if let Err(_e) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    self.actor.receive_signal(Signal::Failed, &mut self.context);
-                })) {
-                    // @TODO _e ? noting to do here really since we're already failed, it's like
-                    // swallowing an exception
-                }
+                self.actor.receive_signal(Signal::Failed, &mut self.context);
 
                 self.tell_watcher(ActorWatcherMessage::Failed(
                     self.context.actor_ref().system_ref(),
@@ -796,6 +812,8 @@ where
             SpawnedActorExecutionState::Running => {}
 
             SpawnedActorExecutionState::Messaged => {}
+
+            SpawnedActorExecutionState::Stopped => {}
         }
     }
 }

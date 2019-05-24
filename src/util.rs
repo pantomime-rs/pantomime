@@ -1,4 +1,4 @@
-use crate::dispatcher::Thunk;
+use crate::dispatcher::{BoxedFn, Thunk};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -46,13 +46,13 @@ impl<A> MaybeCancelled<A> {
 }
 
 pub struct Deferred {
-    thunk: Option<Thunk>,
+    thunk: Option<Box<BoxedFn + 'static>>,
 }
 
 impl Deferred {
     pub fn new<F: FnOnce()>(f: F) -> Self
     where
-        F: 'static + Send,
+        F: 'static,
     {
         Self {
             thunk: Some(Box::new(f)),
