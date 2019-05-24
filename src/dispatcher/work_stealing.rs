@@ -450,10 +450,6 @@ impl DispatcherLogic for WorkStealingDispatcher {
             self.injector.push(WorkStealingDispatcherMessage::Shutdown);
         }
     }
-
-    fn throughput(&self) -> usize {
-        10
-    }
 }
 
 #[cfg(test)]

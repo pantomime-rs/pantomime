@@ -118,10 +118,6 @@ impl DispatcherLogic for SingleThreadedDispatcher {
     fn shutdown(self: Box<Self>) {
         let _ = self.sender.send(SingleThreadedDispatcherMessage::Shutdown);
     }
-
-    fn throughput(&self) -> usize {
-        1
-    }
 }
 
 impl Clone for SingleThreadedDispatcher {

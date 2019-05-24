@@ -50,10 +50,6 @@ impl Dispatcher {
     pub fn execute_trampoline(&self, trampoline: Trampoline) {
         self.inner.execute_trampoline(trampoline);
     }
-
-    pub fn throughput(&self) -> usize {
-        self.inner.throughput()
-    }
 }
 
 impl Clone for Dispatcher {
@@ -93,8 +89,6 @@ pub trait DispatcherLogic {
     fn execute_trampoline(&self, trampoline: Trampoline);
 
     fn shutdown(self: Box<Self>);
-
-    fn throughput(&self) -> usize;
 }
 
 pub(crate) trait BoxedFn1In0Out<A> {
