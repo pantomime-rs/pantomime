@@ -407,6 +407,10 @@ impl SystemActorRef {
         self.inner.id()
     }
 
+    pub fn fail(&self) {
+        self.inner.fail();
+    }
+
     pub fn stop(&self) {
         self.inner.stop();
     }
@@ -475,6 +479,10 @@ where
         self.inner.tell_cancellable(cancellable, msg, thunk);
     }
 
+    pub fn fail(&self) {
+        self.inner.fail();
+    }
+
     pub fn stop(&self) {
         self.inner.stop();
     }
@@ -508,6 +516,10 @@ where
 
     fn id(&self) -> usize {
         self.inner.id()
+    }
+
+    fn fail(&self) {
+        self.inner.fail();
     }
 
     fn stop(&self) {
@@ -856,6 +868,8 @@ where
 pub(in crate::actor) trait SystemActorRefInner: Downcast {
     fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync>;
 
+    fn fail(&self);
+
     fn stop(&self);
 
     fn id(&self) -> usize;
@@ -901,6 +915,10 @@ where
             state: self.state.clone(),
             mailbox_appender: self.mailbox_appender.clone(),
         })
+    }
+
+    fn fail(&self) {
+        self.tell_system(SystemMsg::Stop(true));
     }
 
     fn stop(&self) {
@@ -954,6 +972,10 @@ where
         })
     }
 
+    fn fail(&self) {
+        self.inner.fail();
+    }
+
     fn stop(&self) {
         self.inner.stop();
     }
@@ -997,6 +1019,8 @@ impl SystemActorRefInner for EmptyActorRefCell {
     fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
         Box::new(EmptyActorRefCell)
     }
+
+    fn fail(&self) {}
 
     fn stop(&self) {}
 

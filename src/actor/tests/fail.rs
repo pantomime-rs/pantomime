@@ -78,6 +78,16 @@ fn test() {
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), ());
 
+                // 3 is failed from the outside
+
+                let three = ctx.spawn(MyActor {
+                    id: 3,
+                    actor_ref: probe.actor_ref().clone(),
+                });
+
+                three.fail();
+
+                assert_eq!(probe.receive(Duration::from_secs(10)), ());
                 ctx.actor_ref().stop();
             }
         }
