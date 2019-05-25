@@ -106,6 +106,7 @@ impl ActorSystemContext {
                 children: HashMap::new(),
                 deliveries: HashMap::new(),
                 dispatcher: dispatcher.clone(),
+                pending_stop: None,
                 system_context: self.clone(),
             },
             dispatcher,

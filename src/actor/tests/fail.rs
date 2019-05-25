@@ -3,13 +3,23 @@ use std::time::Duration;
 
 struct MyActor {
     id: usize,
-    actor_ref: ActorRef<()>,
+    actor_ref: ActorRef<usize>,
 }
 
 impl Actor<()> for MyActor {
-    fn receive(&mut self, _: (), _context: &mut ActorContext<()>) {
+    fn receive(&mut self, _: (), context: &mut ActorContext<()>) {
         if self.id == 1 {
             panic!();
+        } else if self.id == 4 {
+            self.id = 40;
+
+            // the reaper sent a few messages, so what we're testing
+            // here is that context.fail is received but those
+            // other messages are not
+
+            context.fail();
+        } else if self.id == 40 {
+            self.actor_ref.tell(1);
         }
     }
 
@@ -22,7 +32,7 @@ impl Actor<()> for MyActor {
             }
 
             Signal::Failed => {
-                self.actor_ref.tell(());
+                self.actor_ref.tell(0);
             }
 
             _ => (),
@@ -33,7 +43,7 @@ impl Actor<()> for MyActor {
 impl Drop for MyActor {
     fn drop(&mut self) {
         if self.id == 2 {
-            self.actor_ref.tell(());
+            self.actor_ref.tell(0);
         }
     }
 }
@@ -47,7 +57,7 @@ fn test() {
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
-                let mut probe = ctx.spawn_probe::<()>();
+                let mut probe = ctx.spawn_probe::<usize>();
 
                 // 0 panics during startup
                 ctx.spawn(MyActor {
@@ -55,7 +65,7 @@ fn test() {
                     actor_ref: probe.actor_ref().clone(),
                 });
 
-                assert_eq!(probe.receive(Duration::from_secs(10)), ());
+                assert_eq!(probe.receive(Duration::from_secs(10)), 0);
 
                 // 1 panics after receiving a message
                 let one = ctx.spawn(MyActor {
@@ -65,7 +75,7 @@ fn test() {
 
                 one.tell(());
 
-                assert_eq!(probe.receive(Duration::from_secs(10)), ());
+                assert_eq!(probe.receive(Duration::from_secs(10)), 0);
 
                 // 2 messages in its drop method
 
@@ -76,7 +86,32 @@ fn test() {
 
                 two.stop();
 
-                assert_eq!(probe.receive(Duration::from_secs(10)), ());
+                assert_eq!(probe.receive(Duration::from_secs(10)), 0);
+
+                // 3 is failed from the outside
+
+                let three = ctx.spawn(MyActor {
+                    id: 3,
+                    actor_ref: probe.actor_ref().clone(),
+                });
+
+                three.fail();
+
+                assert_eq!(probe.receive(Duration::from_secs(10)), 0);
+
+                // 4 fails from inside (testing message order)
+
+                let four = ctx.spawn(MyActor {
+                    id: 4,
+                    actor_ref: probe.actor_ref().clone(),
+                });
+
+                four.tell(());
+                four.tell(()); // shouldn't be received
+                four.tell(()); // shouldn't be received
+                four.tell(()); // shouldn't be received
+
+                assert_eq!(probe.receive(Duration::from_secs(10)), 0);
 
                 ctx.actor_ref().stop();
             }
