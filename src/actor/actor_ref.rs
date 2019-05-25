@@ -8,6 +8,8 @@ use crossbeam::atomic::AtomicCell;
 use downcast_rs::Downcast;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::error::Error;
+use std::mem;
 use std::panic;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -15,7 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 pub enum SystemMsg {
-    Stop(bool),
+    Stop(Option<FailureReason>),
     ChildStopped(usize),
     Signaled(Signal),
 }
@@ -29,8 +31,36 @@ where
 }
 
 pub enum FailureAction {
-    Fail,
+    Fail(FailureReason),
     Resume,
+}
+
+pub struct FailureError {
+    error: Option<Box<Error + 'static + Send>>,
+}
+
+impl FailureError {
+    pub fn new<E: Error>(error: E) -> Self
+    where
+        E: 'static + Send,
+    {
+        Self {
+            error: Some(Box::new(error)),
+        }
+    }
+
+    fn empty() -> Self {
+        Self { error: None }
+    }
+
+    pub fn source(&self) -> Option<&(dyn Error + 'static + Send)> {
+        self.error.as_ref().map(|e| e.as_ref())
+    }
+}
+
+pub enum FailureReason {
+    Panicked,
+    Errored(FailureError),
 }
 
 pub enum StopReason {
@@ -47,7 +77,7 @@ pub enum StopReason {
 pub enum Signal {
     Started,
     Stopped,
-    Failed,
+    Failed(FailureReason),
     Resumed,
     ActorStopped(SystemActorRef, StopReason),
 
@@ -84,12 +114,16 @@ where
         None
     }
 
-    fn handle_failure(&mut self, ctx: &mut ActorContext<Msg>) -> FailureAction {
+    fn handle_failure(
+        &mut self,
+        reason: FailureReason,
+        ctx: &mut ActorContext<Msg>,
+    ) -> FailureAction {
         {
             let _ = ctx;
         }
 
-        FailureAction::Fail
+        FailureAction::Fail(reason)
     }
 
     fn receive_signal(&mut self, sig: Signal, ctx: &mut ActorContext<Msg>) {
@@ -112,7 +146,12 @@ where
     pub(in crate::actor) children: HashMap<usize, SystemActorRef>,
     pub(in crate::actor) deliveries: HashMap<String, Cancellable>,
     pub(in crate::actor) dispatcher: Dispatcher,
-    pub(in crate::actor) pending_stop: Option<bool>,
+
+    // disagree with Clippy here - I care about the three states
+    // but want take etc that the outer option provides
+    #[allow(clippy::option_option)]
+    pub(in crate::actor) pending_stop: Option<Option<FailureReason>>,
+
     pub(in crate::actor) system_context: ActorSystemContext,
 }
 
@@ -135,6 +174,9 @@ where
         &self.dispatcher
     }
 
+    /// Cancels a previously scheduled delivery. It is guaranteed
+    /// that the actor will not receive the message associated
+    /// with the delivery.
     pub fn cancel_delivery<S: AsRef<str>>(&mut self, name: S) {
         if let Some(c) = self.deliveries.remove(name.as_ref()) {
             c.cancel();
@@ -148,17 +190,27 @@ where
     /// Note that this does not necessarily mean that the actor
     /// will stop, as it may define a `FailureAction` to instead
     /// resume execution.
-    pub fn fail(&mut self) {
-        self.pending_stop = Some(true);
+    pub fn fail<E: Error>(&mut self, reason: E)
+    where
+        E: 'static + Send,
+    {
+        self.pending_stop = Some(Some(FailureReason::Errored(FailureError::new(reason))));
     }
 
     /// Asynchronously stop this actor. No other messages will
     /// be processed by it, but it may take some time for the
     /// failure to be delivered.
     pub fn stop(&mut self) {
-        self.pending_stop = Some(false);
+        self.pending_stop = Some(None);
     }
 
+    /// Schedules the periodic delivery of a message to this
+    /// actor. A name is provided to identify it, allowing it
+    /// to be later cancelled.
+    ///
+    /// If a previous delivery with the same name was already
+    /// scheduled, it is cancelled and guaranteed tha the
+    /// actor will not receive it.
     pub fn schedule_periodic_delivery<F: Fn() -> Msg, S: AsRef<str>>(
         &mut self,
         name: S,
@@ -189,6 +241,13 @@ where
         }
     }
 
+    /// Schedule a single delivery of a message to this actor. A
+    /// name is provided to identify the delivery, allowing it
+    /// to later be cancelled.
+    ///
+    /// If a previous delivery with the same name was already
+    /// scheduled, it is cancelled and guaranteed tha the
+    /// actor will not receive it.
     pub fn schedule_delivery<F: Fn() -> Msg, S: AsRef<str>>(
         &mut self,
         name: S,
@@ -227,6 +286,8 @@ where
         }
     }
 
+    /// Schedule the execution of a function. After the supplied timeout
+    /// has elapsed, the function will be executed.
     pub fn schedule_thunk<F: FnOnce()>(&self, timeout: Duration, f: F)
     where
         F: 'static + Send + Sync, // @TODO why sync
@@ -241,6 +302,8 @@ where
         }
     }
 
+    /// Watch the supplied actor. When it stops or fails, this actor
+    /// will be messaged with a signal indicating as such.
     pub fn watch<N>(&mut self, actor_ref: &ActorRef<N>)
     where
         N: 'static + Send,
@@ -262,6 +325,15 @@ where
         }
     }
 
+    /// Register interest in receiving POSIX signals. When the process
+    /// receives a POSIX signal, it will be forwarded to this actor
+    /// via `receive_signal`.
+    ///
+    /// Usage is often performed from the root reaper actor, but any
+    /// actor in the system is eligible to watch the signals.
+    ///
+    /// POSIX signals are not supported on Windows and thus no action
+    /// will be performed when running on Windows systems.
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     pub fn watch_posix_signals(&mut self) {
         // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
@@ -273,9 +345,20 @@ where
         }
     }
 
+    /// Register interest in receiving POSIX signals. When the process
+    /// receives a POSIX signal, it will be forwarded to this actor
+    /// via `receive_signal`.
+    ///
+    /// Usage is often performed from the root reaper actor, but any
+    /// actor in the system is eligible to watch the signals.
+    ///
+    /// POSIX signals are not supported on Windows and thus no action
+    /// will be performed when running on Windows systems.
     #[cfg(all(feature = "posix-signals-support", target_family = "windows"))]
     pub fn watch_posix_signals(&mut self) {}
 
+    /// Spawn the supplied actor as a child of this actor. An `ActorRef`
+    /// is returned that can be used to send the actor messages.
     pub fn spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
     where
         A: 'static + Send,
@@ -347,6 +430,11 @@ where
         actor_ref
     }
 
+    /// Spawn the supplied actor as a child of this actor, and watch
+    /// it for any termination signals.
+    ///
+    /// An `ActorRef` is returned that can be used to send the actor
+    /// messages.
     pub fn spawn_watched<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
     where
         A: 'static + Send,
@@ -411,6 +499,12 @@ pub struct SystemActorRef {
 }
 
 impl SystemActorRef {
+    /// Attempt to upgrade this `SystemActorRef` to a typed
+    /// `ActorRef`.
+    ///
+    /// If the correct type is supplied, a `Some` will
+    /// be returned, allowing you to message the actor
+    /// the proper types.
     pub fn actor_ref<N>(&self) -> Option<ActorRef<N>>
     where
         N: 'static + Send,
@@ -423,6 +517,8 @@ impl SystemActorRef {
             .ok()
     }
 
+    /// Returns the id of this actor. Actor ids are assigned
+    /// in a monotonic fashion when the actor is spawned.
     pub fn id(&self) -> usize {
         self.inner.id()
     }
@@ -434,8 +530,8 @@ impl SystemActorRef {
     /// Note that this does not necessarily mean that the actor
     /// will stop, as it may define a `FailureAction` to instead
     /// resume execution.
-    pub fn fail(&self) {
-        self.inner.fail();
+    pub fn fail(&self, reason: FailureError) {
+        self.inner.fail(reason);
     }
 
     /// Asynchronously stop this actor. Other messages that
@@ -471,13 +567,19 @@ impl<Msg> ActorRef<Msg>
 where
     Msg: 'static + Send,
 {
+    /// Returns an `ActorRef` that doesn't have any receiving logic,
+    /// i.e. all messages it receives are dropped.
+    ///
+    /// This can be useful when wiring up the system, e.g. defining
+    /// a default value and then wiring up the actual value at a later
+    /// time.
     pub fn empty() -> Self {
         Self {
             inner: Arc::new(Box::new(EmptyActorRefCell)),
         }
     }
 
-    /// Convert this ActorRef into one that handles another type of message by
+    /// Convert this `ActorRef` into one that handles another type of message by
     /// providing a conversion function.
     pub fn convert<N, Convert: Fn(N) -> Msg>(&self, converter: Convert) -> ActorRef<N>
     where
@@ -493,13 +595,20 @@ where
         }
     }
 
+    /// Returns the id of this actor. Actor ids are assigned
+    /// in a monotonic fashion when the actor is spawned.
     pub fn id(&self) -> usize {
         self.inner.id()
     }
 
+    /// Send the supplied message to this actor. The message
+    /// will be appended to the actor's mailbox and the
+    /// actor will be scheduled for execution if it isn't
+    /// already.
     pub fn tell(&self, msg: Msg) {
         self.inner.tell(msg);
     }
+
     pub(in crate::actor) fn tell_cancellable(
         &self,
         cancellable: Cancellable,
@@ -509,10 +618,20 @@ where
         self.inner.tell_cancellable(cancellable, msg, thunk);
     }
 
-    pub fn fail(&self) {
-        self.inner.fail();
+    /// Asynchronously fail this actor. Other messages that
+    /// have already been enqueued will be received by
+    /// the actor before the stop failure is delivered.
+    ///
+    /// Note that this does not necessarily mean that the actor
+    /// will stop, as it may define a `FailureAction` to instead
+    /// resume execution.
+    pub fn fail(&self, reason: FailureError) {
+        self.inner.fail(reason);
     }
 
+    /// Asynchronously stop this actor. Other messages that
+    /// have already been enqueued will be received by the
+    /// actor before the stop message is delivered.
     pub fn stop(&self) {
         self.inner.stop();
     }
@@ -548,8 +667,8 @@ where
         self.inner.id()
     }
 
-    fn fail(&self) {
-        self.inner.fail();
+    fn fail(&self, reason: FailureError) {
+        self.inner.fail(reason);
     }
 
     fn stop(&self) {
@@ -574,9 +693,9 @@ where
 pub(in crate::actor) enum SpawnedActorState {
     Spawned,
     Active,
-    Stopping(bool),
+    Stopping(Option<FailureReason>),
     Stopped,
-    Failed,
+    Failed(FailureReason),
     WaitingForStop,
 }
 
@@ -603,7 +722,7 @@ where
         if let Some(failed) = self.context.pending_stop.take() {
             match self.state {
                 SpawnedActorState::Stopped
-                | SpawnedActorState::Failed
+                | SpawnedActorState::Failed(_)
                 | SpawnedActorState::Stopping(_) => {}
 
                 _ => {
@@ -636,7 +755,7 @@ where
 
             SpawnedActorState::Stopping(_)
             | SpawnedActorState::Stopped
-            | SpawnedActorState::Failed => {
+            | SpawnedActorState::Failed(_) => {
                 // @TODO dead letters
             }
         }
@@ -665,8 +784,8 @@ where
                 self.stash.push_back(Envelope::SystemMsg(other));
             }
 
-            (SpawnedActorState::WaitingForStop, SystemMsg::Stop(true)) => {
-                match self.actor.handle_failure(&mut self.context) {
+            (SpawnedActorState::WaitingForStop, SystemMsg::Stop(Some(reason))) => {
+                match self.actor.handle_failure(reason, &mut self.context) {
                     FailureAction::Resume => {
                         self.state = SpawnedActorState::Active;
 
@@ -678,30 +797,31 @@ where
                         self.unstash_all();
                     }
 
-                    FailureAction::Fail if self.context.children.is_empty() => {
-                        self.transition(SpawnedActorState::Failed);
+                    FailureAction::Fail(reason) => {
+                        if self.context.children.is_empty() {
+                            self.transition(SpawnedActorState::Failed(reason));
 
-                        self.parent_ref
-                            .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
+                            self.parent_ref.tell_system(SystemMsg::ChildStopped(
+                                self.context.actor_ref().id(),
+                            ));
 
-                        self.stash.clear();
-                    }
+                            self.stash.clear();
+                        } else {
+                            self.transition(SpawnedActorState::Stopping(Some(reason)));
 
-                    FailureAction::Fail => {
-                        self.transition(SpawnedActorState::Stopping(true));
+                            for (_child_id, actor_ref) in self.context.children.iter() {
+                                // @TODO think about whether children should be failed
 
-                        for (_child_id, actor_ref) in self.context.children.iter() {
-                            // @TODO think about whether children should be failed
+                                actor_ref.stop();
+                            }
 
-                            actor_ref.stop();
+                            self.stash.clear();
                         }
-
-                        self.stash.clear();
                     }
                 }
             }
 
-            (SpawnedActorState::WaitingForStop, SystemMsg::Stop(false)) => {
+            (SpawnedActorState::WaitingForStop, SystemMsg::Stop(None)) => {
                 self.stash.clear();
 
                 if self.context.children.is_empty() {
@@ -710,7 +830,7 @@ where
                     self.parent_ref
                         .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
                 } else {
-                    self.transition(SpawnedActorState::Stopping(false));
+                    self.transition(SpawnedActorState::Stopping(None));
 
                     for (_child_id, actor_ref) in self.context.children.iter() {
                         // @TODO think about whether children should be failed
@@ -720,18 +840,19 @@ where
                 }
             }
 
-            (SpawnedActorState::Active, SystemMsg::Stop(failure)) => {
+            (SpawnedActorState::Active, SystemMsg::Stop(maybe_reason)) => {
                 if self.context.children.is_empty() {
-                    self.transition(if failure {
-                        SpawnedActorState::Failed
-                    } else {
-                        SpawnedActorState::Stopped
-                    });
+                    let next_state = match maybe_reason {
+                        Some(reason) => SpawnedActorState::Failed(reason),
+                        None => SpawnedActorState::Stopped,
+                    };
+
+                    self.transition(next_state);
 
                     self.parent_ref
                         .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
                 } else {
-                    self.transition(SpawnedActorState::Stopping(failure));
+                    self.transition(SpawnedActorState::Stopping(maybe_reason));
 
                     for (_child_id, actor_ref) in self.context.children.iter() {
                         // @TODO think about whether children should be failed
@@ -741,24 +862,18 @@ where
                 }
             }
 
-            (SpawnedActorState::Stopping(failure), SystemMsg::ChildStopped(id)) => {
+            (SpawnedActorState::Stopping(_), SystemMsg::ChildStopped(id)) => {
                 self.context.children.remove(&id);
 
                 if self.context.children.is_empty() {
-                    let next_state = if *failure {
-                        SpawnedActorState::Failed
-                    } else {
-                        SpawnedActorState::Stopped
-                    };
-
-                    self.transition(next_state);
+                    self.transition_stopped();
 
                     self.parent_ref
                         .tell_system(SystemMsg::ChildStopped(self.context.actor_ref.id()));
                 }
             }
 
-            (SpawnedActorState::Failed, _) => {}
+            (SpawnedActorState::Failed(_), _) => {}
 
             (SpawnedActorState::Stopped, _) => {}
 
@@ -768,7 +883,8 @@ where
                 self.check_pending_stop();
             }
 
-            (SpawnedActorState::Stopping(false), SystemMsg::Stop(true)) => {
+            (SpawnedActorState::Stopping(None), SystemMsg::Stop(Some(_))) => {
+                // @TODO do something with reason?
                 // We've failed while we were stopping, which means that a signal
                 // handler panicked. We still consider ourselves stopped, to do
                 // otherwise would be strange when considering failure policies.
@@ -806,7 +922,7 @@ where
                     .into_inner();
 
                 match this.state {
-                    SpawnedActorState::Stopped | SpawnedActorState::Failed => {
+                    SpawnedActorState::Stopped | SpawnedActorState::Failed(_) => {
                         this.execution_state
                             .swap(SpawnedActorExecutionState::Stopped);
                     }
@@ -816,7 +932,9 @@ where
                             if let SpawnedActorState::Stopping(_) = this.state {
                             } else {
                                 this.state = SpawnedActorState::WaitingForStop;
-                                this.context.actor_ref.tell_system(SystemMsg::Stop(true));
+                                this.context
+                                    .actor_ref
+                                    .tell_system(SystemMsg::Stop(Some(FailureReason::Panicked)));
                             }
                         }
 
@@ -892,11 +1010,10 @@ where
         }
     }
 
-    fn transition(&mut self, next: SpawnedActorState) {
-        self.state = next;
-
-        match self.state {
+    fn transition(&mut self, mut next: SpawnedActorState) {
+        match next {
             SpawnedActorState::Stopped => {
+                self.state = SpawnedActorState::Stopped;
                 self.reset_pending_stop();
                 self.actor
                     .receive_signal(Signal::Stopped, &mut self.context);
@@ -907,17 +1024,56 @@ where
                 ));
             }
 
-            SpawnedActorState::Failed => {
-                self.reset_pending_stop();
-                self.actor.receive_signal(Signal::Failed, &mut self.context);
-                self.check_pending_stop();
+            SpawnedActorState::Failed(_) => {
+                let mut state =
+                    SpawnedActorState::Failed(FailureReason::Errored(FailureError::empty()));
 
-                self.tell_watcher(ActorWatcherMessage::Failed(
-                    self.context.actor_ref().system_ref(),
-                ));
+                mem::swap(&mut state, &mut next);
+
+                self.state = next;
+
+                match state {
+                    SpawnedActorState::Failed(reason) => {
+                        self.reset_pending_stop();
+                        self.actor
+                            .receive_signal(Signal::Failed(reason), &mut self.context);
+                        self.check_pending_stop();
+
+                        self.tell_watcher(ActorWatcherMessage::Failed(
+                            self.context.actor_ref().system_ref(),
+                        ));
+                    }
+
+                    _ => {
+                        panic!("pantomime bug: unexpected SpawnedActorState");
+                    }
+                }
             }
 
-            _ => {}
+            _ => {
+                self.state = next;
+            }
+        }
+    }
+
+    fn transition_stopped(&mut self) {
+        let mut state = SpawnedActorState::Stopping(None);
+
+        mem::swap(&mut self.state, &mut state);
+
+        match state {
+            SpawnedActorState::Stopping(maybe_reason) => {
+                let next_state = match maybe_reason {
+                    Some(reason) => SpawnedActorState::Failed(reason),
+                    None => SpawnedActorState::Stopped,
+                };
+
+                self.transition(next_state);
+            }
+
+            _ => {
+                panic!("pantomime bug: unexpected SpawnedActorState");
+            }
         }
     }
 
@@ -963,7 +1119,7 @@ where
 pub(in crate::actor) trait SystemActorRefInner: Downcast {
     fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync>;
 
-    fn fail(&self);
+    fn fail(&self, reason: FailureError);
 
     fn stop(&self);
 
@@ -1012,12 +1168,12 @@ where
         })
     }
 
-    fn fail(&self) {
-        self.tell_system(SystemMsg::Stop(true));
+    fn fail(&self, reason: FailureError) {
+        self.tell_system(SystemMsg::Stop(Some(FailureReason::Errored(reason))));
     }
 
     fn stop(&self) {
-        self.tell_system(SystemMsg::Stop(false));
+        self.tell_system(SystemMsg::Stop(None));
     }
 
     fn id(&self) -> usize {
@@ -1067,8 +1223,8 @@ where
         })
     }
 
-    fn fail(&self) {
-        self.inner.fail();
+    fn fail(&self, reason: FailureError) {
+        self.inner.fail(reason);
     }
 
     fn stop(&self) {
@@ -1115,7 +1271,7 @@ impl SystemActorRefInner for EmptyActorRefCell {
         Box::new(EmptyActorRefCell)
     }
 
-    fn fail(&self) {}
+    fn fail(&self, _: FailureError) {}
 
     fn stop(&self) {}
 

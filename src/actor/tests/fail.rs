@@ -1,4 +1,5 @@
 use crate::actor::*;
+use std::io;
 use std::time::Duration;
 
 struct MyActor {
@@ -17,7 +18,7 @@ impl Actor<()> for MyActor {
             // here is that context.fail is received but those
             // other messages are not
 
-            context.fail();
+            context.fail(io::Error::new(io::ErrorKind::Other, "error"));
         } else if self.id == 40 {
             self.actor_ref.tell(1);
         }
@@ -31,7 +32,7 @@ impl Actor<()> for MyActor {
                 }
             }
 
-            Signal::Failed => {
+            Signal::Failed(_) => {
                 self.actor_ref.tell(0);
             }
 
@@ -95,7 +96,10 @@ fn test() {
                     actor_ref: probe.actor_ref().clone(),
                 });
 
-                three.fail();
+                three.fail(FailureError::new(io::Error::new(
+                    io::ErrorKind::Other,
+                    "failed",
+                )));
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), 0);
 

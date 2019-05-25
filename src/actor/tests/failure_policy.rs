@@ -15,17 +15,17 @@ struct MyActor {
 }
 
 impl Actor<MyMsg> for MyActor {
-    fn handle_failure(&mut self, _: &mut ActorContext<MyMsg>) -> FailureAction {
+    fn handle_failure(&mut self, r: FailureReason, _: &mut ActorContext<MyMsg>) -> FailureAction {
         match self.id {
-            0 => FailureAction::Fail,
+            0 => FailureAction::Fail(r),
             1 => FailureAction::Resume,
-            _ => FailureAction::Fail,
+            _ => FailureAction::Fail(r),
         }
     }
 
     fn receive_signal(&mut self, signal: Signal, _: &mut ActorContext<MyMsg>) {
         match (self.id, signal) {
-            (0, Signal::Failed) => {
+            (0, Signal::Failed(_)) => {
                 self.actor_ref.tell(self.num);
             }
 
