@@ -112,6 +112,7 @@ where
     pub(in crate::actor) children: HashMap<usize, SystemActorRef>,
     pub(in crate::actor) deliveries: HashMap<String, Cancellable>,
     pub(in crate::actor) dispatcher: Dispatcher,
+    pub(in crate::actor) pending_stop: Option<bool>,
     pub(in crate::actor) system_context: ActorSystemContext,
 }
 
@@ -138,6 +139,24 @@ where
         if let Some(c) = self.deliveries.remove(name.as_ref()) {
             c.cancel();
         }
+    }
+
+    /// Asynchronously fail this actor. No other messages will
+    /// be processed by it, but it may take some time for the
+    /// failure to be delivered.
+    ///
+    /// Note that this does not necessarily mean that the actor
+    /// will stop, as it may define a `FailureAction` to instead
+    /// resume execution.
+    pub fn fail(&mut self) {
+        self.pending_stop = Some(true);
+    }
+
+    /// Asynchronously stop this actor. No other messages will
+    /// be processed by it, but it may take some time for the
+    /// failure to be delivered.
+    pub fn stop(&mut self) {
+        self.pending_stop = Some(false);
     }
 
     pub fn schedule_periodic_delivery<F: Fn() -> Msg, S: AsRef<str>>(
@@ -288,6 +307,7 @@ where
                 children: HashMap::new(),
                 deliveries: HashMap::new(),
                 dispatcher: dispatcher.clone(),
+                pending_stop: None,
                 system_context: self.system_context.clone(),
             },
             dispatcher,
@@ -407,10 +427,20 @@ impl SystemActorRef {
         self.inner.id()
     }
 
+    /// Asynchronously fail this actor. Other messages that
+    /// have already been enqueued will be received by
+    /// the actor before the stop failure is delivered.
+    ///
+    /// Note that this does not necessarily mean that the actor
+    /// will stop, as it may define a `FailureAction` to instead
+    /// resume execution.
     pub fn fail(&self) {
         self.inner.fail();
     }
 
+    /// Asynchronously stop this actor. Other messages that
+    /// have already been enqueued will be received by the
+    /// actor before the stop message is delivered.
     pub fn stop(&self) {
         self.inner.stop();
     }
@@ -547,7 +577,7 @@ pub(in crate::actor) enum SpawnedActorState {
     Stopping(bool),
     Stopped,
     Failed,
-    Failing,
+    WaitingForStop,
 }
 
 pub(in crate::actor) struct SpawnedActor<Msg>
@@ -569,11 +599,34 @@ impl<Msg> SpawnedActor<Msg>
 where
     Msg: 'static + Send,
 {
+    fn check_pending_stop(&mut self) {
+        if let Some(failed) = self.context.pending_stop.take() {
+            match self.state {
+                SpawnedActorState::Stopped
+                | SpawnedActorState::Failed
+                | SpawnedActorState::Stopping(_) => {}
+
+                _ => {
+                    self.state = SpawnedActorState::WaitingForStop;
+                    self.context.actor_ref.tell_system(SystemMsg::Stop(failed));
+                }
+            }
+        }
+    }
+
+    fn reset_pending_stop(&mut self) {
+        self.context.pending_stop = None;
+    }
+
     fn receive(&mut self, msg: Msg) {
         match self.state {
-            SpawnedActorState::Active => self.actor.receive(msg, &mut self.context),
+            SpawnedActorState::Active => {
+                self.reset_pending_stop();
+                self.actor.receive(msg, &mut self.context);
+                self.check_pending_stop();
+            }
 
-            SpawnedActorState::Failing => {
+            SpawnedActorState::WaitingForStop => {
                 self.stash.push_back(Envelope::Msg(msg));
             }
 
@@ -594,8 +647,10 @@ where
             (SpawnedActorState::Spawned, SystemMsg::Signaled(Signal::Started)) => {
                 self.transition(SpawnedActorState::Active);
 
+                self.reset_pending_stop();
                 self.actor
                     .receive_signal(Signal::Started, &mut self.context);
+                self.check_pending_stop();
 
                 self.unstash_all();
             }
@@ -610,13 +665,15 @@ where
                 self.stash.push_back(Envelope::SystemMsg(other));
             }
 
-            (SpawnedActorState::Failing, SystemMsg::Stop(true)) => {
+            (SpawnedActorState::WaitingForStop, SystemMsg::Stop(true)) => {
                 match self.actor.handle_failure(&mut self.context) {
                     FailureAction::Resume => {
                         self.state = SpawnedActorState::Active;
 
+                        self.reset_pending_stop();
                         self.actor
                             .receive_signal(Signal::Resumed, &mut self.context);
+                        self.check_pending_stop();
 
                         self.unstash_all();
                     }
@@ -640,6 +697,25 @@ where
                         }
 
                         self.stash.clear();
+                    }
+                }
+            }
+
+            (SpawnedActorState::WaitingForStop, SystemMsg::Stop(false)) => {
+                self.stash.clear();
+
+                if self.context.children.is_empty() {
+                    self.transition(SpawnedActorState::Stopped);
+
+                    self.parent_ref
+                        .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
+                } else {
+                    self.transition(SpawnedActorState::Stopping(false));
+
+                    for (_child_id, actor_ref) in self.context.children.iter() {
+                        // @TODO think about whether children should be failed
+
+                        actor_ref.stop();
                     }
                 }
             }
@@ -687,7 +763,9 @@ where
             (SpawnedActorState::Stopped, _) => {}
 
             (_, SystemMsg::Signaled(signal)) => {
-                self.actor.receive_signal(signal, &mut self.context)
+                self.reset_pending_stop();
+                self.actor.receive_signal(signal, &mut self.context);
+                self.check_pending_stop();
             }
 
             (SpawnedActorState::Stopping(false), SystemMsg::Stop(true)) => {
@@ -703,7 +781,6 @@ where
 
             (_, SystemMsg::ChildStopped(child_id)) => {
                 self.context.children.remove(&child_id);
-                self.context.children.shrink_to_fit();
 
                 // @TODO log this? shouldnt happe
             }
@@ -736,8 +813,11 @@ where
 
                     _ => {
                         if thread::panicking() {
-                            this.state = SpawnedActorState::Failing;
-                            this.context.actor_ref.tell_system(SystemMsg::Stop(true));
+                            if let SpawnedActorState::Stopping(_) = this.state {
+                            } else {
+                                this.state = SpawnedActorState::WaitingForStop;
+                                this.context.actor_ref.tell_system(SystemMsg::Stop(true));
+                            }
                         }
 
                         let execution_state = this.execution_state.clone();
@@ -817,8 +897,10 @@ where
 
         match self.state {
             SpawnedActorState::Stopped => {
+                self.reset_pending_stop();
                 self.actor
                     .receive_signal(Signal::Stopped, &mut self.context);
+                self.check_pending_stop();
 
                 self.tell_watcher(ActorWatcherMessage::Stopped(
                     self.context.actor_ref().system_ref(),
@@ -826,7 +908,9 @@ where
             }
 
             SpawnedActorState::Failed => {
+                self.reset_pending_stop();
                 self.actor.receive_signal(Signal::Failed, &mut self.context);
+                self.check_pending_stop();
 
                 self.tell_watcher(ActorWatcherMessage::Failed(
                     self.context.actor_ref().system_ref(),
@@ -841,15 +925,26 @@ where
         // @TODO if there are tons of messages, this can stall other actors from making progress.
         //       it's important that ordering guarantees remain the same though, so punt this
         //       for now and document the limitation
-        while let Some(msg) = self.stash.pop_front() {
-            match msg {
-                Envelope::Msg(msg) => {
-                    self.receive(msg);
+
+        loop {
+            match self.state {
+                SpawnedActorState::Spawned | SpawnedActorState::WaitingForStop => {
+                    return;
                 }
 
-                Envelope::SystemMsg(msg) => {
-                    self.receive_system(msg);
-                }
+                _ => match self.stash.pop_front() {
+                    Some(Envelope::Msg(msg)) => {
+                        self.receive(msg);
+                    }
+
+                    Some(Envelope::SystemMsg(msg)) => {
+                        self.receive_system(msg);
+                    }
+
+                    None => {
+                        return;
+                    }
+                },
             }
         }
     }
