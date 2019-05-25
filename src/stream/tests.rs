@@ -12,7 +12,7 @@ fn test_sink_for_each_watch_termination() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<Option<()>>();
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::iterator(0..=10000)
                     .to(Sinks::for_each(move |_| ()))
@@ -48,7 +48,7 @@ fn test_sink_last_watch_termination() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<Option<usize>>();
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::iterator(1..=10000)
                     .to(Sinks::last())
@@ -86,7 +86,7 @@ fn test_sink_tell() {
                 let mut probe = ctx
                     .spawn_probe::<TellEvent<usize>>()
                     .with_poll_interval(Duration::from_micros(10));
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::iterator(1..=10000).to(Sinks::tell(probe_ref));
 
@@ -133,7 +133,7 @@ fn test_sources_iterator_sink_cancel_watch_termination() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<bool>();
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::iterator(1..=10000)
                     .to(Sinks::cancel())
@@ -169,7 +169,7 @@ fn test_sources_iterator_sink_first_watch_termination() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<Option<usize>>();
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::iterator(1..=10000)
                     .to(Sinks::first())
@@ -205,7 +205,7 @@ fn test_sources_empty_sink_last_watch_termination() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<Option<usize>>();
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::empty().to(Sinks::last()).watch_termination(
                     move |terminated, last| match terminated {
@@ -243,7 +243,7 @@ fn test_sources_iter_flow_take_while_sink_last_watch_termination() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<Option<u64>>();
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::iterator(1..=u64::MAX)
                     .take_while(|n: &u64| *n <= 10000)
@@ -282,7 +282,7 @@ fn test_many() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<Option<u64>>();
-                let probe_ref = probe.actor_ref.clone();
+                let probe_ref = probe.actor_ref().clone();
 
                 let stream = Sources::iterator(1..=u64::MAX)
                     .take_while(|n: &u64| *n <= 10_000_000)

@@ -68,7 +68,7 @@ fn test() {
 
                 ctx.spawn(MyActor {
                     id: 0,
-                    actor_ref: probe.actor_ref.clone(),
+                    actor_ref: probe.actor_ref().clone(),
                     count: 0,
                 });
 

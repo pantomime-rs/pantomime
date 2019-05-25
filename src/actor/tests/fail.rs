@@ -52,7 +52,7 @@ fn test() {
                 // 0 panics during startup
                 ctx.spawn(MyActor {
                     id: 0,
-                    actor_ref: probe.actor_ref.clone(),
+                    actor_ref: probe.actor_ref().clone(),
                 });
 
                 assert_eq!(probe.receive(Duration::from_secs(10)), ());
@@ -60,7 +60,7 @@ fn test() {
                 // 1 panics after receiving a message
                 let one = ctx.spawn(MyActor {
                     id: 1,
-                    actor_ref: probe.actor_ref.clone(),
+                    actor_ref: probe.actor_ref().clone(),
                 });
 
                 one.tell(());
@@ -71,7 +71,7 @@ fn test() {
 
                 let two = ctx.spawn(MyActor {
                     id: 2,
-                    actor_ref: probe.actor_ref.clone(),
+                    actor_ref: probe.actor_ref().clone(),
                 });
 
                 two.stop();
