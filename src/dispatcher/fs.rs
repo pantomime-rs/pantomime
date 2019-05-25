@@ -1,9 +1,8 @@
 use super::*;
+use crossbeam::atomic::AtomicCell;
 use futures::executor::Notify;
 use futures::*;
-use futures::{executor, Future};
-use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use futures::{executor, Async, Future};
 use std::sync::Arc;
 
 pub trait FutureDispatcherBridge {
@@ -17,10 +16,12 @@ impl FutureDispatcherBridge for Dispatcher {
     where
         F: Future<Item = (), Error = ()> + 'static + Send,
     {
-        let dispatcher = self.clone();
-
         self.execute(move || {
-            dispatcher_spawn_continue(dispatcher, Arc::new(Mutex::new(executor::spawn(future))));
+            let notifier = Arc::new(Notifier::<F> {
+                state: AtomicCell::new(NotifierState::NotNotified),
+            });
+
+            notifier.cont(executor::spawn(future));
         });
     }
 }
@@ -30,48 +31,76 @@ where
     F: 'static + Future<Item = (), Error = ()> + Send,
 {
     fn execute(&self, future: F) -> Result<(), future::ExecuteError<F>> {
-        // @TODO error?
         self.spawn_future(future);
+
         Ok(())
     }
 }
 
-struct Notifier {
-    cont: Box<Fn() + Send + 'static + Sync>,
+enum NotifierState<F: Future<Item = (), Error = ()>>
+where
+    F: 'static + Send,
+{
+    Waiting(Arc<Notifier<F>>, executor::Spawn<F>),
+    Notified,
+    NotNotified,
 }
 
-impl Notify for Notifier {
-    fn notify(&self, _id: usize) {
-        (self.cont)();
+struct Notifier<F: Future<Item = (), Error = ()>>
+where
+    F: 'static + Send,
+{
+    state: AtomicCell<NotifierState<F>>,
+}
+
+impl<F: Future<Item = (), Error = ()>> Notifier<F>
+where
+    F: 'static + Send,
+{
+    fn cont(self: Arc<Self>, mut spawn: executor::Spawn<F>) {
+        match spawn.poll_future_notify(&self, 0) {
+            Ok(Async::NotReady) => {
+                self.provide(spawn);
+            }
+
+            Ok(Async::Ready(())) => {}
+
+            Err(()) => {}
+        }
+    }
+
+    fn provide(self: Arc<Self>, spawn: executor::Spawn<F>) {
+        match self.state.swap(NotifierState::Waiting(self.clone(), spawn)) {
+            NotifierState::Notified => {
+                if let NotifierState::Waiting(_, spawn) =
+                    self.state.swap(NotifierState::NotNotified)
+                {
+                    self.cont(spawn);
+                }
+            }
+
+            NotifierState::Waiting(_, _) => {
+                panic!("pantomime bug: cannot be in Waiting state");
+            }
+
+            NotifierState::NotNotified => {}
+        }
     }
 }
 
-/// Use the provided dispatcher to poll the status often spawn. poll_future_notify
-/// is invoked with a notifier that will then recursively make progress until the
-/// future is ready.
-#[inline(always)]
-fn dispatcher_spawn_continue<F>(dispatcher: Dispatcher, spawn: Arc<Mutex<executor::Spawn<F>>>)
+impl<F: Future<Item = (), Error = ()>> Notify for Notifier<F>
 where
-    F: Future<Item = (), Error = ()> + 'static + Send,
+    F: 'static + Send,
 {
-    let done = AtomicBool::new(false);
-
-    let cont = {
-        let spawn = spawn.clone();
-        Box::new(move || {
-            if done.compare_and_swap(false, true, Ordering::AcqRel) {
-                return;
+    fn notify(&self, _: usize) {
+        match self.state.swap(NotifierState::Notified) {
+            NotifierState::Waiting(this, spawn) => {
+                this.cont(spawn);
             }
-            let spawn = spawn.clone();
-            let d = dispatcher.clone();
 
-            dispatcher.execute(move || {
-                dispatcher_spawn_continue(d, spawn);
-            });
-        })
-    };
+            NotifierState::Notified => {}
 
-    let notifier = Arc::new(Notifier { cont });
-
-    let _ = spawn.lock().poll_future_notify(&notifier, 0);
+            NotifierState::NotNotified => {}
+        }
+    }
 }
