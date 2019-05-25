@@ -12,7 +12,10 @@ use crate::cfg::*;
 use crate::mailbox::*;
 use crate::timer::*;
 
-pub use self::actor_ref::{Actor, ActorContext, ActorRef, FailureAction, Signal, SystemActorRef};
+pub use self::actor_ref::{
+    Actor, ActorContext, ActorRef, FailureAction, FailureError, FailureReason, Signal,
+    SystemActorRef,
+};
 pub use self::probe::{Probe, SpawnProbe};
 pub use self::system::{ActiveActorSystem, ActorSystem, ActorSystemContext};
 
