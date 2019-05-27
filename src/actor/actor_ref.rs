@@ -925,6 +925,8 @@ where
                     SpawnedActorState::Stopped | SpawnedActorState::Failed(_) => {
                         this.execution_state
                             .swap(SpawnedActorExecutionState::Stopped);
+
+                        this.context.actor_ref = ActorRef::empty();
                     }
 
                     _ => {

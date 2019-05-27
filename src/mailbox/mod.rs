@@ -3,6 +3,7 @@
 mod channel;
 mod noop;
 mod segqueue;
+mod vecdeque;
 
 use crate::dispatcher::Thunk;
 use crate::util::Cancellable;
@@ -10,6 +11,7 @@ use crate::util::Cancellable;
 pub use self::channel::CrossbeamChannelMailboxLogic;
 pub use self::noop::NoopMailboxLogic;
 pub use self::segqueue::CrossbeamSegQueueMailboxLogic;
+pub use self::vecdeque::VecDequeMailboxLogic;
 
 pub struct MailboxAppender<M> {
     logic: Box<MailboxAppenderLogic<M> + 'static + Send + Sync>,
