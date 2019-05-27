@@ -35,6 +35,10 @@ impl Dispatcher {
         }
     }
 
+    pub fn new_boxed(logic: Box<DispatcherLogic + Send + Sync>) -> Self {
+        Self { inner: logic }
+    }
+
     /// Execute the provided function on this dispatcher.
     pub fn execute<F: FnOnce()>(&self, f: F)
     where

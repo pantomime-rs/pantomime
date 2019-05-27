@@ -142,10 +142,12 @@ impl Default for Config {
 #[derive(Clone, Debug)]
 pub struct ActorSystemConfig {
     pub default_actor_throughput: usize,
-    pub default_dispatcher_parallelism_min: usize,
-    pub default_dispatcher_parallelism_max: usize,
-    pub default_dispatcher_parallelism_factor: f32,
-    pub default_dispatcher_task_queue_fifo: bool,
+    pub default_dispatcher_logic: String,
+    pub default_dispatcher_logic_work_stealing_parallelism_min: usize,
+    pub default_dispatcher_logic_work_stealing_parallelism_max: usize,
+    pub default_dispatcher_logic_work_stealing_parallelism_factor: f32,
+    pub default_dispatcher_logic_work_stealing_task_queue_fifo: bool,
+    pub default_mailbox_logic: String,
     pub log_config_on_start: bool,
     pub num_cpus: usize,
     pub process_exit: bool,
@@ -187,44 +189,48 @@ impl ActorSystemConfig {
         }
 
         let cfg = cfg.with_fallback(&[
-            ("PANTOMIME_DEFAULT_ACTOR_THROUGHPUT",              "10"),
-            ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN",    "4"),
-            ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX",    "64"),
-            ("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR", "1.0"),
-            ("PANTOMIME_DEFAULT_DISPATCHER_TASK_QUEUE_FIFO",    "true"),
-            ("PANTOMIME_LOG_CONFIG_ON_START",                   "false"),
-            ("PANTOMIME_NUM_CPUS",                              "0"),
-            ("PANTOMIME_PROCESS_EXIT",                          "true"),
-            ("PANTOMIME_TICKER_INTERVAL_MS",                    "10"),
-            ("PANTOMIME_POSIX_SIGNALS",                         "SIGINT,SIGTERM,SIGHUP,SIGUSR1,SIGUSR2"),
-            ("PANTOMIME_POSIX_EXIT_SIGNALS",                    "SIGINT,SIGTERM"),
+            ("PANTOMIME_DEFAULT_ACTOR_THROUGHPUT",                                  "10"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC",                                  "work-stealing"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_MIN",    "4"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_MAX",    "64"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_FACTOR", "1.0"),
+            ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_TASK_QUEUE_FIFO",    "true"),
+            ("PANTOMIME_DEFAULT_MAILBOX_LOGIC",                                     "crossbeam-seg-queue"),
+            ("PANTOMIME_LOG_CONFIG_ON_START",                                       "false"),
+            ("PANTOMIME_NUM_CPUS",                                                  "0"),
+            ("PANTOMIME_PROCESS_EXIT",                                              "true"),
+            ("PANTOMIME_TICKER_INTERVAL_MS",                                        "10"),
+            ("PANTOMIME_POSIX_SIGNALS",                                             "SIGINT,SIGTERM,SIGHUP,SIGUSR1,SIGUSR2"),
+            ("PANTOMIME_POSIX_EXIT_SIGNALS",                                        "SIGINT,SIGTERM"),
         ]);
 
         Ok(Self {
-            default_actor_throughput:               cfg.parsed("PANTOMIME_DEFAULT_ACTOR_THROUGHPUT")?,
-            default_dispatcher_parallelism_min:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MIN")?,
-            default_dispatcher_parallelism_max:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_MAX")?,
-            default_dispatcher_parallelism_factor:  cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_PARALLELISM_FACTOR")?,
-            default_dispatcher_task_queue_fifo:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_TASK_QUEUE_FIFO")?,
-            log_config_on_start:                    cfg.parsed("PANTOMIME_LOG_CONFIG_ON_START")?,
-            num_cpus:                               cfg.parsed("PANTOMIME_NUM_CPUS")
-                                                       .map(|n| if n == 0 { num_cpus::get() } else { n })?,
-            process_exit:                           cfg.parsed("PANTOMIME_PROCESS_EXIT")?,
-            ticker_interval_ms:                     cfg.parsed("PANTOMIME_TICKER_INTERVAL_MS")?,
+            default_actor_throughput:                                   cfg.parsed("PANTOMIME_DEFAULT_ACTOR_THROUGHPUT")?,
+            default_dispatcher_logic:                                   cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_LOGIC")?,
+            default_dispatcher_logic_work_stealing_parallelism_min:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_MIN")?,
+            default_dispatcher_logic_work_stealing_parallelism_max:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_MAX")?,
+            default_dispatcher_logic_work_stealing_parallelism_factor:  cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_FACTOR")?,
+            default_dispatcher_logic_work_stealing_task_queue_fifo:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_TASK_QUEUE_FIFO")?,
+            default_mailbox_logic:                                      cfg.parsed("PANTOMIME_DEFAULT_MAILBOX_LOGIC")?,
+            log_config_on_start:                                        cfg.parsed("PANTOMIME_LOG_CONFIG_ON_START")?,
+            num_cpus:                                                   cfg.parsed("PANTOMIME_NUM_CPUS")
+                                                                           .map(|n| if n == 0 { num_cpus::get() } else { n })?,
+            process_exit:                                               cfg.parsed("PANTOMIME_PROCESS_EXIT")?,
+            ticker_interval_ms:                                         cfg.parsed("PANTOMIME_TICKER_INTERVAL_MS")?,
 
             #[cfg(feature = "posix-signals-support")]
-            posix_signals:                          cfg.string_vec("PANTOMIME_POSIX_SIGNALS")?
-                                                       .into_iter()
-                                                       .map(posix_signal)
-                                                       .filter(|s| *s != 0)
-                                                       .collect(),
+            posix_signals:                                              cfg.string_vec("PANTOMIME_POSIX_SIGNALS")?
+                                                                           .into_iter()
+                                                                           .map(posix_signal)
+                                                                           .filter(|s| *s != 0)
+                                                                           .collect(),
 
             #[cfg(feature = "posix-signals-support")]
-            posix_shutdown_signals:                 cfg.string_vec("PANTOMIME_POSIX_EXIT_SIGNALS")?
-                                                       .into_iter()
-                                                       .map(posix_signal)
-                                                       .filter(|s| *s != 0)
-                                                       .collect(),
+            posix_shutdown_signals:                                    cfg.string_vec("PANTOMIME_POSIX_EXIT_SIGNALS")?
+                                                                          .into_iter()
+                                                                          .map(posix_signal)
+                                                                          .filter(|s| *s != 0)
+                                                                          .collect(),
         })
     }
 }
