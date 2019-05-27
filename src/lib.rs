@@ -9,6 +9,7 @@ extern crate atty;
 extern crate chrono;
 extern crate crossbeam;
 extern crate fern;
+extern crate parking_lot;
 extern crate rand;
 
 #[macro_use]
