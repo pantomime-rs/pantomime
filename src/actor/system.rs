@@ -1,7 +1,12 @@
 use self::actor_watcher::{ActorWatcher, ActorWatcherMessage};
 use super::*;
-use crate::dispatcher::{Dispatcher, WorkStealingDispatcher};
+use crate::dispatcher::{
+    Dispatcher, DispatcherLogic, SingleThreadedDispatcher, WorkStealingDispatcher,
+};
 use crate::io::{IoCoordinator, IoCoordinatorMsg};
+use crate::mailbox::{
+    CrossbeamChannelMailboxLogic, CrossbeamSegQueueMailboxLogic, VecDequeMailboxLogic,
+};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel;
 use fern::colors::{Color, ColoredLevelConfig};
@@ -159,7 +164,17 @@ impl ActorSystemContext {
     where
         Msg: 'static + Send,
     {
-        Mailbox::new(CrossbeamSegQueueMailboxLogic::new())
+        let mailbox_logic: Box<MailboxLogic<Msg> + Send + Sync> =
+            match self.config.default_mailbox_logic.as_str() {
+                "crossbeam-seg-queue" => Box::new(CrossbeamSegQueueMailboxLogic::new()),
+                "crossbeam-channel" => Box::new(CrossbeamChannelMailboxLogic::new()),
+                "vecdeque" => Box::new(VecDequeMailboxLogic::new()),
+                other => {
+                    panic!(format!("pantomime bug: unknown mailbox logic {}", other));
+                }
+            };
+
+        Mailbox::new_boxed(mailbox_logic)
     }
 
     pub(in crate::actor) fn timer_ref(&self) -> Option<&ActorRef<TimerMsg>> {
@@ -399,6 +414,10 @@ impl ActorSystem {
         A: Actor<M>,
     {
         let config = ActorSystemConfig::new(&self.config.take().unwrap_or_default())?;
+
+        let _ = self.validate_default_dispatcher_logic(&config);
+        let _ = self.validate_default_mailbox_logic(&config);
+
         let mut system = self.start(config);
 
         let failed = Arc::new(AtomicBool::new(false));
@@ -423,20 +442,33 @@ impl ActorSystem {
 
         let config = Arc::new(config);
 
-        let default_dispatcher_parallelism = cmp::min(
-            config.default_dispatcher_parallelism_max,
-            cmp::max(
-                config.default_dispatcher_parallelism_min,
-                (config.num_cpus as f32 * config.default_dispatcher_parallelism_factor) as usize,
-            ),
-        );
+        let dispatcher_logic: Box<DispatcherLogic + Sync + Send> =
+            match config.default_dispatcher_logic.as_ref() {
+                "work-stealing" => {
+                    let default_dispatcher_parallelism = cmp::min(
+                        config.default_dispatcher_logic_work_stealing_parallelism_max,
+                        cmp::max(
+                            config.default_dispatcher_logic_work_stealing_parallelism_min,
+                            (config.num_cpus as f32
+                                * config.default_dispatcher_logic_work_stealing_parallelism_factor)
+                                as usize,
+                        ),
+                    );
 
-        let dispatcher_logic = WorkStealingDispatcher::new(
-            default_dispatcher_parallelism,
-            config.default_dispatcher_task_queue_fifo,
-        );
+                    Box::new(WorkStealingDispatcher::new(
+                        default_dispatcher_parallelism,
+                        config.default_dispatcher_logic_work_stealing_task_queue_fifo,
+                    ))
+                }
 
-        let dispatcher = Dispatcher::new(dispatcher_logic);
+                "single-threaded" => Box::new(SingleThreadedDispatcher::new()),
+
+                other => {
+                    panic!(format!("pantomime bug: unknown dispatcher logic {}", other));
+                }
+            };
+
+        let dispatcher = Dispatcher::new_boxed(dispatcher_logic);
 
         let (sender, receiver) = channel::unbounded();
 
@@ -482,6 +514,29 @@ impl ActorSystem {
             context,
             receiver,
             sender,
+        }
+    }
+
+    fn validate_default_dispatcher_logic(&self, config: &ActorSystemConfig) -> Result<(), Error> {
+        match config.default_dispatcher_logic.as_str() {
+            "work-stealing" => Ok(()),
+            "single-threaded" => Ok(()),
+            other => Err(Error::new(
+                ErrorKind::Other,
+                format!("unknown dispatcher logic: {}", other),
+            )),
+        }
+    }
+
+    fn validate_default_mailbox_logic(&self, config: &ActorSystemConfig) -> Result<(), Error> {
+        match config.default_mailbox_logic.as_str() {
+            "crossbeam-channel" => Ok(()),
+            "crossbeam-seg-queue" => Ok(()),
+            "vecdeque" => Ok(()),
+            other => Err(Error::new(
+                ErrorKind::Other,
+                format!("unknown mailbox logic: {}", other),
+            )),
         }
     }
 

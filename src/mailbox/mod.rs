@@ -98,6 +98,10 @@ impl<M> Mailbox<M> {
         }
     }
 
+    pub fn new_boxed(logic: Box<MailboxLogic<M> + Send + Sync>) -> Self {
+        Self { logic }
+    }
+
     pub(in crate) fn appender(&mut self) -> MailboxAppender<M> {
         self.logic.appender()
     }
