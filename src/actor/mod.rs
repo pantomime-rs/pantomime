@@ -1,7 +1,6 @@
 //! Core messaging
 
 mod actor_ref;
-mod actor_watcher;
 mod probe;
 mod system;
 

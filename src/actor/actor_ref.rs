@@ -1,4 +1,4 @@
-use crate::actor::actor_watcher::ActorWatcherMessage;
+use crate::actor::system::ReaperMsg;
 use crate::actor::*;
 use crate::dispatcher::{Dispatcher, Thunk};
 use crate::mailbox::Mailbox;
@@ -20,6 +20,7 @@ pub enum SystemMsg {
     Stop(Option<FailureReason>),
     ChildStopped(usize),
     Signaled(Signal),
+    Watch(SystemActorRef),
 }
 
 pub enum Envelope<Msg>
@@ -69,9 +70,6 @@ pub enum StopReason {
 
     /// Signifies that the actor was stopped due to a failure.
     Failed,
-
-    /// Signifies that the actor was already stopped but the cause is unknown.
-    AlreadyStopped,
 }
 
 pub enum Signal {
@@ -86,7 +84,6 @@ pub enum Signal {
 }
 
 pub trait Actor<Msg>: Send
-/* + panic::UnwindSafe + panic::RefUnwindSafe*/ // @TODO unwind safe
 where
     Msg: Send,
 {
@@ -151,6 +148,8 @@ where
     // but want take etc that the outer option provides
     #[allow(clippy::option_option)]
     pub(in crate::actor) pending_stop: Option<Option<FailureReason>>,
+
+    pub(in crate::actor) state: SpawnedActorState,
 
     pub(in crate::actor) system_context: ActorSystemContext,
 }
@@ -308,21 +307,11 @@ where
     where
         N: 'static + Send,
     {
-        match self.system_context.watcher_ref() {
-            Some(watcher_ref) => watcher_ref.tell(ActorWatcherMessage::Subscribe(
-                self.actor_ref().system_ref(),
-                actor_ref.system_ref(),
-            )),
+        actor_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
+    }
 
-            None => {
-                // @TODO panic instead
-                error!(
-                        "#[{watcher}] attempted to watch #[{watching}] but it does not have a reference to ActorWatcher; this is unexpected",
-                        watcher = self.actor_ref().id(),
-                        watching = actor_ref.id()
-                    );
-            }
-        }
+    pub fn watch_system(&mut self, system_ref: &SystemActorRef) {
+        system_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
     }
 
     /// Register interest in receiving POSIX signals. When the process
@@ -336,13 +325,8 @@ where
     /// will be performed when running on Windows systems.
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     pub fn watch_posix_signals(&mut self) {
-        // @TODO panic? should be internal if this is missing, and internal shouldn't watch signals
-
-        if let Some(ref watcher_ref) = self.system_context.watcher_ref() {
-            watcher_ref.tell(ActorWatcherMessage::SubscribePosixSignals(
-                self.actor_ref().system_ref(),
-            ));
-        }
+        self.system_context
+            .tell_reaper_monitor(ReaperMsg::WatchPosixSignals(self.actor_ref().system_ref()));
     }
 
     /// Register interest in receiving POSIX signals. When the process
@@ -359,6 +343,10 @@ where
 
     /// Spawn the supplied actor as a child of this actor. An `ActorRef`
     /// is returned that can be used to send the actor messages.
+    ///
+    /// If this actor is stopping or already stopped, the supplied actor
+    /// will be spawned and immediately stopped, and an empty ref will
+    /// be returned.
     pub fn spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
     where
         A: 'static + Send,
@@ -391,6 +379,7 @@ where
                 deliveries: HashMap::new(),
                 dispatcher: dispatcher.clone(),
                 pending_stop: None,
+                state: SpawnedActorState::Active,
                 system_context: self.system_context.clone(),
             },
             dispatcher,
@@ -398,8 +387,8 @@ where
             mailbox,
             parent_ref: self.actor_ref.system_ref(),
             stash: VecDeque::new(),
-            state: SpawnedActorState::Spawned,
             throughput,
+            watchers: Vec::new(),
         };
 
         let actor_ref = ActorRef {
@@ -410,24 +399,35 @@ where
             })),
         };
 
-        spawned_actor.context.actor_ref = actor_ref.clone();
+        let empty_ref = {
+            let mut actor_ref = actor_ref.clone();
+
+            mem::swap(&mut spawned_actor.context.actor_ref, &mut actor_ref);
+
+            actor_ref
+        };
 
         spawned_actor
             .execution_state
             .clone()
             .store(SpawnedActorExecutionState::Idle(Box::new(spawned_actor)));
 
+        actor_ref.tell_system(SystemMsg::Signaled(Signal::Started));
+
         self.children.insert(actor_ref.id(), actor_ref.system_ref());
 
-        if let Some(ref watcher_ref) = self.system_context.watcher_ref() {
-            watcher_ref.tell(ActorWatcherMessage::Started(
-                actor_ref.id(),
-                actor_ref.system_ref(),
-                false,
-            ));
-        }
+        match self.state {
+            SpawnedActorState::Stopped
+            | SpawnedActorState::Failed(_)
+            | SpawnedActorState::Stopping(_)
+            | SpawnedActorState::WaitingForStop => {
+                actor_ref.stop();
 
-        actor_ref
+                empty_ref
+            }
+
+            SpawnedActorState::Active => actor_ref,
+        }
     }
 
     /// Spawn the supplied actor as a child of this actor, and watch
@@ -574,6 +574,7 @@ where
     /// a default value and then wiring up the actual value at a later
     /// time.
     pub fn empty() -> Self {
+        // @TODO it's a shame this allocates
         Self {
             inner: Arc::new(Box::new(EmptyActorRefCell)),
         }
@@ -687,11 +688,11 @@ where
     Idle(Box<SpawnedActor<Msg>>),
     Messaged,
     Running,
-    Stopped,
+    Stopped(Mailbox<Envelope<Msg>>),
+    Failed(Mailbox<Envelope<Msg>>),
 }
 
 pub(in crate::actor) enum SpawnedActorState {
-    Spawned,
     Active,
     Stopping(Option<FailureReason>),
     Stopped,
@@ -710,8 +711,8 @@ where
     pub(in crate::actor) mailbox: Mailbox<Envelope<Msg>>,
     pub(in crate::actor) parent_ref: SystemActorRef,
     pub(in crate::actor) stash: VecDeque<Envelope<Msg>>,
-    pub(in crate::actor) state: SpawnedActorState,
     pub(in crate::actor) throughput: usize,
+    pub(in crate::actor) watchers: Vec<SystemActorRef>,
 }
 
 impl<Msg> SpawnedActor<Msg>
@@ -720,13 +721,13 @@ where
 {
     fn check_pending_stop(&mut self) {
         if let Some(failed) = self.context.pending_stop.take() {
-            match self.state {
+            match self.context.state {
                 SpawnedActorState::Stopped
                 | SpawnedActorState::Failed(_)
                 | SpawnedActorState::Stopping(_) => {}
 
                 _ => {
-                    self.state = SpawnedActorState::WaitingForStop;
+                    self.context.state = SpawnedActorState::WaitingForStop;
                     self.context.actor_ref.tell_system(SystemMsg::Stop(failed));
                 }
             }
@@ -738,7 +739,7 @@ where
     }
 
     fn receive(&mut self, msg: Msg) {
-        match self.state {
+        match self.context.state {
             SpawnedActorState::Active => {
                 self.reset_pending_stop();
                 self.actor.receive(msg, &mut self.context);
@@ -746,10 +747,6 @@ where
             }
 
             SpawnedActorState::WaitingForStop => {
-                self.stash.push_back(Envelope::Msg(msg));
-            }
-
-            SpawnedActorState::Spawned => {
                 self.stash.push_back(Envelope::Msg(msg));
             }
 
@@ -762,32 +759,11 @@ where
     }
 
     fn receive_system(&mut self, msg: SystemMsg) {
-        match (&self.state, msg) {
-            (SpawnedActorState::Spawned, SystemMsg::Signaled(Signal::Started)) => {
-                self.transition(SpawnedActorState::Active);
-
-                self.reset_pending_stop();
-                self.actor
-                    .receive_signal(Signal::Started, &mut self.context);
-                self.check_pending_stop();
-
-                self.unstash_all();
-            }
-
-            (SpawnedActorState::Spawned, other) => {
-                // all other messages are irrelevant right now, so put
-                // them back into the mailbox until we get our start
-                // signal (which comes from the watcher)
-                //
-                // we don't need to reschedule ourselves for execution
-                // as the arrival of the start signal will do that
-                self.stash.push_back(Envelope::SystemMsg(other));
-            }
-
+        match (&self.context.state, msg) {
             (SpawnedActorState::WaitingForStop, SystemMsg::Stop(Some(reason))) => {
                 match self.actor.handle_failure(reason, &mut self.context) {
                     FailureAction::Resume => {
-                        self.state = SpawnedActorState::Active;
+                        self.context.state = SpawnedActorState::Active;
 
                         self.reset_pending_stop();
                         self.actor
@@ -873,9 +849,27 @@ where
                 }
             }
 
+            (SpawnedActorState::Failed(_), SystemMsg::Watch(watcher)) => {
+                watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                    watcher.clone(),
+                    StopReason::Failed,
+                )));
+            }
+
+            (SpawnedActorState::Stopped, SystemMsg::Watch(watcher)) => {
+                watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                    watcher.clone(),
+                    StopReason::Stopped,
+                )));
+            }
+
             (SpawnedActorState::Failed(_), _) => {}
 
             (SpawnedActorState::Stopped, _) => {}
+
+            (_, SystemMsg::Watch(watcher)) => {
+                self.watchers.push(watcher);
+            }
 
             (_, SystemMsg::Signaled(signal)) => {
                 self.reset_pending_stop();
@@ -921,19 +915,26 @@ where
                     .expect("pantomime bug: cannot retrieve SpawnedActor")
                     .into_inner();
 
-                match this.state {
-                    SpawnedActorState::Stopped | SpawnedActorState::Failed(_) => {
+                match this.context.state {
+                    SpawnedActorState::Stopped => {
                         this.execution_state
-                            .swap(SpawnedActorExecutionState::Stopped);
+                            .swap(SpawnedActorExecutionState::Stopped(this.mailbox));
+
+                        this.context.actor_ref = ActorRef::empty();
+                    }
+
+                    SpawnedActorState::Failed(_) => {
+                        this.execution_state
+                            .swap(SpawnedActorExecutionState::Failed(this.mailbox));
 
                         this.context.actor_ref = ActorRef::empty();
                     }
 
                     _ => {
                         if thread::panicking() {
-                            if let SpawnedActorState::Stopping(_) = this.state {
+                            if let SpawnedActorState::Stopping(_) = this.context.state {
                             } else {
-                                this.state = SpawnedActorState::WaitingForStop;
+                                this.context.state = SpawnedActorState::WaitingForStop;
                                 this.context
                                     .actor_ref
                                     .tell_system(SystemMsg::Stop(Some(FailureReason::Panicked)));
@@ -956,20 +957,35 @@ where
 
                             SpawnedActorExecutionState::Messaged => true,
 
-                            SpawnedActorExecutionState::Stopped => false,
+                            SpawnedActorExecutionState::Stopped(_) => false,
+
+                            SpawnedActorExecutionState::Failed(_) => false,
                         } || processed == throughput;
 
                         if cont {
-                            match execution_state.swap(SpawnedActorExecutionState::Messaged) {
-                                SpawnedActorExecutionState::Idle(actor) => {
-                                    actor.dispatcher.clone().execute(|| actor.run());
+                            let mut next_execution_state =
+                                Some(SpawnedActorExecutionState::Messaged);
+
+                            while next_execution_state.is_some() {
+                                match execution_state.swap(next_execution_state.take().unwrap()) {
+                                    SpawnedActorExecutionState::Idle(actor) => {
+                                        actor.dispatcher.clone().execute(|| actor.run());
+                                    }
+
+                                    SpawnedActorExecutionState::Messaged => {}
+
+                                    SpawnedActorExecutionState::Running => {}
+
+                                    SpawnedActorExecutionState::Stopped(mailbox) => {
+                                        next_execution_state =
+                                            Some(SpawnedActorExecutionState::Stopped(mailbox));
+                                    }
+
+                                    SpawnedActorExecutionState::Failed(mailbox) => {
+                                        next_execution_state =
+                                            Some(SpawnedActorExecutionState::Failed(mailbox));
+                                    }
                                 }
-
-                                SpawnedActorExecutionState::Messaged => {}
-
-                                SpawnedActorExecutionState::Running => {}
-
-                                SpawnedActorExecutionState::Stopped => {}
                             }
                         }
                     }
@@ -1004,26 +1020,21 @@ where
         }
     }
 
-    fn tell_watcher(&self, message: ActorWatcherMessage) {
-        if let Some(watcher_ref) = self.context.system_context.watcher_ref() {
-            watcher_ref.tell(message);
-        } else {
-            // @TODO
-        }
-    }
-
     fn transition(&mut self, mut next: SpawnedActorState) {
         match next {
             SpawnedActorState::Stopped => {
-                self.state = SpawnedActorState::Stopped;
+                self.context.state = SpawnedActorState::Stopped;
                 self.reset_pending_stop();
                 self.actor
                     .receive_signal(Signal::Stopped, &mut self.context);
                 self.check_pending_stop();
 
-                self.tell_watcher(ActorWatcherMessage::Stopped(
-                    self.context.actor_ref().system_ref(),
-                ));
+                for watcher in self.watchers.drain(..) {
+                    watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                        self.context.actor_ref().system_ref(),
+                        StopReason::Stopped,
+                    )));
+                }
             }
 
             SpawnedActorState::Failed(_) => {
@@ -1032,7 +1043,7 @@ where
 
                 mem::swap(&mut state, &mut next);
 
-                self.state = next;
+                self.context.state = next;
 
                 match state {
                     SpawnedActorState::Failed(reason) => {
@@ -1041,9 +1052,12 @@ where
                             .receive_signal(Signal::Failed(reason), &mut self.context);
                         self.check_pending_stop();
 
-                        self.tell_watcher(ActorWatcherMessage::Failed(
-                            self.context.actor_ref().system_ref(),
-                        ));
+                        for watcher in self.watchers.drain(..) {
+                            watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                                self.context.actor_ref().system_ref(),
+                                StopReason::Failed,
+                            )));
+                        }
                     }
 
                     _ => {
@@ -1053,7 +1067,7 @@ where
             }
 
             _ => {
-                self.state = next;
+                self.context.state = next;
             }
         }
     }
@@ -1061,7 +1075,7 @@ where
     fn transition_stopped(&mut self) {
         let mut state = SpawnedActorState::Stopping(None);
 
-        mem::swap(&mut self.state, &mut state);
+        mem::swap(&mut self.context.state, &mut state);
 
         match state {
             SpawnedActorState::Stopping(maybe_reason) => {
@@ -1085,8 +1099,8 @@ where
         //       for now and document the limitation
 
         loop {
-            match self.state {
-                SpawnedActorState::Spawned | SpawnedActorState::WaitingForStop => {
+            match self.context.state {
+                SpawnedActorState::WaitingForStop => {
                     return;
                 }
 
@@ -1153,7 +1167,43 @@ where
 
             SpawnedActorExecutionState::Messaged => {}
 
-            SpawnedActorExecutionState::Stopped => {}
+            SpawnedActorExecutionState::Stopped(mailbox) => {
+                self.drain(mailbox, false);
+            }
+
+            SpawnedActorExecutionState::Failed(mailbox) => {
+                self.drain(mailbox, true);
+            }
+        }
+    }
+
+    fn drain(&self, mailbox: Mailbox<Envelope<Msg>>, failed: bool) {
+        let mut next_execution_state = Some(if failed {
+            SpawnedActorExecutionState::Failed(mailbox)
+        } else {
+            SpawnedActorExecutionState::Stopped(mailbox)
+        });
+
+        while next_execution_state.is_some() {
+            match self.state.swap(next_execution_state.take().unwrap()) {
+                SpawnedActorExecutionState::Idle(_) => {
+                    panic!("pantomime bug: execution_state went from stopped to idle");
+                }
+
+                SpawnedActorExecutionState::Messaged => {}
+
+                SpawnedActorExecutionState::Running => {
+                    panic!("pantomime bug: execution_state went from stopped to running");
+                }
+
+                SpawnedActorExecutionState::Stopped(mailbox) => {
+                    next_execution_state = Some(SpawnedActorExecutionState::Stopped(mailbox));
+                }
+
+                SpawnedActorExecutionState::Failed(mailbox) => {
+                    next_execution_state = Some(SpawnedActorExecutionState::Failed(mailbox));
+                }
+            }
         }
     }
 }

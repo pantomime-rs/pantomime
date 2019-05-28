@@ -1,4 +1,3 @@
-use self::actor_watcher::{ActorWatcher, ActorWatcherMessage};
 use super::*;
 use crate::dispatcher::{
     Dispatcher, DispatcherLogic, SingleThreadedDispatcher, WorkStealingDispatcher,
@@ -33,26 +32,20 @@ pub struct ActorSystem {
 }
 
 pub struct ActorSystemContext {
-    config: Arc<ActorSystemConfig>,
-    dispatcher: Dispatcher,
-    next_actor_id: Arc<AtomicUsize>,
-    sender: channel::Sender<ActorSystemMsg>,
-    timer_ref: Option<ActorRef<TimerMsg>>,
-    io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
-    watcher_ref: Option<ActorRef<ActorWatcherMessage>>,
+    inner: Arc<ActorSystemContextInner>,
 }
 
 impl ActorSystemContext {
     pub fn config(&self) -> &ActorSystemConfig {
-        &self.config
+        &self.inner.config
     }
 
     pub fn dispatcher(&self) -> &Dispatcher {
-        &self.dispatcher
+        &self.inner.dispatcher
     }
 
     pub fn stop(&self) {
-        let _ = self.sender.send(ActorSystemMsg::Stop);
+        self.tell_reaper_monitor(ReaperMsg::Stop);
     }
 
     /// Schedule a function to be invoked after the timeout has elapsed.
@@ -65,7 +58,7 @@ impl ActorSystemContext {
     where
         F: 'static + Send + Sync, // @TODO why Sync?
     {
-        if let Some(ref timer_ref) = self.timer_ref() {
+        if let Some(ref timer_ref) = self.inner.timer_ref {
             timer_ref.tell(TimerMsg::Schedule {
                 after: timeout,
                 thunk: TimerThunk::new(Box::new(f)),
@@ -76,7 +69,7 @@ impl ActorSystemContext {
     }
 
     pub(crate) fn io_coordinator_ref(&self) -> Option<&ActorRef<IoCoordinatorMsg>> {
-        self.io_coordinator_ref.as_ref()
+        self.inner.io_coordinator_ref.as_ref()
     }
 
     pub(crate) fn spawn<M, A: Actor<M>>(&self, actor: A) -> ActorRef<M>
@@ -102,7 +95,7 @@ impl ActorSystemContext {
 
         let throughput = actor
             .config_throughput(&self)
-            .unwrap_or(self.config.default_actor_throughput);
+            .unwrap_or(self.inner.config.default_actor_throughput);
 
         let mut spawned_actor = SpawnedActor {
             actor: Box::new(actor),
@@ -112,6 +105,7 @@ impl ActorSystemContext {
                 deliveries: HashMap::new(),
                 dispatcher: dispatcher.clone(),
                 pending_stop: None,
+                state: SpawnedActorState::Active,
                 system_context: self.clone(),
             },
             dispatcher,
@@ -119,8 +113,8 @@ impl ActorSystemContext {
             mailbox,
             parent_ref: empty_ref.system_ref(),
             stash: VecDeque::new(),
-            state: SpawnedActorState::Spawned,
             throughput,
+            watchers: Vec::new(),
         };
 
         let actor_ref = ActorRef {
@@ -133,31 +127,22 @@ impl ActorSystemContext {
 
         spawned_actor.context.actor_ref = actor_ref.clone();
 
-        if let Some(ref watcher_ref) = self.watcher_ref() {
-            watcher_ref.tell(ActorWatcherMessage::Started(
-                actor_ref.id(),
-                actor_ref.system_ref(),
-                true,
-            ));
-        } else {
-            // these are internal actors, so they cannot be watched
-            spawned_actor.state = SpawnedActorState::Active;
-        }
-
         spawned_actor
             .execution_state
             .clone()
             .store(SpawnedActorExecutionState::Idle(Box::new(spawned_actor)));
 
+        actor_ref.tell_system(SystemMsg::Signaled(Signal::Started));
+
         actor_ref
     }
 
     pub(in crate::actor) fn new_actor_id(&self) -> usize {
-        self.next_actor_id.fetch_add(1, Ordering::SeqCst)
+        self.inner.next_actor_id.fetch_add(1, Ordering::SeqCst)
     }
 
     pub(in crate::actor) fn new_actor_dispatcher(&self) -> Dispatcher {
-        self.dispatcher.clone()
+        self.inner.dispatcher.clone()
     }
 
     pub(in crate::actor) fn new_actor_mailbox<Msg>(&self) -> Mailbox<Msg>
@@ -165,7 +150,7 @@ impl ActorSystemContext {
         Msg: 'static + Send,
     {
         let mailbox_logic: Box<MailboxLogic<Msg> + Send + Sync> =
-            match self.config.default_mailbox_logic.as_str() {
+            match self.inner.config.default_mailbox_logic.as_str() {
                 "crossbeam-seg-queue" => Box::new(CrossbeamSegQueueMailboxLogic::new()),
                 "crossbeam-channel" => Box::new(CrossbeamChannelMailboxLogic::new()),
                 "vecdeque" => Box::new(VecDequeMailboxLogic::new()),
@@ -177,54 +162,50 @@ impl ActorSystemContext {
         Mailbox::new_boxed(mailbox_logic)
     }
 
-    pub(in crate::actor) fn timer_ref(&self) -> Option<&ActorRef<TimerMsg>> {
-        self.timer_ref.as_ref()
+    pub(in crate::actor) fn tell_reaper_monitor(&self, msg: ReaperMsg) {
+        let _ = self.inner.sender.send(ActorSystemMsg::Forward(msg));
     }
 
-    pub(in crate::actor) fn watcher_ref(&self) -> Option<&ActorRef<ActorWatcherMessage>> {
-        self.watcher_ref.as_ref()
+    pub(in crate::actor) fn timer_ref(&self) -> Option<&ActorRef<TimerMsg>> {
+        self.inner.timer_ref.as_ref()
     }
+
+    pub fn done(&self) {
+        let _ = self.inner.sender.send(ActorSystemMsg::Done);
+    }
+}
+
+enum ActorSystemMsg {
+    Forward(ReaperMsg),
+    Done,
 }
 
 impl Clone for ActorSystemContext {
     fn clone(&self) -> Self {
         Self {
-            config: self.config.clone(),
-            dispatcher: self.dispatcher.clone(),
-            next_actor_id: self.next_actor_id.clone(),
-            sender: self.sender.clone(),
-            timer_ref: self.timer_ref.clone(),
-            io_coordinator_ref: self.io_coordinator_ref.clone(),
-            watcher_ref: self.watcher_ref.clone(),
+            inner: self.inner.clone(),
         }
     }
 }
 
-// @TODO signaled
-enum ActorSystemMsg {
-    Stop,
-    Done,
+struct ActorSystemContextInner {
+    config: ActorSystemConfig,
+    dispatcher: Dispatcher,
+    next_actor_id: AtomicUsize,
+    sender: channel::Sender<ActorSystemMsg>,
+    timer_ref: Option<ActorRef<TimerMsg>>,
+    io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
 }
 
 pub struct ActiveActorSystem {
     context: ActorSystemContext,
     receiver: channel::Receiver<ActorSystemMsg>,
-    sender: channel::Sender<ActorSystemMsg>,
 }
 
 impl ActiveActorSystem {
-    /// Process system messages, taking over the thread in the process.
-    ///
-    /// For most applications, this will be the final call in main.
-    ///
-    /// This will return once the actor system has stopped, which happens
-    /// after a request to stop has occurred, and all root actors
-    /// have terminated.
-    ///
-    /// If your application requires some special processing on main thread
-    /// (e.g. some graphics libraries), this should be called in its own
-    /// thread instead.
-    fn join(self, failed: &AtomicBool) {
+    fn join(self, failed: &AtomicBool, reaper_monitor_ref: &ActorRef<ReaperMsg>) {
+        let context = self.context.clone();
+
         #[allow(unused_mut)]
         let mut exit_code = 0;
 
@@ -232,7 +213,7 @@ impl ActiveActorSystem {
         use signal_hook::iterator::Signals;
 
         #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-        let signals = Signals::new(&self.context.config.posix_signals)
+        let signals = Signals::new(&self.context.config().posix_signals)
             .expect("pantomime bug: cannot setup POSIX signal handling");
 
         // this provides a mechanism to occasionally check for signals that
@@ -249,12 +230,10 @@ impl ActiveActorSystem {
         loop {
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             for signal in signals.pending() {
-                if let Some(ref watcher_ref) = self.context.watcher_ref() {
-                    watcher_ref.tell(ActorWatcherMessage::ReceivedPosixSignal(signal));
-                }
+                reaper_monitor_ref.tell(ReaperMsg::ReceivedPosixSignal(signal));
 
-                if self.context.config.posix_shutdown_signals.contains(&signal) {
-                    let _ = self.sender.send(ActorSystemMsg::Stop);
+                if context.config().posix_shutdown_signals.contains(&signal) {
+                    reaper_monitor_ref.tell(ReaperMsg::Stop);
                     exit_code = 128 + signal;
                 }
             }
@@ -264,31 +243,12 @@ impl ActiveActorSystem {
                     // nothing to do
                 }
 
-                Err(channel::RecvTimeoutError::Disconnected) => {
-                    break;
+                Ok(ActorSystemMsg::Forward(msg)) => {
+                    reaper_monitor_ref.tell(msg);
                 }
 
-                Ok(ActorSystemMsg::Stop) => {
-                    if let Some(ref watcher_ref) = self.context.watcher_ref() {
-                        let sender = self.sender.clone();
-
-                        watcher_ref.tell(ActorWatcherMessage::StopSystem(Box::new(move || {
-                            if let Err(e) = sender.send(ActorSystemMsg::Done) {
-                                // there's nothing to do here -- the receiver has been dropped
-                                // since the message was sent to the watcher
-
-                                drop(e);
-                            }
-                        })));
-                    } else {
-                        panic!(
-                            "pantomime bug: received stop request for actor without watcher_ref"
-                        );
-                    }
-                }
-
-                Ok(ActorSystemMsg::Done) => {
-                    // our watcher has indicated that all non-system actors have stopped,
+                Ok(ActorSystemMsg::Done) | Err(channel::RecvTimeoutError::Disconnected) => {
+                    // our reaper has indicated that all non-system actors have stopped
                     // so we're done. we have to stop the timer as it's a special case and
                     // has its own thread that it needs to stop. in general, if other
                     // "special" actors are added in the future, they should be stopped here
@@ -312,7 +272,7 @@ impl ActiveActorSystem {
 
         #[cfg(not(test))]
         let _ = {
-            if self.context.config.process_exit {
+            if self.context.config().process_exit {
                 ::std::process::exit(exit_code);
             }
 
@@ -328,6 +288,16 @@ impl ActiveActorSystem {
     }
 }
 
+pub(in crate::actor) enum ReaperMsg {
+    Stop,
+
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+    ReceivedPosixSignal(i32),
+
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+    WatchPosixSignals(SystemActorRef),
+}
+
 struct ReaperMonitor<M, A: Actor<M>>
 where
     M: 'static + Send,
@@ -335,6 +305,11 @@ where
 {
     actor: Option<A>,
     failed: Arc<AtomicBool>,
+    reaper_id: usize,
+
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+    posix_signals_watchers: HashMap<usize, SystemActorRef>,
+
     phantom: PhantomData<M>,
 }
 
@@ -347,19 +322,45 @@ where
         Self {
             actor: Some(actor),
             failed: failed.clone(),
+            reaper_id: 0,
+
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+            posix_signals_watchers: HashMap::new(),
+
             phantom: PhantomData,
         }
     }
 }
 
-impl<M, A: Actor<M>> Actor<()> for ReaperMonitor<M, A>
+impl<M, A: Actor<M>> Actor<ReaperMsg> for ReaperMonitor<M, A>
 where
     M: 'static + Send,
     A: 'static + Send,
 {
-    fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+    fn receive(&mut self, msg: ReaperMsg, ctx: &mut ActorContext<ReaperMsg>) {
+        match msg {
+            ReaperMsg::Stop => {
+                ctx.stop();
+            }
 
-    fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+            ReaperMsg::ReceivedPosixSignal(signal) => {
+                for watcher in self.posix_signals_watchers.values() {
+                    watcher.tell_system(SystemMsg::Signaled(Signal::PosixSignal(signal)));
+                }
+            }
+
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+            ReaperMsg::WatchPosixSignals(system_ref) => {
+                ctx.watch_system(&system_ref);
+
+                self.posix_signals_watchers
+                    .insert(system_ref.id(), system_ref);
+            }
+        }
+    }
+
+    fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<ReaperMsg>) {
         match signal {
             Signal::Started => {
                 let actor_ref = ctx.spawn(
@@ -368,16 +369,32 @@ where
                         .expect("pantomime bug: ReaperMonitor cannot get actor"),
                 );
 
+                self.reaper_id = actor_ref.id();
+
                 ctx.watch(&actor_ref);
             }
 
-            Signal::ActorStopped(_, StopReason::Failed) => {
-                self.failed.store(true, Ordering::Release);
-                ctx.system_context().stop();
+            Signal::ActorStopped(actor, StopReason::Failed) => {
+                let actor_id = actor.id();
+
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+                self.posix_signals_watchers.remove(&actor_id);
+
+                if actor_id == self.reaper_id {
+                    self.failed.store(true, Ordering::Release);
+                    ctx.system_context().done();
+                }
             }
 
-            Signal::ActorStopped(_, _) => {
-                ctx.system_context().stop();
+            Signal::ActorStopped(actor, _) => {
+                let actor_id = actor.id();
+
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+                self.posix_signals_watchers.remove(&actor_id);
+
+                if actor_id == self.reaper_id {
+                    ctx.system_context().done();
+                }
             }
 
             _ => {}
@@ -413,34 +430,16 @@ impl ActorSystem {
     where
         A: Actor<M>,
     {
-        let config = ActorSystemConfig::new(&self.config.take().unwrap_or_default())?;
-
-        let _ = self.validate_default_dispatcher_logic(&config);
-        let _ = self.validate_default_mailbox_logic(&config);
-
-        let mut system = self.start(config);
-
-        let failed = Arc::new(AtomicBool::new(false));
-
-        system.spawn(ReaperMonitor::new(actor, &failed));
-
-        system.join(&failed);
-
-        if failed.load(Ordering::Acquire) {
-            Err(Error::new(ErrorKind::Other, "TODO"))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn start(self, config: ActorSystemConfig) -> ActiveActorSystem {
         INITIALIZE_ONCE.call_once(|| {
             if let Some(log_err) = Self::setup_logger().err() {
                 panic!("pantomime bug: cannot initialize logger; {}", log_err);
             }
         });
 
-        let config = Arc::new(config);
+        let config = ActorSystemConfig::new(&self.config.take().unwrap_or_default())?;
+        let _ = self.validate_default_dispatcher_logic(&config);
+        let _ = self.validate_default_mailbox_logic(&config);
+        let failed = Arc::new(AtomicBool::new(false));
 
         let dispatcher_logic: Box<DispatcherLogic + Sync + Send> =
             match config.default_dispatcher_logic.as_ref() {
@@ -472,48 +471,51 @@ impl ActorSystem {
 
         let (sender, receiver) = channel::unbounded();
 
-        let internal_system_context = ActorSystemContext {
-            config: config.clone(),
-            dispatcher: dispatcher.clone(),
-            next_actor_id: Arc::new(AtomicUsize::new(1)),
-            sender: sender.clone(),
-            timer_ref: None,
-            io_coordinator_ref: None,
-            watcher_ref: None,
-        };
-
         let ticker_interval = time::Duration::from_millis(config.ticker_interval_ms);
 
-        let timer_ref = internal_system_context.spawn(Timer::new(ticker_interval));
-
-        let actor_watcher_ref = internal_system_context.spawn(ActorWatcher::new());
+        let internal_context = ActorSystemContext {
+            inner: Arc::new(ActorSystemContextInner {
+                config: config.clone(),
+                dispatcher: dispatcher.clone(),
+                next_actor_id: AtomicUsize::new(0),
+                sender: sender.clone(),
+                timer_ref: None,
+                io_coordinator_ref: None,
+            }),
+        };
 
         let poller = crate::io::Poller::new();
-
         let poll = poller.poll.clone();
-
-        let io_coordinator_ref = internal_system_context.spawn(IoCoordinator::new(poll));
+        let io_coordinator_ref = internal_context.spawn(IoCoordinator::new(poll));
+        let timer_ref = internal_context.spawn(Timer::new(ticker_interval));
 
         poller.run(&io_coordinator_ref);
 
         let context = ActorSystemContext {
-            config,
-            dispatcher,
-            next_actor_id: Arc::new(AtomicUsize::new(100)), // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
-            sender: sender.clone(),
-            timer_ref: Some(timer_ref.clone()),
-            io_coordinator_ref: Some(io_coordinator_ref),
-            watcher_ref: Some(actor_watcher_ref),
+            inner: Arc::new(ActorSystemContextInner {
+                config,
+                dispatcher,
+                next_actor_id: AtomicUsize::new(100), // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
+                sender,
+                timer_ref: Some(timer_ref),
+                io_coordinator_ref: Some(io_coordinator_ref),
+            }),
         };
 
-        if context.config.log_config_on_start {
-            info!("configuration: {:?}", context.config);
+        let reaper_monitor_ref = context.spawn(ReaperMonitor::new(actor, &failed));
+
+        if context.config().log_config_on_start {
+            info!("configuration: {:?}", context.config());
         }
 
-        ActiveActorSystem {
-            context,
-            receiver,
-            sender,
+        let system = ActiveActorSystem { context, receiver };
+
+        system.join(&failed, &reaper_monitor_ref);
+
+        if failed.load(Ordering::Acquire) {
+            Err(Error::new(ErrorKind::Other, "TODO"))
+        } else {
+            Ok(())
         }
     }
 
