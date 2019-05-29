@@ -119,6 +119,7 @@ impl ActorSystemContext {
                 pending_stop: None,
                 state: SpawnedActorState::Active,
                 system_context: self.clone(),
+                watching: HashMap::new(),
             },
             dispatcher,
             execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
