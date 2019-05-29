@@ -5,9 +5,6 @@ mod noop;
 mod segqueue;
 mod vecdeque;
 
-use crate::dispatcher::Thunk;
-use crate::util::Cancellable;
-
 pub use self::channel::CrossbeamChannelMailboxLogic;
 pub use self::noop::NoopMailboxLogic;
 pub use self::segqueue::CrossbeamSegQueueMailboxLogic;
@@ -30,10 +27,6 @@ impl<M> MailboxAppender<M> {
     pub fn append(&self, message: M) {
         self.logic.append(message);
     }
-
-    pub fn append_cancellable(&self, cancellable: Cancellable, message: M, thunk: Option<Thunk>) {
-        self.logic.append_cancellable(cancellable, message, thunk);
-    }
 }
 
 impl<M> Clone for MailboxAppender<M> {
@@ -52,16 +45,6 @@ pub trait MailboxAppenderLogic<M> {
     /// Calls to `Mailbox::retrieve` should then eventually return the
     /// message, as implementers see fit.
     fn append(&self, message: M);
-
-    /// Appends a special kind of cancellable message to the mailbox.
-    ///
-    /// Implementations must check the cancelled flag of the returned
-    /// `Cancellable`, and if it is true, drop the message instead of
-    /// returning it to the caller. If it is false, the provided thunk
-    /// must be called, and the message should be returned to the caller.
-    ///
-    /// In general, this is not what you want.
-    fn append_cancellable(&self, cancellable: Cancellable, message: M, thunk: Option<Thunk>);
 
     fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync>;
 }

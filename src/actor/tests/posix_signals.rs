@@ -23,7 +23,7 @@ impl Actor<()> for MyActor {
             Signal::Started => {
                 context.watch_posix_signals();
 
-                context.schedule_delivery("kill", Duration::from_millis(100), || ());
+                context.schedule_delivery("kill", Duration::from_millis(100), ());
             }
 
             Signal::PosixSignal(value) => {

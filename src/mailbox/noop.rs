@@ -1,6 +1,4 @@
 use super::{MailboxAppender, MailboxAppenderLogic, MailboxLogic};
-use crate::dispatcher::Thunk;
-use crate::util::Cancellable;
 use std::marker::PhantomData;
 
 /// An appender for `NoopMailbox` that drops any
@@ -17,8 +15,6 @@ impl<M> NoopMailboxAppenderLogic<M> {
 
 impl<M: Send + Sync + 'static> MailboxAppenderLogic<M> for NoopMailboxAppenderLogic<M> {
     fn append(&self, _message: M) {}
-
-    fn append_cancellable(&self, _cancellable: Cancellable, _message: M, _thunk: Option<Thunk>) {}
 
     fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
         Box::new(NoopMailboxAppenderLogic::new())

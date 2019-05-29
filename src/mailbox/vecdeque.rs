@@ -1,9 +1,6 @@
 use super::{MailboxAppender, MailboxAppenderLogic, MailboxLogic};
-use crate::dispatcher::Thunk;
-use crate::util::{Cancellable, MaybeCancelled};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// The appender for `VecDequeMailboxLogic`.
@@ -11,22 +8,12 @@ pub struct VecDequeMailboxAppenderLogic<M>
 where
     M: 'static + Send,
 {
-    queue: Arc<Mutex<VecDeque<MaybeCancelled<M>>>>,
+    queue: Arc<Mutex<VecDeque<M>>>,
 }
 
 impl<M: 'static + Send> MailboxAppenderLogic<M> for VecDequeMailboxAppenderLogic<M> {
     fn append(&self, message: M) {
-        self.queue
-            .lock()
-            .push_back(MaybeCancelled::new(message, None, None));
-    }
-
-    fn append_cancellable(&self, cancellable: Cancellable, message: M, handled: Option<Thunk>) {
-        self.queue.lock().push_back(MaybeCancelled::new(
-            message,
-            Some(cancellable.cancel),
-            handled,
-        ));
+        self.queue.lock().push_back(message);
     }
 
     fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
@@ -43,7 +30,7 @@ impl<M: 'static + Send> MailboxAppenderLogic<M> for VecDequeMailboxAppenderLogic
 /// for completeness. Some single threaded systems may
 /// find that the performance is fine for their workload.
 pub struct VecDequeMailboxLogic<M: 'static + Send> {
-    queue: Arc<Mutex<VecDeque<MaybeCancelled<M>>>>,
+    queue: Arc<Mutex<VecDeque<M>>>,
 }
 
 impl<M: 'static> VecDequeMailboxLogic<M>
@@ -74,29 +61,7 @@ where
     }
 
     fn retrieve(&mut self) -> Option<M> {
-        match self.queue.lock().pop_front() {
-            Some(msg) => match msg.cancelled {
-                None => {
-                    if let Some(thunk) = msg.handled {
-                        thunk.apply();
-                    }
-
-                    Some(msg.item)
-                }
-
-                Some(ref c) if c.load(Ordering::Acquire) => None,
-
-                Some(ref _c) => {
-                    if let Some(thunk) = msg.handled {
-                        thunk.apply();
-                    }
-
-                    Some(msg.item)
-                }
-            },
-
-            None => None,
-        }
+        self.queue.lock().pop_front()
     }
 }
 
