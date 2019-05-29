@@ -157,6 +157,8 @@ where
     pub(in crate::actor) state: SpawnedActorState,
 
     pub(in crate::actor) system_context: ActorSystemContext,
+
+    pub(in crate::actor) watching: HashMap<usize, Box<Fn(StopReason) -> Msg + 'static + Send>>,
 }
 
 impl<Msg> ActorContext<Msg>
@@ -329,8 +331,30 @@ where
         actor_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
     }
 
+    /// Watch the supplied actor. A function is provided that translates
+    /// a `StopReason` into a custom domain message.
+    pub fn watch_with<N, F: Fn(StopReason) -> Msg>(&mut self, actor_ref: &ActorRef<N>, msg: F)
+    where
+        N: 'static + Send,
+        F: 'static + Send,
+    {
+        self.watching.insert(actor_ref.id(), Box::new(msg));
+        self.watch(actor_ref);
+    }
+
     pub fn watch_system(&mut self, system_ref: &SystemActorRef) {
         system_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
+    }
+
+    pub fn watch_system_with<F: Fn(StopReason) -> Msg>(
+        &mut self,
+        system_ref: &SystemActorRef,
+        msg: F,
+    ) where
+        F: 'static + Send,
+    {
+        self.watching.insert(system_ref.id(), Box::new(msg));
+        self.watch_system(system_ref);
     }
 
     /// Register interest in receiving POSIX signals. When the process
@@ -402,6 +426,7 @@ where
                 pending_stop: None,
                 state: SpawnedActorState::Active,
                 system_context: self.system_context.clone(),
+                watching: HashMap::new(),
             },
             dispatcher,
             execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
@@ -465,6 +490,31 @@ where
         let actor_ref = self.spawn(actor);
 
         self.watch(&actor_ref);
+
+        actor_ref
+    }
+
+    /// Spawn the supplied actor as a child of this actor.
+    ///
+    /// A function must be provided that will receive a `StopReason`
+    /// and return a custom domain message.
+    ///
+    /// An `ActorRef` is returned that can be used to send the actor
+    /// messages.
+    pub fn spawn_watched_with<F: Fn(StopReason) -> Msg, AMsg, A: Actor<AMsg>>(
+        &mut self,
+        actor: A,
+        msg: F,
+    ) -> ActorRef<AMsg>
+    where
+        F: 'static + Send,
+        A: 'static + Send,
+        AMsg: 'static + Send,
+        Msg: 'static + Send,
+    {
+        let actor_ref = self.spawn_watched(actor);
+
+        self.watching.insert(actor_ref.id(), Box::new(msg));
 
         actor_ref
     }
@@ -867,6 +917,23 @@ where
                     }
 
                     _ => {}
+                }
+            }
+
+            (_, SystemMsg::Signaled(Signal::ActorStopped(actor_ref, reason))) => {
+                match self.context.watching.remove(&actor_ref.id()) {
+                    Some(ref msg) => {
+                        self.receive(msg(reason));
+                    }
+
+                    None => {
+                        self.reset_pending_stop();
+                        self.actor.receive_signal(
+                            Signal::ActorStopped(actor_ref, reason),
+                            &mut self.context,
+                        );
+                        self.check_pending_stop();
+                    }
                 }
             }
 
