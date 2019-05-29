@@ -1,8 +1,7 @@
-use crate::actor::system::ReaperMsg;
 use crate::actor::*;
-use crate::dispatcher::{Dispatcher, Thunk};
+use crate::dispatcher::Dispatcher;
 use crate::mailbox::Mailbox;
-use crate::util::{Cancellable, Deferred};
+use crate::util::Deferred;
 use crossbeam::atomic::AtomicCell;
 use downcast_rs::Downcast;
 use std::cell::RefCell;
@@ -14,12 +13,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::usize;
 
 pub enum SystemMsg {
     Stop(Option<FailureReason>),
     ChildStopped(usize),
     Signaled(Signal),
     Watch(SystemActorRef),
+    SendDelivery(String, usize),
 }
 
 pub enum Envelope<Msg>
@@ -134,13 +135,18 @@ where
     fn receive(&mut self, msg: Msg, context: &mut ActorContext<Msg>);
 }
 
+pub(in crate::actor) enum Delivery<Msg> {
+    Single(usize, Msg),
+    Periodic(usize, Duration, Box<FnMut() -> Msg + 'static + Send>),
+}
+
 pub struct ActorContext<Msg>
 where
     Msg: Send,
 {
     pub(in crate::actor) actor_ref: ActorRef<Msg>,
     pub(in crate::actor) children: HashMap<usize, SystemActorRef>,
-    pub(in crate::actor) deliveries: HashMap<String, Cancellable>,
+    pub(in crate::actor) deliveries: HashMap<String, Delivery<Msg>>,
     pub(in crate::actor) dispatcher: Dispatcher,
 
     // disagree with Clippy here - I care about the three states
@@ -176,9 +182,7 @@ where
     /// that the actor will not receive the message associated
     /// with the delivery.
     pub fn cancel_delivery<S: AsRef<str>>(&mut self, name: S) {
-        if let Some(c) = self.deliveries.remove(name.as_ref()) {
-            c.cancel();
-        }
+        self.deliveries.remove(name.as_ref());
     }
 
     /// Asynchronously fail this actor. No other messages will
@@ -206,37 +210,60 @@ where
     /// actor. A name is provided to identify it, allowing it
     /// to be later cancelled.
     ///
+    /// An initial timeout specifies how long to wait before
+    /// sending the first message, and the interval specifies
+    /// how long to wait before sending subsequent messages.
+    ///
     /// If a previous delivery with the same name was already
     /// scheduled, it is cancelled and guaranteed tha the
     /// actor will not receive it.
     pub fn schedule_periodic_delivery<F: Fn() -> Msg, S: AsRef<str>>(
         &mut self,
         name: S,
+        timeout: Duration,
         interval: Duration,
         msg: F,
     ) where
         F: 'static + Send + Sync,
     {
-        let cancellable = Cancellable::new();
+        let name = name.as_ref();
 
-        {
-            let cancellable = cancellable.clone();
+        let next_id = match self.deliveries.remove_entry(name) {
+            Some((name, Delivery::Single(id, _))) => {
+                let next_id = if id == usize::MAX { 0 } else { id + 1 };
 
-            Self::periodic_delivery(
-                self.system_context.clone(),
-                self.actor_ref.clone(),
-                msg,
-                interval,
-                cancellable,
-            );
-        }
+                self.deliveries
+                    .insert(name, Delivery::Periodic(next_id, interval, Box::new(msg)));
 
-        if let Some(c) = self
-            .deliveries
-            .insert(name.as_ref().to_owned(), cancellable)
-        {
-            c.cancel();
-        }
+                next_id
+            }
+
+            Some((name, Delivery::Periodic(id, _, _))) => {
+                let next_id = if id == usize::MAX { 0 } else { id + 1 };
+
+                self.deliveries
+                    .insert(name, Delivery::Periodic(next_id, interval, Box::new(msg)));
+
+                next_id
+            }
+
+            None => {
+                let name = name.to_owned();
+                let next_id = 0;
+
+                self.deliveries
+                    .insert(name, Delivery::Periodic(next_id, interval, Box::new(msg)));
+
+                next_id
+            }
+        };
+
+        let name = name.to_owned();
+        let actor_ref = self.actor_ref.clone();
+
+        self.system_context.schedule_thunk(timeout, move || {
+            actor_ref.tell_system(SystemMsg::SendDelivery(name, next_id));
+        });
     }
 
     /// Schedule a single delivery of a message to this actor. A
@@ -246,42 +273,42 @@ where
     /// If a previous delivery with the same name was already
     /// scheduled, it is cancelled and guaranteed tha the
     /// actor will not receive it.
-    pub fn schedule_delivery<F: Fn() -> Msg, S: AsRef<str>>(
-        &mut self,
-        name: S,
-        timeout: Duration,
-        msg: F,
-    ) where
-        F: 'static + Send + Sync,
-    {
-        let cancellable = Cancellable::new();
+    pub fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Msg) {
+        let name = name.as_ref();
 
-        {
-            let actor_ref = self.actor_ref().clone();
-            let cancellable = cancellable.clone();
+        let next_id = match self.deliveries.remove_entry(name) {
+            Some((name, Delivery::Single(id, _))) => {
+                let next_id = if id == usize::MAX { 0 } else { id + 1 };
 
-            self.system_context.schedule_thunk(timeout, move || {
-                // we explicitly cancel to ensure that our entry will be
-                // cleaned up, as cancelled entries are filtered out
-                // periodically
-                // @TODO make above reality
+                self.deliveries.insert(name, Delivery::Single(next_id, msg));
 
-                let delivered = {
-                    let cancellable = cancellable.clone();
+                next_id
+            }
 
-                    Box::new(move || cancellable.cancel())
-                };
+            Some((name, Delivery::Periodic(id, _, _))) => {
+                let next_id = if id == usize::MAX { 0 } else { id + 1 };
 
-                actor_ref.tell_cancellable(cancellable, msg(), Some(delivered));
-            });
-        }
+                self.deliveries.insert(name, Delivery::Single(next_id, msg));
 
-        if let Some(c) = self
-            .deliveries
-            .insert(name.as_ref().to_owned(), cancellable)
-        {
-            c.cancel();
-        }
+                next_id
+            }
+
+            None => {
+                let name = name.to_owned();
+                let next_id = 0;
+
+                self.deliveries.insert(name, Delivery::Single(next_id, msg));
+
+                next_id
+            }
+        };
+
+        let name = name.to_owned();
+        let actor_ref = self.actor_ref.clone();
+
+        self.system_context.schedule_thunk(timeout, move || {
+            actor_ref.tell_system(SystemMsg::SendDelivery(name, next_id));
+        });
     }
 
     /// Schedule the execution of a function. After the supplied timeout
@@ -318,7 +345,9 @@ where
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     pub fn watch_posix_signals(&mut self) {
         self.system_context
-            .tell_reaper_monitor(ReaperMsg::WatchPosixSignals(self.actor_ref().system_ref()));
+            .tell_reaper_monitor(system::ReaperMsg::WatchPosixSignals(
+                self.actor_ref().system_ref(),
+            ));
     }
 
     /// Register interest in receiving POSIX signals. When the process
@@ -443,47 +472,6 @@ where
     pub(crate) fn system_context(&self) -> &ActorSystemContext {
         &self.system_context
     }
-
-    fn periodic_delivery<F: Fn() -> Msg>(
-        context: ActorSystemContext,
-        actor_ref: ActorRef<Msg>,
-        msg: F,
-        interval: Duration,
-        cancellable: Cancellable,
-    ) where
-        F: 'static + Send + Sync,
-    {
-        let next_context = context.clone();
-
-        context.schedule_thunk(interval, move || {
-            let m = msg();
-
-            let delivered = {
-                let actor_ref = actor_ref.clone();
-                let cancellable = cancellable.clone();
-
-                Box::new(move || {
-                    if !cancellable.cancelled() {
-                        // we'll schedule the delivery, but note that thta doesn't
-                        // mean the actor will necessarily receive it, as it could
-                        // be cancelled. to offer the guarantees of this, the mailbox
-                        // itself provides the ability to cancel the delivery of
-                        // messages
-
-                        Self::periodic_delivery(
-                            next_context,
-                            actor_ref,
-                            msg,
-                            interval,
-                            cancellable,
-                        );
-                    }
-                })
-            };
-
-            actor_ref.tell_cancellable(cancellable, m, Some(delivered));
-        });
-    }
 }
 
 pub struct SystemActorRef {
@@ -600,15 +588,6 @@ where
     /// already.
     pub fn tell(&self, msg: Msg) {
         self.inner.tell(msg);
-    }
-
-    pub(in crate::actor) fn tell_cancellable(
-        &self,
-        cancellable: Cancellable,
-        msg: Msg,
-        thunk: Option<Thunk>,
-    ) {
-        self.inner.tell_cancellable(cancellable, msg, thunk);
     }
 
     /// Asynchronously fail this actor. Other messages that
@@ -861,6 +840,34 @@ where
 
             (_, SystemMsg::Watch(watcher)) => {
                 self.watchers.push(watcher);
+            }
+
+            (_, SystemMsg::SendDelivery(name, id)) => {
+                match self.context.deliveries.get_mut(&name) {
+                    Some(Delivery::Single(i, _)) if *i == id => {
+                        if let Some(Delivery::Single(_, msg)) =
+                            self.context.deliveries.remove(&name)
+                        {
+                            self.receive(msg);
+                        } else {
+                            panic!("pantomime bug: inconceivable delivery pattern match failure");
+                        }
+                    }
+
+                    Some(Delivery::Periodic(i, interval, ref mut msg)) if *i == id => {
+                        let msg = msg();
+                        let actor_ref = self.context.actor_ref.clone();
+                        let interval = *interval;
+
+                        self.context.schedule_thunk(interval, move || {
+                            actor_ref.tell_system(SystemMsg::SendDelivery(name, id));
+                        });
+
+                        self.receive(msg);
+                    }
+
+                    _ => {}
+                }
             }
 
             (_, SystemMsg::Signaled(signal)) => {
@@ -1120,8 +1127,6 @@ where
     Msg: Send,
 {
     fn tell(&self, msg: Msg);
-
-    fn tell_cancellable(&self, cancellable: Cancellable, msg: Msg, thunk: Option<Thunk>);
 }
 
 pub(in crate::actor) trait SystemActorRefInner: Downcast {
@@ -1238,12 +1243,6 @@ where
         self.mailbox_appender.append(Envelope::Msg(msg));
         self.messaged();
     }
-
-    fn tell_cancellable(&self, cancellable: Cancellable, msg: Msg, thunk: Option<Thunk>) {
-        self.mailbox_appender
-            .append_cancellable(cancellable, Envelope::Msg(msg), thunk);
-        self.messaged();
-    }
 }
 
 struct StackedActorRefCell<NewMsg, Msg>
@@ -1292,11 +1291,6 @@ where
     fn tell(&self, msg: NewMsg) {
         self.inner.tell((self.converter)(msg));
     }
-
-    fn tell_cancellable(&self, cancellable: Cancellable, msg: NewMsg, thunk: Option<Thunk>) {
-        self.inner
-            .tell_cancellable(cancellable, (self.converter)(msg), thunk);
-    }
 }
 
 struct EmptyActorRefCell;
@@ -1306,8 +1300,6 @@ where
     Msg: 'static + Send,
 {
     fn tell(&self, _: Msg) {}
-
-    fn tell_cancellable(&self, _: Cancellable, _: Msg, _: Option<Thunk>) {}
 }
 
 impl SystemActorRefInner for EmptyActorRefCell {

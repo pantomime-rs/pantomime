@@ -1,16 +1,13 @@
 use super::{MailboxAppender, MailboxAppenderLogic, MailboxLogic};
-use crate::dispatcher::Thunk;
-use crate::util::{Cancellable, MaybeCancelled};
-use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
-use std::sync::atomic::Ordering;
+use crossbeam::channel::{unbounded, Receiver, Sender};
 
 pub struct CrossbeamChannelMailboxAppenderLogic<M> {
-    sender: Sender<MaybeCancelled<M>>,
+    sender: Sender<M>,
 }
 
 pub struct CrossbeamChannelMailboxLogic<M> {
-    sender: Sender<MaybeCancelled<M>>,
-    receiver: Receiver<MaybeCancelled<M>>,
+    sender: Sender<M>,
+    receiver: Receiver<M>,
 }
 
 impl<M> CrossbeamChannelMailboxLogic<M>
@@ -51,17 +48,7 @@ impl<M: 'static + Send> Default for CrossbeamChannelMailboxLogic<M> {
 
 impl<M: 'static + Send> MailboxAppenderLogic<M> for CrossbeamChannelMailboxAppenderLogic<M> {
     fn append(&self, message: M) {
-        if let Err(_e) = self.sender.send(MaybeCancelled::new(message, None, None)) {
-            // @TODO this is normal -- appender still exists, but receiver dropped
-        }
-    }
-
-    fn append_cancellable(&self, cancellable: Cancellable, message: M, thunk: Option<Thunk>) {
-        if let Err(_e) = self.sender.send(MaybeCancelled::new(
-            message,
-            Some(cancellable.cancel),
-            thunk,
-        )) {
+        if let Err(_e) = self.sender.send(message) {
             // @TODO this is normal -- appender still exists, but receiver dropped
         }
     }
@@ -83,31 +70,7 @@ impl<M: 'static + Send> MailboxLogic<M> for CrossbeamChannelMailboxLogic<M> {
     }
 
     fn retrieve(&mut self) -> Option<M> {
-        match self.receiver.try_recv() {
-            Ok(msg) => match msg.cancelled {
-                None => {
-                    if let Some(thunk) = msg.handled {
-                        thunk.apply();
-                    }
-
-                    Some(msg.item)
-                }
-
-                Some(ref c) if c.load(Ordering::Acquire) => None,
-
-                Some(_) => {
-                    if let Some(thunk) = msg.handled {
-                        thunk.apply();
-                    }
-
-                    Some(msg.item)
-                }
-            },
-
-            Err(TryRecvError::Empty) => None,
-
-            Err(TryRecvError::Disconnected) => None,
-        }
+        self.receiver.try_recv().ok()
     }
 }
 

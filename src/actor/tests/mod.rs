@@ -1,4 +1,5 @@
 mod convert;
+mod delivery;
 mod drain;
 mod fail;
 mod failure_policy;

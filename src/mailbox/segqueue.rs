@@ -1,26 +1,15 @@
 use super::{MailboxAppender, MailboxAppenderLogic, MailboxLogic};
-use crate::dispatcher::Thunk;
-use crate::util::{Cancellable, MaybeCancelled};
 use crossbeam::queue::SegQueue;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 pub struct CrossbeamSegQueueMailboxAppenderLogic<M> {
-    queue: Arc<SegQueue<MaybeCancelled<M>>>,
+    queue: Arc<SegQueue<M>>,
 }
 
 impl<M: 'static + Send> MailboxAppenderLogic<M> for CrossbeamSegQueueMailboxAppenderLogic<M> {
     #[inline(always)]
     fn append(&self, message: M) {
-        self.queue.push(MaybeCancelled::new(message, None, None));
-    }
-
-    fn append_cancellable(&self, cancellable: Cancellable, message: M, handled: Option<Thunk>) {
-        self.queue.push(MaybeCancelled::new(
-            message,
-            Some(cancellable.cancel),
-            handled,
-        ));
+        self.queue.push(message);
     }
 
     fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
@@ -31,7 +20,7 @@ impl<M: 'static + Send> MailboxAppenderLogic<M> for CrossbeamSegQueueMailboxAppe
 }
 
 pub struct CrossbeamSegQueueMailboxLogic<M: 'static + Send> {
-    queue: Arc<SegQueue<MaybeCancelled<M>>>,
+    queue: Arc<SegQueue<M>>,
 }
 
 impl<M: 'static> CrossbeamSegQueueMailboxLogic<M>
@@ -59,29 +48,7 @@ impl<M: 'static + Send> MailboxLogic<M> for CrossbeamSegQueueMailboxLogic<M> {
     }
 
     fn retrieve(&mut self) -> Option<M> {
-        match self.queue.pop() {
-            Ok(msg) => match msg.cancelled {
-                None => {
-                    if let Some(thunk) = msg.handled {
-                        thunk.apply();
-                    }
-
-                    Some(msg.item)
-                }
-
-                Some(ref c) if c.load(Ordering::Acquire) => None,
-
-                Some(ref _c) => {
-                    if let Some(thunk) = msg.handled {
-                        thunk.apply();
-                    }
-
-                    Some(msg.item)
-                }
-            },
-
-            Err(_) => None,
-        }
+        self.queue.pop().ok()
     }
 }
 
