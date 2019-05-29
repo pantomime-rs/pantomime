@@ -1,8 +1,7 @@
 use crate::actor::*;
-use crate::io::*;
 use crate::stream::detached::*;
 use crate::stream::*;
-use ext_mio::{net::*, Poll, PollOpt, Ready, Token};
+use mio::{net::*, Poll, PollOpt, Ready, Token};
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::sync::Arc;
@@ -63,14 +62,9 @@ impl DetachedLogic<(), Payload, TcpSourceMsg> for TcpSource {
         ctx: &StreamContext,
         actor_ref: &ActorRef<AsyncAction<Payload, TcpSourceMsg>>,
     ) -> Option<AsyncAction<Payload, TcpSourceMsg>> {
-        let io_coordinator_ref = ctx
-            .system_context()
-            .io_coordinator_ref()
-            .expect("pantomime bug: IoCoordinator not present");
-
-        io_coordinator_ref.tell(IoCoordinatorMsg::Subscribe(
+        ctx.system_context().subscribe(
             actor_ref.convert(|s| AsyncAction::Forward(TcpSourceMsg::SubscriptionEvent(s))),
-        ));
+        );
 
         self.actor_ref = actor_ref.clone();
 
@@ -186,14 +180,9 @@ impl DetachedLogic<Payload, (), TcpSinkMsg> for TcpSink {
         ctx: &StreamContext,
         actor_ref: &ActorRef<AsyncAction<(), TcpSinkMsg>>,
     ) -> Option<AsyncAction<(), TcpSinkMsg>> {
-        let io_coordinator_ref = ctx
-            .system_context()
-            .io_coordinator_ref()
-            .expect("pantomime bug: IoCoordinator not present");
-
-        io_coordinator_ref.tell(IoCoordinatorMsg::Subscribe(
+        ctx.system_context().subscribe(
             actor_ref.convert(|s| AsyncAction::Forward(TcpSinkMsg::SubscriptionEvent(s))),
-        ));
+        );
 
         self.actor_ref = actor_ref.clone();
 

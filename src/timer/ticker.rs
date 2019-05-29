@@ -28,10 +28,8 @@ impl ActiveTicker {
         }
     }
 
-    pub(crate) fn stop(self) {
-        if let Some(e) = self.sender.send(TickerEvent::Stop).err() {
-            error!("failed to stop ticker: {}", e)
-        }
+    pub(crate) fn stop(&self) {
+        let _ = self.sender.send(TickerEvent::Stop);
     }
 }
 

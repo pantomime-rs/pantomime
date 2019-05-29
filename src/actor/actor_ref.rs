@@ -2,7 +2,6 @@ use crate::actor::system::ReaperMsg;
 use crate::actor::*;
 use crate::dispatcher::{Dispatcher, Thunk};
 use crate::mailbox::Mailbox;
-use crate::timer::{TimerMsg, TimerThunk};
 use crate::util::{Cancellable, Deferred};
 use crossbeam::atomic::AtomicCell;
 use downcast_rs::Downcast;
@@ -291,14 +290,7 @@ where
     where
         F: 'static + Send + Sync, // @TODO why sync
     {
-        if let Some(ref timer_ref) = self.system_context.timer_ref() {
-            timer_ref.tell(TimerMsg::Schedule {
-                after: timeout,
-                thunk: TimerThunk::new(Box::new(f)),
-            });
-        } else {
-            panic!("pantomime bug: schedule_thunk called on internal context");
-        }
+        self.system_context.schedule_thunk(timeout, f);
     }
 
     /// Watch the supplied actor. When it stops or fails, this actor

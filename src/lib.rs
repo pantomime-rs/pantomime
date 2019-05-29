@@ -9,6 +9,7 @@ extern crate atty;
 extern crate chrono;
 extern crate crossbeam;
 extern crate fern;
+extern crate mio;
 extern crate parking_lot;
 extern crate rand;
 
@@ -20,9 +21,6 @@ extern crate log;
 
 #[cfg(feature = "futures-support")]
 extern crate futures;
-
-#[cfg(feature = "mio-support")]
-extern crate mio as ext_mio;
 
 #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
 extern crate signal_hook_shim as signal_hook;
