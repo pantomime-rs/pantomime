@@ -2,21 +2,36 @@ use super::*;
 use crate::dispatcher::{
     Dispatcher, DispatcherLogic, SingleThreadedDispatcher, WorkStealingDispatcher,
 };
-use crate::io::{IoCoordinator, IoCoordinatorMsg};
 use crate::mailbox::{
     CrossbeamChannelMailboxLogic, CrossbeamSegQueueMailboxLogic, VecDequeMailboxLogic,
 };
+use crate::timer::{Ticker, TimerThunk};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel;
 use fern::colors::{Color, ColoredLevelConfig};
+use mio::{Event, Events, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
-use std::{cmp, time, usize};
+use std::{cmp, thread, time, usize};
+
+#[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+use signal_hook::iterator::Signals;
 
 static INITIALIZE_ONCE: Once = Once::new();
+
+const MIO_TOKENS_RESERVED: usize = 100;
+const MIO_TOKEN_SENDER: usize = 1;
+
+#[cfg(feature = "posix-signals-support")]
+const MIO_TOKEN_POSIX_SIGNALS: usize = 2;
+
+pub(crate) enum SubscriptionEvent {
+    Ready(Arc<Poll>, usize),
+    MioEvent(Event),
+}
 
 /// The top level type that contains references for running actors.
 ///
@@ -58,18 +73,15 @@ impl ActorSystemContext {
     where
         F: 'static + Send + Sync, // @TODO why Sync?
     {
-        if let Some(ref timer_ref) = self.inner.timer_ref {
-            timer_ref.tell(TimerMsg::Schedule {
-                after: timeout,
-                thunk: TimerThunk::new(Box::new(f)),
-            });
-        } else {
-            panic!("pantomime bug: schedule_thunk called on internal context");
-        }
-    }
+        match self.inner.ticker {
+            Some(ref ticker) => {
+                ticker.schedule(timeout, TimerThunk::new(Box::new(f)));
+            }
 
-    pub(crate) fn io_coordinator_ref(&self) -> Option<&ActorRef<IoCoordinatorMsg>> {
-        self.inner.io_coordinator_ref.as_ref()
+            None => {
+                panic!("pantomime bug: no ticker");
+            }
+        }
     }
 
     pub(crate) fn spawn<M, A: Actor<M>>(&self, actor: A) -> ActorRef<M>
@@ -137,6 +149,10 @@ impl ActorSystemContext {
         actor_ref
     }
 
+    pub(crate) fn subscribe(&self, actor_ref: ActorRef<SubscriptionEvent>) {
+        self.send(ActorSystemMsg::Subscribe(actor_ref));
+    }
+
     pub(in crate::actor) fn new_actor_id(&self) -> usize {
         self.inner.next_actor_id.fetch_add(1, Ordering::SeqCst)
     }
@@ -163,21 +179,29 @@ impl ActorSystemContext {
     }
 
     pub(in crate::actor) fn tell_reaper_monitor(&self, msg: ReaperMsg) {
-        let _ = self.inner.sender.send(ActorSystemMsg::Forward(msg));
+        self.send(ActorSystemMsg::Forward(msg));
     }
 
-    pub(in crate::actor) fn timer_ref(&self) -> Option<&ActorRef<TimerMsg>> {
-        self.inner.timer_ref.as_ref()
+    fn done(&self) {
+        self.send(ActorSystemMsg::Done);
     }
 
-    pub fn done(&self) {
-        let _ = self.inner.sender.send(ActorSystemMsg::Done);
+    fn send(&self, msg: ActorSystemMsg) {
+        let _ = self.inner.sender.send(msg);
+
+        let _ = self
+            .inner
+            .sender_readiness
+            .as_ref()
+            .expect("pantomime bug: no sender_readiness")
+            .set_readiness(Ready::readable());
     }
 }
 
 enum ActorSystemMsg {
     Forward(ReaperMsg),
     Done,
+    Subscribe(ActorRef<SubscriptionEvent>),
 }
 
 impl Clone for ActorSystemContext {
@@ -193,8 +217,8 @@ struct ActorSystemContextInner {
     dispatcher: Dispatcher,
     next_actor_id: AtomicUsize,
     sender: channel::Sender<ActorSystemMsg>,
-    timer_ref: Option<ActorRef<TimerMsg>>,
-    io_coordinator_ref: Option<ActorRef<IoCoordinatorMsg>>,
+    sender_readiness: Option<SetReadiness>,
+    ticker: Option<ActiveTicker>,
 }
 
 pub struct ActiveActorSystem {
@@ -203,66 +227,140 @@ pub struct ActiveActorSystem {
 }
 
 impl ActiveActorSystem {
-    fn join(self, failed: &AtomicBool, reaper_monitor_ref: &ActorRef<ReaperMsg>) {
-        let context = self.context.clone();
+    pub fn spawn<M: 'static + Send, A: 'static + Send>(&mut self, actor: A) -> ActorRef<M>
+    where
+        A: Actor<M>,
+    {
+        self.context.spawn(actor)
+    }
 
+    fn join(
+        self,
+        failed: &AtomicBool,
+        reaper_monitor_ref: &ActorRef<ReaperMsg>,
+        sender_registration: Registration,
+    ) {
         #[allow(unused_mut)]
         let mut exit_code = 0;
 
-        #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-        use signal_hook::iterator::Signals;
+        let poll = Arc::new(Poll::new().expect("pantomime bug: cannot create Poll"));
 
         #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
         let signals = Signals::new(&self.context.config().posix_signals)
             .expect("pantomime bug: cannot setup POSIX signal handling");
 
-        // this provides a mechanism to occasionally check for signals that
-        // have arrived (if posix signal support is enabled). alternatively,
-        // an extra thread could be spawned, but that doesn't seem worth it
-        // at the moment
-        //
-        // it's not currently configurable as there shouldn't really be
-        // a desire to do so. if lower resolution latency is required,
-        // please open an issue explaining the use-case
+        #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+        poll.register(
+            &signals,
+            Token(MIO_TOKEN_POSIX_SIGNALS),
+            Ready::readable(),
+            PollOpt::level(),
+        )
+        .expect("pantomime bug: cannot setup register POSIX signal handling with mio");
 
-        let time_duration = time::Duration::from_millis(100);
+        let mut subscribers = HashMap::<usize, ActorRef<SubscriptionEvent>>::new();
+        let mut last_token_id = MIO_TOKENS_RESERVED;
+        let mut events = Events::with_capacity(self.context.config().mio_event_capacity);
 
-        loop {
-            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-            for signal in signals.pending() {
-                reaper_monitor_ref.tell(ReaperMsg::ReceivedPosixSignal(signal));
+        poll.register(
+            &sender_registration,
+            Token(MIO_TOKEN_SENDER),
+            Ready::readable(),
+            PollOpt::level(),
+        )
+        .expect("pantomime bug: Poll::register failed");
 
-                if context.config().posix_shutdown_signals.contains(&signal) {
-                    reaper_monitor_ref.tell(ReaperMsg::Stop);
-                    exit_code = 128 + signal;
+        let mut done = false;
+
+        while !done {
+            if poll.poll_interruptible(&mut events, None).is_err() {
+                thread::sleep(time::Duration::from_millis(
+                    self.context.config().mio_poll_error_delay_ms,
+                ));
+            }
+
+            for event in &events {
+                let token = event.token().0;
+
+                if let Some(subscriber) = subscribers.get(&token) {
+                    subscriber.tell(SubscriptionEvent::MioEvent(event));
+                } else if token == MIO_TOKEN_SENDER {
+                    let _ = self
+                        .context
+                        .inner
+                        .sender_readiness
+                        .as_ref()
+                        .expect("pantomime bug: no sender_readiness")
+                        .set_readiness(Ready::empty());
                 }
             }
 
-            match self.receiver.recv_timeout(time_duration) {
-                Err(channel::RecvTimeoutError::Timeout) => {
-                    // nothing to do
+            #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+            {
+                for signal in signals.pending() {
+                    reaper_monitor_ref.tell(ReaperMsg::ReceivedPosixSignal(signal));
+
+                    if self
+                        .context
+                        .config()
+                        .posix_shutdown_signals
+                        .contains(&signal)
+                    {
+                        reaper_monitor_ref.tell(ReaperMsg::Stop);
+                        exit_code = 128 + signal;
+                    }
                 }
+            }
 
-                Ok(ActorSystemMsg::Forward(msg)) => {
-                    reaper_monitor_ref.tell(msg);
-                }
-
-                Ok(ActorSystemMsg::Done) | Err(channel::RecvTimeoutError::Disconnected) => {
-                    // our reaper has indicated that all non-system actors have stopped
-                    // so we're done. we have to stop the timer as it's a special case and
-                    // has its own thread that it needs to stop. in general, if other
-                    // "special" actors are added in the future, they should be stopped here
-                    // too. stopping is on a best-effort basis but should usually succeed
-
-                    if let Some(ref timer_ref) = self.context.timer_ref() {
-                        timer_ref.tell(TimerMsg::Stop);
+            loop {
+                match self.receiver.try_recv() {
+                    Err(channel::TryRecvError::Empty) => {
+                        // nothing to do
+                        break;
                     }
 
-                    if failed.load(Ordering::Acquire) && exit_code == 0 {
-                        exit_code = 1;
+                    Ok(ActorSystemMsg::Subscribe(subscriber)) => {
+                        match Self::next_token_id(&subscribers, last_token_id) {
+                            Some(next_token_id) => {
+                                // @TODO need to have unsubscribe as well
+
+                                subscriber
+                                    .tell(SubscriptionEvent::Ready(poll.clone(), next_token_id));
+
+                                subscribers.insert(next_token_id, subscriber);
+
+                                last_token_id = next_token_id;
+                            }
+
+                            None => {
+                                panic!("pantomime bug: reached maximum tokens");
+                            }
+                        }
                     }
 
-                    break;
+                    Ok(ActorSystemMsg::Forward(msg)) => {
+                        reaper_monitor_ref.tell(msg);
+                    }
+
+                    Ok(ActorSystemMsg::Done) | Err(channel::TryRecvError::Disconnected) => {
+                        // our reaper has indicated that all non-system actors have stopped
+                        // so we're done. we have to stop the timer as it's a special case and
+                        // has its own thread that it needs to stop. in general, if other
+                        // "special" actors are added in the future, they should be stopped here
+                        // too. stopping is on a best-effort basis but should usually succeed
+
+                        if let Some(ref ticker) = self.context.inner.ticker {
+                            ticker.stop();
+                        }
+
+                        if failed.load(Ordering::Acquire) && exit_code == 0 {
+                            exit_code = 1;
+                        }
+
+                        done = true;
+
+                        break;
+                    }
                 }
             }
         }
@@ -280,11 +378,29 @@ impl ActiveActorSystem {
         };
     }
 
-    pub fn spawn<M: 'static + Send, A: 'static + Send>(&mut self, actor: A) -> ActorRef<M>
-    where
-        A: Actor<M>,
-    {
-        self.context.spawn(actor)
+    fn next_token_id(
+        subscribers: &HashMap<usize, ActorRef<SubscriptionEvent>>,
+        last_token_id: usize,
+    ) -> Option<usize> {
+        let mut last = last_token_id;
+
+        loop {
+            // MAX is reserved per mio docs
+
+            let next = if last == usize::MAX - 1 {
+                MIO_TOKENS_RESERVED + 1
+            } else {
+                last + 1
+            };
+
+            if !subscribers.contains_key(&next) {
+                return Some(next);
+            } else if next == last_token_id {
+                return None;
+            } else {
+                last = next;
+            }
+        }
     }
 }
 
@@ -471,25 +587,11 @@ impl ActorSystem {
 
         let (sender, receiver) = channel::unbounded();
 
-        let ticker_interval = time::Duration::from_millis(config.ticker_interval_ms);
+        let (sender_registration, sender_readiness) = Registration::new2();
 
-        let internal_context = ActorSystemContext {
-            inner: Arc::new(ActorSystemContextInner {
-                config: config.clone(),
-                dispatcher: dispatcher.clone(),
-                next_actor_id: AtomicUsize::new(0),
-                sender: sender.clone(),
-                timer_ref: None,
-                io_coordinator_ref: None,
-            }),
-        };
-
-        let poller = crate::io::Poller::new();
-        let poll = poller.poll.clone();
-        let io_coordinator_ref = internal_context.spawn(IoCoordinator::new(poll));
-        let timer_ref = internal_context.spawn(Timer::new(ticker_interval));
-
-        poller.run(&io_coordinator_ref);
+        let ticker = Ticker::new(time::Duration::from_millis(config.ticker_interval_ms))
+            .with_dispatcher(&dispatcher)
+            .run();
 
         let context = ActorSystemContext {
             inner: Arc::new(ActorSystemContextInner {
@@ -497,8 +599,8 @@ impl ActorSystem {
                 dispatcher,
                 next_actor_id: AtomicUsize::new(100), // we reserve < 100 as an internal id, i.e. special. in practice, we currently only need 2
                 sender,
-                timer_ref: Some(timer_ref),
-                io_coordinator_ref: Some(io_coordinator_ref),
+                sender_readiness: Some(sender_readiness),
+                ticker: Some(ticker),
             }),
         };
 
@@ -510,7 +612,7 @@ impl ActorSystem {
 
         let system = ActiveActorSystem { context, receiver };
 
-        system.join(&failed, &reaper_monitor_ref);
+        system.join(&failed, &reaper_monitor_ref, sender_registration);
 
         if failed.load(Ordering::Acquire) {
             Err(Error::new(ErrorKind::Other, "TODO"))

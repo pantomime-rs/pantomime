@@ -1,8 +1,7 @@
 use crate::actor::*;
-use crate::io::*;
 use crate::stream::detached::*;
 use crate::stream::*;
-use ext_mio::{net::UdpSocket, Poll, PollOpt, Ready, Token};
+use mio::{net::UdpSocket, Poll, PollOpt, Ready, Token};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::usize;
@@ -64,14 +63,9 @@ impl DetachedLogic<(), Datagram, UdpSourceMsg> for UdpSource {
         ctx: &StreamContext,
         actor_ref: &ActorRef<AsyncAction<Datagram, UdpSourceMsg>>,
     ) -> Option<AsyncAction<Datagram, UdpSourceMsg>> {
-        let io_coordinator_ref = ctx
-            .system_context()
-            .io_coordinator_ref()
-            .expect("pantomime bug: IoCoordinator not present");
-
-        io_coordinator_ref.tell(IoCoordinatorMsg::Subscribe(
+        ctx.system_context().subscribe(
             actor_ref.convert(|s| AsyncAction::Forward(UdpSourceMsg::SubscriptionEvent(s))),
-        ));
+        );
 
         self.actor_ref = actor_ref.clone();
 
@@ -186,14 +180,9 @@ impl DetachedLogic<Datagram, (), UdpSinkMsg> for UdpSink {
         ctx: &StreamContext,
         actor_ref: &ActorRef<AsyncAction<(), UdpSinkMsg>>,
     ) -> Option<AsyncAction<(), UdpSinkMsg>> {
-        let io_coordinator_ref = ctx
-            .system_context()
-            .io_coordinator_ref()
-            .expect("pantomime bug: IoCoordinator not present");
-
-        io_coordinator_ref.tell(IoCoordinatorMsg::Subscribe(
+        ctx.system_context().subscribe(
             actor_ref.convert(|s| AsyncAction::Forward(UdpSinkMsg::SubscriptionEvent(s))),
-        ));
+        );
 
         self.actor_ref = actor_ref.clone();
 
