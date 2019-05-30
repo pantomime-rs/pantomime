@@ -154,6 +154,10 @@ impl ActorSystemContext {
         self.send(ActorSystemMsg::Subscribe(actor_ref));
     }
 
+    pub(crate) fn unsubscribe(&self, token: usize) {
+        self.send(ActorSystemMsg::Unsubscribe(token));
+    }
+
     pub(in crate::actor) fn new_actor_id(&self) -> usize {
         self.inner.next_actor_id.fetch_add(1, Ordering::SeqCst)
     }
@@ -204,6 +208,7 @@ enum ActorSystemMsg {
     Forward(ReaperMsg),
     Done,
     Subscribe(ActorRef<SubscriptionEvent>),
+    Unsubscribe(usize),
 }
 
 impl Clone for ActorSystemContext {
@@ -324,8 +329,6 @@ impl ActiveActorSystem {
                     Ok(ActorSystemMsg::Subscribe(subscriber)) => {
                         match Self::next_token_id(&subscribers, last_token_id) {
                             Some(next_token_id) => {
-                                // @TODO need to have unsubscribe as well
-
                                 subscriber
                                     .tell(SubscriptionEvent::Ready(poll.clone(), next_token_id));
 
@@ -338,6 +341,10 @@ impl ActiveActorSystem {
                                 panic!("pantomime bug: reached maximum tokens");
                             }
                         }
+                    }
+
+                    Ok(ActorSystemMsg::Unsubscribe(token_id)) => {
+                        subscribers.remove(&token_id);
                     }
 
                     Ok(ActorSystemMsg::Forward(msg)) => {

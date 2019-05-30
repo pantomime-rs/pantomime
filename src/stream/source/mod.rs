@@ -1,6 +1,7 @@
 //! MIO support offers TCP/UDP support for actors.
 
 //pub mod idle;
+pub mod detached_logic;
 pub mod iter;
 
 pub(crate) mod io_manager;

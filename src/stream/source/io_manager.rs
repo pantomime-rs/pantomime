@@ -5,6 +5,10 @@ use mio::{net::UdpSocket, Poll, PollOpt, Ready, Token};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::usize;
+use crate::dispatcher::Trampoline;
+use crate::stream::oxidized::{Consumer, Producer};
+use crate::stream::flow::detached::{Detached, AsyncAction, DetachedLogic};
+use crate::stream::sink::Sinks;
 
 #[derive(Debug)]
 pub struct Datagram {
@@ -14,6 +18,7 @@ pub struct Datagram {
 
 struct UdpSource {
     actor_ref: ActorRef<AsyncAction<Datagram, UdpSourceMsg>>,
+    system_context: Option<ActorSystemContext>,
     buffer: Vec<u8>,
     ready: bool,
     socket: UdpSocket,
@@ -68,6 +73,7 @@ impl DetachedLogic<(), Datagram, UdpSourceMsg> for UdpSource {
         );
 
         self.actor_ref = actor_ref.clone();
+        self.system_context = Some(ctx.system_context.clone());
 
         None
     }
@@ -87,7 +93,7 @@ impl DetachedLogic<(), Datagram, UdpSourceMsg> for UdpSource {
                     Ready::readable(),
                     PollOpt::edge(),
                 )
-                .unwrap();
+                .expect("pantomime bug: failed to register socket");
 
                 self.poll = Some(poll);
                 self.token = token;
@@ -108,10 +114,25 @@ impl DetachedLogic<(), Datagram, UdpSourceMsg> for UdpSource {
     }
 
     fn completed(&mut self) -> Option<AsyncAction<Datagram, UdpSourceMsg>> {
+        if let Some(poll) = self.poll.take() {
+            if poll.deregister(&self.socket).is_err() {
+                error!("failed to deregister UDP socket interest");
+            }
+        }
+
+        if let Some(ref system_context) = self.system_context {
+            system_context.unsubscribe(self.token);
+        }
+
         None
     }
 
     fn failed(&mut self, _: Error) -> Option<AsyncAction<Datagram, UdpSourceMsg>> {
+        if let Some(poll) = self.poll.take() {
+            poll.deregister(&self.socket)
+                .expect("pantomime bug: failed to deregister socket");
+        }
+
         None
     }
 }
@@ -171,6 +192,36 @@ impl UdpSink {
         } else {
             None
         }
+    }
+}
+
+impl Consumer<Datagram> for UdpSink {
+    fn started<Produce: Producer<Datagram>>(
+        self,
+        producer: Produce,
+        ctx: &StreamContext,
+    ) -> Trampoline {
+
+
+        Trampoline::done()
+    }
+
+    fn produced<Produce: Producer<Datagram>>(self, producer: Produce, element: Datagram) -> Trampoline {
+        Trampoline::done()
+    }
+
+    fn completed(self) -> Trampoline  {
+        Trampoline::done()
+    }
+
+    fn failed(self, error: Error) -> Trampoline  {
+        Trampoline::done()
+    }
+}
+
+impl Sink<Datagram> for UdpSink {
+    fn start(self, stream_context: &StreamContext) -> Trampoline {
+        Trampoline::done()
     }
 }
 
@@ -241,75 +292,76 @@ impl DetachedLogic<Datagram, (), UdpSinkMsg> for UdpSink {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::Poller;
     use crate::stream::*;
     use crate::testkit::*;
     use std::thread;
     use std::time;
+    use crate::stream::source::Sources;
+    use crate::stream::flow::detached::Detached;
 
     #[test]
     fn test_basic_udp() {
-        let mut system = ActorSystem::new().start();
+        struct MyTestActor;
 
-        let poller = Poller::new();
+        impl Actor<()> for MyTestActor {
+            fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<()>) {
+                if let Signal::Started = signal {
+                    let system_context = context.system_context().clone(); // @TODO don't use system context
 
-        let udp_source = UdpSource {
-            actor_ref: ActorRef::empty(),
-            buffer: vec![0; 8192],
-            ready: false,
-            socket: UdpSocket::bind(&"127.0.0.1:0".parse().unwrap()).unwrap(),
-            waiting: false,
-            poll: None,
-            token: 0,
-        };
 
-        let sink_socket = udp_source.socket.try_clone().unwrap();
+                    let udp_source = UdpSource {
+                        actor_ref: ActorRef::empty(),
+                        system_context: None,
+                        buffer: vec![0; 8192],
+                        ready: false,
+                        socket: UdpSocket::bind(&"127.0.0.1:4521".parse().unwrap()).unwrap(),
+                        waiting: false,
+                        poll: None,
+                        token: 0,
+                    };
 
-        let sink_context = system.context.clone();
+                    let s = Sources::empty().via(Detached::new(udp_source));
 
-        Sources::empty().via(Detached::new(udp_source)).run_with(
-            Sinks::for_each(move |bs: Datagram| {
-                let mut reverse: Vec<u8> = bs
-                    .data
-                    .iter()
-                    .rev()
-                    .map(|b| *b)
-                    .skip_while(|b| *b == 10)
-                    .collect();
-                reverse.push(10);
 
-                let udp_sink = UdpSink {
-                    actor_ref: ActorRef::empty(),
-                    chunk: None,
-                    ready: false,
-                    socket: sink_socket.try_clone().unwrap(),
-                    poll: None,
-                    token: 0,
-                };
 
-                println!("bs: {:?}", bs);
+                    let sink_socket = udp_source.socket.try_clone().unwrap();
 
-                Sources::single(Datagram {
-                    data: reverse,
-                    address: bs.address,
-                })
-                .run_with(
-                    crate::stream::sink::detached_logic::DetachedLogicSink::new(udp_sink),
-                    &sink_context,
-                );
-            }),
-            &system.context,
-        );
+                    context.spawn_stream(
+                        Sources::empty()
+                            .via(Detached::new(udp_source))
+                            .map(|bs: Datagram| {
+                                let mut reverse: Vec<u8> = bs
+                                    .data
+                                    .iter()
+                                    .rev()
+                                    .map(|b| *b)
+                                    .skip_while(|b| *b == 10)
+                                    .collect();
 
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(1000));
+                                reverse.push(10);
+
+                                Datagram { data: reverse, address: bs.address }
+                            })
+                            .to(sink::detached_logic::DetachedLogicSink::new(UdpSink {
+                                actor_ref: ActorRef::empty(),
+                                chunk: None,
+                                ready: false,
+                                socket: sink_socket.try_clone().unwrap(),
+                                poll: None,
+                                token: 0,
+                            }))
+                    );
+                }
+            }
+
+            fn receive(&mut self, msg: (), ctx: &mut ActorContext<()>) {}
         }
 
-        system.context.drain();
+        assert!(ActorSystem::new()
+            .spawn(MyTestActor)
+            .is_ok());
     }
 }
-*/

@@ -199,6 +199,22 @@ impl SpawnStream for StreamContext {
     }
 }
 
+impl SpawnStream for ActorSystemContext {
+    fn spawn_stream<M, Stream: Sink<M>>(&self, stream: Stream)
+    where
+        M: 'static + Send,
+        Stream: 'static + Send,
+    {
+        let dispatcher = self.dispatcher();
+        let inner_dispatcher = dispatcher.clone();
+        let stream_context = StreamContext::new(&dispatcher, &self);
+
+        dispatcher.execute(move || {
+            inner_dispatcher.execute_trampoline(stream.start(&stream_context));
+        });
+    }
+}
+
 #[cfg(test)]
 mod temp_tests {
     use crate::actor::*;
