@@ -1,11 +1,13 @@
 //! Mailbox hold messages destined for actors
 
 mod channel;
+mod conqueue;
 mod noop;
 mod segqueue;
 mod vecdeque;
 
 pub use self::channel::CrossbeamChannelMailboxLogic;
+pub use self::conqueue::ConqueueMailboxLogic;
 pub use self::noop::NoopMailboxLogic;
 pub use self::segqueue::CrossbeamSegQueueMailboxLogic;
 pub use self::vecdeque::VecDequeMailboxLogic;
@@ -68,20 +70,20 @@ pub trait MailboxLogic<M> {
 }
 
 pub struct Mailbox<M> {
-    logic: Box<MailboxLogic<M> + 'static + Send + Sync>,
+    logic: Box<MailboxLogic<M> + 'static + Send>,
 }
 
 impl<M> Mailbox<M> {
     pub fn new<Logic: MailboxLogic<M>>(logic: Logic) -> Self
     where
-        Logic: 'static + Send + Sync,
+        Logic: 'static + Send,
     {
         Self {
             logic: Box::new(logic),
         }
     }
 
-    pub fn new_boxed(logic: Box<MailboxLogic<M> + Send + Sync>) -> Self {
+    pub fn new_boxed(logic: Box<MailboxLogic<M> + Send>) -> Self {
         Self { logic }
     }
 

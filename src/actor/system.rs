@@ -166,8 +166,9 @@ impl ActorSystemContext {
     where
         Msg: 'static + Send,
     {
-        let mailbox_logic: Box<MailboxLogic<Msg> + Send + Sync> =
+        let mailbox_logic: Box<MailboxLogic<Msg> + Send> =
             match self.inner.config.default_mailbox_logic.as_str() {
+                "conqueue" => Box::new(ConqueueMailboxLogic::new()),
                 "crossbeam-seg-queue" => Box::new(CrossbeamSegQueueMailboxLogic::new()),
                 "crossbeam-channel" => Box::new(CrossbeamChannelMailboxLogic::new()),
                 "vecdeque" => Box::new(VecDequeMailboxLogic::new()),

@@ -7,6 +7,7 @@
 
 extern crate atty;
 extern crate chrono;
+extern crate conqueue;
 extern crate crossbeam;
 extern crate fern;
 extern crate mio;

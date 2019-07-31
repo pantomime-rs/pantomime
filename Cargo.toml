@@ -12,6 +12,7 @@ description = "A library that empowers you to build concurrent, stateful, and st
 [dependencies]
 atty = "0.2"
 chrono = "0.4.6"
+conqueue = "0.3.0"
 crossbeam = "0.7.1"
 downcast-rs = "1.0.3"
 fern = { version = "0.5", features = ["colored"] }
