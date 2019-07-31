@@ -678,7 +678,7 @@ impl ActorSystem {
                     ))
                 }
             })
-            .level(log::LevelFilter::Info)
+            .level(log::LevelFilter::Debug) // @TODO config this?
             .chain(std::io::stderr())
             .apply()?;
         Ok(())

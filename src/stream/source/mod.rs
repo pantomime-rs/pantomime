@@ -10,6 +10,7 @@ pub(crate) mod io_tcp;
 use std::iter as std_iter;
 
 pub use iter::Iter;
+use crate::stream::Source;
 
 /// A `Source` is a convention for `Publish`ers that are not
 /// `Subscriber`s, i.e. they have no input but one output.
@@ -45,6 +46,10 @@ impl Sources {
     where
         A: Send,
     {
+        iter::Iter::new(std_iter::once(element))
+    }
+
+    fn what<A>(element: A) -> impl Source<A> where A: Send {
         iter::Iter::new(std_iter::once(element))
     }
 }
