@@ -49,6 +49,7 @@ pub mod mailbox;
 pub mod pattern;
 pub mod prelude;
 pub mod stream;
+pub mod stream2;
 pub mod timer;
 pub mod util;
 

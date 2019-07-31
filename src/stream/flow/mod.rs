@@ -5,6 +5,7 @@ pub mod filter_map;
 pub mod identity;
 pub mod map;
 pub mod take_while;
+pub mod throttle;
 
 pub use attached::Attached;
 pub use detached::Detached;
