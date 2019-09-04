@@ -12,7 +12,7 @@ impl<M: 'static + Send> MailboxAppenderLogic<M> for CrossbeamSegQueueMailboxAppe
         self.queue.push(message);
     }
 
-    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn MailboxAppenderLogic<M> + Send + Sync> {
         Box::new(Self {
             queue: self.queue.clone(),
         })

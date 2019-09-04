@@ -412,7 +412,7 @@ enum WorkStealingDispatcherMessage {
 }
 
 impl DispatcherLogic for WorkStealingDispatcher {
-    fn clone_box(&self) -> Box<DispatcherLogic + 'static + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn DispatcherLogic + 'static + Send + Sync> {
         Box::new(Self {
             injector: self.injector.clone(),
             num_workers: self.num_workers,

@@ -1,7 +1,7 @@
 use crate::dispatcher::BoxedFn;
 
 pub struct Deferred {
-    thunk: Option<Box<BoxedFn + 'static>>,
+    thunk: Option<Box<dyn BoxedFn + 'static>>,
 }
 
 impl Deferred {

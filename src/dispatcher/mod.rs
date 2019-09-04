@@ -22,7 +22,7 @@ pub use self::fs::FutureDispatcherBridge;
 pub use self::tokio::RunTokioFuture;
 
 pub struct Dispatcher {
-    inner: Box<DispatcherLogic + Send + Sync>,
+    inner: Box<dyn DispatcherLogic + Send + Sync>,
 }
 
 impl Dispatcher {
@@ -35,7 +35,7 @@ impl Dispatcher {
         }
     }
 
-    pub fn new_boxed(logic: Box<DispatcherLogic + Send + Sync>) -> Self {
+    pub fn new_boxed(logic: Box<dyn DispatcherLogic + Send + Sync>) -> Self {
         Self { inner: logic }
     }
 
@@ -83,7 +83,7 @@ impl Clone for Dispatcher {
 /// An actor can be pinned to a particular dispatcher by overriding
 /// the `config_dispatcher` method.
 pub trait DispatcherLogic {
-    fn clone_box(&self) -> Box<DispatcherLogic + 'static + Sync + Send>;
+    fn clone_box(&self) -> Box<dyn DispatcherLogic + 'static + Sync + Send>;
 
     /// Execute the thunk on this dispatcher
     fn execute(&self, thunk: Thunk);
@@ -140,13 +140,13 @@ impl<F: FnOnce()> BoxedFn for F {
     }
 }
 
-pub type Thunk = Box<BoxedFn + Send + 'static>;
+pub type Thunk = Box<dyn BoxedFn + Send + 'static>;
 
-pub type ThunkWithSync = Box<BoxedFn + Send + Sync + 'static>;
+pub type ThunkWithSync = Box<dyn BoxedFn + Send + Sync + 'static>;
 
 pub enum TrampolineStep {
     Done,
-    Bounce(Box<BoxedFn1<Trampoline> + 'static + Send>),
+    Bounce(Box<dyn BoxedFn1<Trampoline> + 'static + Send>),
 }
 
 pub struct Trampoline {
@@ -173,7 +173,7 @@ impl Trampoline {
         self.step
     }
 
-    pub fn wrap(step: Box<BoxedFn1<Trampoline> + 'static + Send>) -> Self {
+    pub fn wrap(step: Box<dyn BoxedFn1<Trampoline> + 'static + Send>) -> Self {
         Self {
             step: TrampolineStep::Bounce(step),
         }

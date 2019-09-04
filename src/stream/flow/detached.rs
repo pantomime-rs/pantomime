@@ -82,14 +82,14 @@ trait GenConsumer<A> {
 enum DetachedActorMsg<A, B, Msg> {
     ReceivedAsyncAction(AsyncAction<B, Msg>),
 
-    Started(Box<GenProducer + 'static + Send>),
+    Started(Box<dyn GenProducer + 'static + Send>),
     Produced(A),
-    DoneProducing(Box<GenProducer + 'static + Send>),
+    DoneProducing(Box<dyn GenProducer + 'static + Send>),
     Completed,
     Failed(Error),
-    Pulled(Box<GenConsumer<B> + 'static + Send>),
-    Cancelled(Box<GenConsumer<B> + 'static + Send>),
-    Attached(Box<GenConsumer<B> + 'static + Send>),
+    Pulled(Box<dyn GenConsumer<B> + 'static + Send>),
+    Cancelled(Box<dyn GenConsumer<B> + 'static + Send>),
+    Attached(Box<dyn GenConsumer<B> + 'static + Send>),
 }
 
 struct DetachedActor<A, B, Msg, Logic: DetachedLogic<A, B, Msg>>
@@ -109,8 +109,8 @@ where
     /// It's important that demand is only ever added to from
     /// the actor, and only ever subtracted from the upstream.
     demand: Arc<AtomicUsize>,
-    producer: Option<Box<GenProducer + 'static + Send>>,
-    consumer: Option<Box<GenConsumer<B> + 'static + Send>>,
+    producer: Option<Box<dyn GenProducer + 'static + Send>>,
+    consumer: Option<Box<dyn GenConsumer<B> + 'static + Send>>,
     cancelled: bool,
     completed: bool,
     upstream_completed: bool,

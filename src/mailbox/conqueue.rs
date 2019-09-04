@@ -37,7 +37,7 @@ impl<M: 'static + Send> MailboxAppenderLogic<M> for ConqueueMailboxAppenderLogic
         self.sender.push(message);
     }
 
-    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn MailboxAppenderLogic<M> + Send + Sync> {
         Box::new(ConqueueMailboxAppenderLogic {
             sender: self.sender.clone(),
         })
