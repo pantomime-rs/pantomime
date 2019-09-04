@@ -13,7 +13,7 @@ pub trait RunTokioFuture {
 impl Executor for Dispatcher {
     fn spawn(
         &mut self,
-        future: Box<Future<Item = (), Error = ()> + Send>,
+        future: Box<dyn Future<Item = (), Error = ()> + Send>,
     ) -> Result<(), SpawnError> {
         self.spawn_future(future);
         // @TODO error

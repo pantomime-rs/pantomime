@@ -9,7 +9,7 @@ where
     F: 'static + Send,
 {
     func: F,
-    on_termination: Option<Box<BoxedFn1In0Out<Terminated> + 'static + Send>>,
+    on_termination: Option<Box<dyn BoxedFn1In0Out<Terminated> + 'static + Send>>,
     upstream: Up,
     phantom: PhantomData<A>,
 }

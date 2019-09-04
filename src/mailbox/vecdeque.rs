@@ -16,7 +16,7 @@ impl<M: 'static + Send> MailboxAppenderLogic<M> for VecDequeMailboxAppenderLogic
         self.queue.lock().push_back(message);
     }
 
-    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn MailboxAppenderLogic<M> + Send + Sync> {
         Box::new(Self {
             queue: self.queue.clone(),
         })

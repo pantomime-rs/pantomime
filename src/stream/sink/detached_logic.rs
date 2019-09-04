@@ -13,7 +13,7 @@ where
     L: 'static + Send,
 {
     logic: L,
-    on_termination: Option<Box<BoxedFn1In0Out<Terminated> + 'static + Send + UnwindSafe>>,
+    on_termination: Option<Box<dyn BoxedFn1In0Out<Terminated> + 'static + Send + UnwindSafe>>,
     upstream: Up,
     phantom: PhantomData<(A, M)>,
 }

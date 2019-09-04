@@ -1,17 +1,19 @@
 //! Mailbox hold messages destined for actors
 
 mod channel;
+mod conqueue;
 mod noop;
 mod segqueue;
 mod vecdeque;
 
 pub use self::channel::CrossbeamChannelMailboxLogic;
+pub use self::conqueue::ConqueueMailboxLogic;
 pub use self::noop::NoopMailboxLogic;
 pub use self::segqueue::CrossbeamSegQueueMailboxLogic;
 pub use self::vecdeque::VecDequeMailboxLogic;
 
 pub struct MailboxAppender<M> {
-    logic: Box<MailboxAppenderLogic<M> + 'static + Send + Sync>,
+    logic: Box<dyn MailboxAppenderLogic<M> + 'static + Send + Sync>,
 }
 
 impl<M> MailboxAppender<M> {
@@ -46,7 +48,7 @@ pub trait MailboxAppenderLogic<M> {
     /// message, as implementers see fit.
     fn append(&self, message: M);
 
-    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync>;
+    fn clone_box(&self) -> Box<dyn MailboxAppenderLogic<M> + Send + Sync>;
 }
 
 /// A Mailbox holds messages that are destined for an actor.
@@ -68,20 +70,20 @@ pub trait MailboxLogic<M> {
 }
 
 pub struct Mailbox<M> {
-    logic: Box<MailboxLogic<M> + 'static + Send + Sync>,
+    logic: Box<dyn MailboxLogic<M> + 'static + Send>,
 }
 
 impl<M> Mailbox<M> {
     pub fn new<Logic: MailboxLogic<M>>(logic: Logic) -> Self
     where
-        Logic: 'static + Send + Sync,
+        Logic: 'static + Send,
     {
         Self {
             logic: Box::new(logic),
         }
     }
 
-    pub fn new_boxed(logic: Box<MailboxLogic<M> + Send + Sync>) -> Self {
+    pub fn new_boxed(logic: Box<dyn MailboxLogic<M> + Send>) -> Self {
         Self { logic }
     }
 

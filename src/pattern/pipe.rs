@@ -7,7 +7,7 @@ pub trait PipeTo<M: 'static + Send, E> {
     ///
     /// This does not spawn the future -- use context.spawn_future to do that.
     #[must_use]
-    fn pipe_to(self, actor_ref: ActorRef<M>) -> Box<Future<Item = (), Error = E> + Send>;
+    fn pipe_to(self, actor_ref: ActorRef<M>) -> Box<dyn Future<Item = (), Error = E> + Send>;
 }
 
 #[cfg(feature = "futures-support")]
@@ -16,7 +16,7 @@ where
     F: 'static + Future<Item = M, Error = E> + Send,
 {
     #[must_use]
-    fn pipe_to(self, actor_ref: ActorRef<M>) -> Box<Future<Item = (), Error = E> + Send> {
+    fn pipe_to(self, actor_ref: ActorRef<M>) -> Box<dyn Future<Item = (), Error = E> + Send> {
         let actor_ref = actor_ref.clone();
 
         let f = self.map(move |r| actor_ref.tell(r));

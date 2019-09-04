@@ -166,8 +166,9 @@ impl ActorSystemContext {
     where
         Msg: 'static + Send,
     {
-        let mailbox_logic: Box<MailboxLogic<Msg> + Send + Sync> =
+        let mailbox_logic: Box<dyn MailboxLogic<Msg> + Send> =
             match self.inner.config.default_mailbox_logic.as_str() {
+                "conqueue" => Box::new(ConqueueMailboxLogic::new()),
                 "crossbeam-seg-queue" => Box::new(CrossbeamSegQueueMailboxLogic::new()),
                 "crossbeam-channel" => Box::new(CrossbeamChannelMailboxLogic::new()),
                 "vecdeque" => Box::new(VecDequeMailboxLogic::new()),
@@ -558,7 +559,7 @@ impl ActorSystem {
         let _ = self.validate_default_mailbox_logic(&config);
         let failed = Arc::new(AtomicBool::new(false));
 
-        let dispatcher_logic: Box<DispatcherLogic + Sync + Send> =
+        let dispatcher_logic: Box<dyn DispatcherLogic + Sync + Send> =
             match config.default_dispatcher_logic.as_ref() {
                 "work-stealing" => {
                     let default_dispatcher_parallelism = cmp::min(

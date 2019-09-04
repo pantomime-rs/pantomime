@@ -1,68 +1,52 @@
 use super::{MailboxAppender, MailboxAppenderLogic, MailboxLogic};
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use conqueue::{Queue, QueueReceiver, QueueSender};
 
-pub struct CrossbeamChannelMailboxAppenderLogic<M> {
-    sender: Sender<M>,
+pub struct ConqueueMailboxAppenderLogic<M> {
+    sender: QueueSender<M>,
 }
 
-pub struct CrossbeamChannelMailboxLogic<M> {
-    sender: Sender<M>,
-    receiver: Receiver<M>,
+pub struct ConqueueMailboxLogic<M> {
+    sender: QueueSender<M>,
+    receiver: QueueReceiver<M>,
 }
 
-impl<M> CrossbeamChannelMailboxLogic<M>
+impl<M> ConqueueMailboxLogic<M>
 where
     M: 'static + Send,
 {
-    /// Creates a new `CrossbeamChannelMailbox` which uses
-    /// an unbounded Crossbeam channel to store messages.
+    /// Creates a new `ConqueueMailbox` which uses
+    /// a Conqueue instance to store messages.
     ///
     /// This is the default mailbox and has excellent
     /// general performance characteristics.
     pub fn new() -> Self {
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = Queue::unbounded();
 
         Self { sender, receiver }
     }
-
-    /// Acquire a non-boxed appender that can append messages
-    /// into this mailbox. This is special cased to avoid an
-    /// additional level of indirection that the regular
-    /// appender implies.
-    ///
-    /// This exists given the performance critical nature of
-    /// the `CrossbeamChannelMailbox`, which is the default
-    /// implementation and also used for all system messages.
-    pub fn appender(&self) -> MailboxAppender<M> {
-        MailboxAppender::new(CrossbeamChannelMailboxAppenderLogic {
-            sender: self.sender.clone(),
-        })
-    }
 }
 
-impl<M: 'static + Send> Default for CrossbeamChannelMailboxLogic<M> {
+impl<M: 'static + Send> Default for ConqueueMailboxLogic<M> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M: 'static + Send> MailboxAppenderLogic<M> for CrossbeamChannelMailboxAppenderLogic<M> {
+impl<M: 'static + Send> MailboxAppenderLogic<M> for ConqueueMailboxAppenderLogic<M> {
     fn append(&self, message: M) {
-        if let Err(_e) = self.sender.send(message) {
-            // @TODO this is normal -- appender still exists, but receiver dropped
-        }
+        self.sender.push(message);
     }
 
     fn clone_box(&self) -> Box<dyn MailboxAppenderLogic<M> + Send + Sync> {
-        Box::new(CrossbeamChannelMailboxAppenderLogic {
+        Box::new(ConqueueMailboxAppenderLogic {
             sender: self.sender.clone(),
         })
     }
 }
 
-impl<M: 'static + Send> MailboxLogic<M> for CrossbeamChannelMailboxLogic<M> {
+impl<M: 'static + Send> MailboxLogic<M> for ConqueueMailboxLogic<M> {
     fn appender(&mut self) -> MailboxAppender<M> {
-        let appender = CrossbeamChannelMailboxAppenderLogic {
+        let appender = ConqueueMailboxAppenderLogic {
             sender: self.sender.clone(),
         };
 
@@ -70,18 +54,18 @@ impl<M: 'static + Send> MailboxLogic<M> for CrossbeamChannelMailboxLogic<M> {
     }
 
     fn retrieve(&mut self) -> Option<M> {
-        self.receiver.try_recv().ok()
+        self.receiver.pop()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::mailbox::{CrossbeamChannelMailboxLogic, Mailbox};
+    use crate::mailbox::{ConqueueMailboxLogic, Mailbox};
     use std::thread;
 
     #[test]
     fn simple_test() {
-        let mut mailbox = Mailbox::new(CrossbeamChannelMailboxLogic::new());
+        let mut mailbox = Mailbox::new(ConqueueMailboxLogic::new());
 
         assert_eq!(mailbox.retrieve(), None);
 
@@ -98,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_multiple_threads() {
-        let mut mailbox = Mailbox::new(CrossbeamChannelMailboxLogic::new());
+        let mut mailbox = Mailbox::new(ConqueueMailboxLogic::new());
 
         assert_eq!(mailbox.retrieve(), None);
 

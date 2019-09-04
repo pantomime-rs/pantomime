@@ -37,7 +37,7 @@ pub enum FailureAction {
 }
 
 pub struct FailureError {
-    error: Option<Box<Error + 'static + Send>>,
+    error: Option<Box<dyn Error + 'static + Send>>,
 }
 
 impl FailureError {
@@ -137,7 +137,7 @@ where
 
 pub(in crate::actor) enum Delivery<Msg> {
     Single(usize, Msg),
-    Periodic(usize, Duration, Box<FnMut() -> Msg + 'static + Send>),
+    Periodic(usize, Duration, Box<dyn FnMut() -> Msg + 'static + Send>),
 }
 
 pub struct ActorContext<Msg>
@@ -158,7 +158,7 @@ where
 
     pub(in crate::actor) system_context: ActorSystemContext,
 
-    pub(in crate::actor) watching: HashMap<usize, Box<Fn(StopReason) -> Msg + 'static + Send>>,
+    pub(in crate::actor) watching: HashMap<usize, Box<dyn Fn(StopReason) -> Msg + 'static + Send>>,
 }
 
 impl<Msg> ActorContext<Msg>
@@ -525,7 +525,7 @@ where
 }
 
 pub struct SystemActorRef {
-    pub(in crate::actor) inner: Arc<Box<SystemActorRefInner + Send + Sync>>,
+    pub(in crate::actor) inner: Arc<Box<dyn SystemActorRefInner + Send + Sync>>,
 }
 
 impl SystemActorRef {
@@ -590,7 +590,7 @@ pub struct ActorRef<M>
 where
     M: Send,
 {
-    pub(in crate::actor) inner: Arc<Box<ActorRefInner<M> + Send + Sync>>,
+    pub(in crate::actor) inner: Arc<Box<dyn ActorRefInner<M> + Send + Sync>>,
 }
 
 impl<Msg> ActorRef<Msg>
@@ -681,7 +681,7 @@ impl<Msg> SystemActorRefInner for ActorRef<Msg>
 where
     Msg: 'static + Send,
 {
-    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn SystemActorRefInner + Send + Sync> {
         Box::new(self.clone())
     }
 
@@ -725,7 +725,7 @@ pub(in crate::actor) struct SpawnedActor<Msg>
 where
     Msg: Send,
 {
-    pub(in crate::actor) actor: Box<Actor<Msg>>,
+    pub(in crate::actor) actor: Box<dyn Actor<Msg>>,
     pub(in crate::actor) context: ActorContext<Msg>,
     pub(in crate::actor) dispatcher: Dispatcher,
     pub(in crate::actor) execution_state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>,
@@ -1197,7 +1197,7 @@ where
 }
 
 pub(in crate::actor) trait SystemActorRefInner: Downcast {
-    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync>;
+    fn clone_box(&self) -> Box<dyn SystemActorRefInner + Send + Sync>;
 
     fn fail(&self, reason: FailureError);
 
@@ -1276,7 +1276,7 @@ impl<Msg> SystemActorRefInner for ActorRefCell<Msg>
 where
     Msg: 'static + Send,
 {
-    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn SystemActorRefInner + Send + Sync> {
         Box::new(ActorRefCell {
             id: self.id,
             state: self.state.clone(),
@@ -1317,8 +1317,8 @@ where
     NewMsg: Send,
     Msg: Send,
 {
-    converter: Arc<Fn(NewMsg) -> Msg + Send + Sync>,
-    inner: Arc<Box<ActorRefInner<Msg> + Send + Sync>>,
+    converter: Arc<dyn Fn(NewMsg) -> Msg + Send + Sync>,
+    inner: Arc<Box<dyn ActorRefInner<Msg> + Send + Sync>>, // @TODO can we remove the Box?
 }
 
 impl<NewMsg, Msg> SystemActorRefInner for StackedActorRefCell<NewMsg, Msg>
@@ -1326,7 +1326,7 @@ where
     NewMsg: 'static + Send,
     Msg: 'static + Send,
 {
-    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn SystemActorRefInner + Send + Sync> {
         Box::new(StackedActorRefCell {
             converter: self.converter.clone(),
             inner: self.inner.clone(),
@@ -1370,7 +1370,7 @@ where
 }
 
 impl SystemActorRefInner for EmptyActorRefCell {
-    fn clone_box(&self) -> Box<SystemActorRefInner + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn SystemActorRefInner + Send + Sync> {
         Box::new(EmptyActorRefCell)
     }
 

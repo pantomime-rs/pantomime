@@ -17,7 +17,7 @@ pub trait Ask<Req: 'static + Send, Resp: 'static + Send> {
         context: &mut ActorContext<Msg>,
         f: F,
         timeout: Duration,
-    ) -> Box<Future<Item = Resp, Error = Canceled> + 'static + Send>
+    ) -> Box<dyn Future<Item = Resp, Error = Canceled> + 'static + Send>
     where
         Msg: 'static + Send,
         F: 'static + Send;
@@ -35,7 +35,7 @@ pub trait Ask<Req: 'static + Send, Resp: 'static + Send> {
         &self,
         context: &mut ActorContext<Msg>,
         f: F,
-    ) -> Box<Future<Item = Resp, Error = ()> + 'static + Send>
+    ) -> Box<dyn Future<Item = Resp, Error = ()> + 'static + Send>
     where
         Msg: 'static + Send,
         F: 'static + Send;
@@ -48,7 +48,7 @@ impl<Req: 'static + Send, Resp: 'static + Send> Ask<Req, Resp> for ActorRef<Req>
         context: &mut ActorContext<Msg>,
         f: F,
         timeout: Duration,
-    ) -> Box<Future<Item = Resp, Error = Canceled> + 'static + Send>
+    ) -> Box<dyn Future<Item = Resp, Error = Canceled> + 'static + Send>
     where
         Msg: 'static + Send,
         F: 'static + Send,
@@ -69,7 +69,7 @@ impl<Req: 'static + Send, Resp: 'static + Send> Ask<Req, Resp> for ActorRef<Req>
         &self,
         context: &mut ActorContext<Msg>,
         f: F,
-    ) -> Box<Future<Item = Resp, Error = ()> + 'static + Send>
+    ) -> Box<dyn Future<Item = Resp, Error = ()> + 'static + Send>
     where
         Msg: 'static + Send,
         F: 'static + Send,

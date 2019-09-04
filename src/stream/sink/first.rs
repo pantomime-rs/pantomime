@@ -12,7 +12,7 @@ where
     A: 'static + Send,
 {
     element: Option<A>,
-    on_termination: Option<Box<BoxedFn2In0Out<Terminated, Option<A>> + 'static + Send>>,
+    on_termination: Option<Box<dyn BoxedFn2In0Out<Terminated, Option<A>> + 'static + Send>>,
     upstream: Up,
     phantom: PhantomData<A>,
 }

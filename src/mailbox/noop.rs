@@ -16,7 +16,7 @@ impl<M> NoopMailboxAppenderLogic<M> {
 impl<M: Send + Sync + 'static> MailboxAppenderLogic<M> for NoopMailboxAppenderLogic<M> {
     fn append(&self, _message: M) {}
 
-    fn clone_box(&self) -> Box<MailboxAppenderLogic<M> + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn MailboxAppenderLogic<M> + Send + Sync> {
         Box::new(NoopMailboxAppenderLogic::new())
     }
 }
