@@ -275,7 +275,7 @@ impl ActiveActorSystem {
         let mut done = false;
 
         while !done {
-            if poll.poll_interruptible(&mut events, None).is_err() {
+            if poll.poll(&mut events, None).is_err() {
                 thread::sleep(time::Duration::from_millis(
                     self.context.config().mio_poll_error_delay_ms,
                 ));
