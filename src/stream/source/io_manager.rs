@@ -323,7 +323,7 @@ mod tests {
                         token: 0,
                     };
 
-                    let s = Sources::empty().via(Detached::new(udp_source));
+                  //  let s = Sources::empty().via(Detached::new(udp_source));
 
 
 
