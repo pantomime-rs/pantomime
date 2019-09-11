@@ -1,17 +1,15 @@
+use crate::actor::ActorRef;
+use crate::stream::flow::detached::*;
 use crate::stream::*;
 use std::marker::PhantomData;
-use crate::stream::flow::detached::*;
-use crate::actor::ActorRef;
-
 
 struct Throttle<A> {
-    buffer: Vec<A>
+    buffer: Vec<A>,
 }
 
-
 impl<A> DetachedLogic<A, A, ()> for Throttle<A>
-    where
-        A: 'static + Send,
+where
+    A: 'static + Send,
 {
     fn attach(
         &mut self,

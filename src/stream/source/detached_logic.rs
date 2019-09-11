@@ -26,12 +26,14 @@ where
     L: 'static + Send,
 {
     pub fn new(logic: L) -> Self {
-        Self { logic, phantom: PhantomData }
+        Self {
+            logic,
+            phantom: PhantomData,
+        }
     }
 }
 
-impl<A, M, L: DetachedLogic<A, (), M>> Producer<A>
-    for DetachedLogicSource<A, M, L>
+impl<A, M, L: DetachedLogic<A, (), M>> Producer<A> for DetachedLogicSource<A, M, L>
 where
     A: 'static + Send,
     M: 'static + Send,
@@ -53,4 +55,3 @@ where
         panic!()
     }
 }
-

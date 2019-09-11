@@ -1,14 +1,14 @@
 use crate::actor::*;
+use crate::dispatcher::Trampoline;
 use crate::stream::detached::*;
+use crate::stream::flow::detached::{AsyncAction, Detached, DetachedLogic};
+use crate::stream::oxidized::{Consumer, Producer};
+use crate::stream::sink::Sinks;
 use crate::stream::*;
 use mio::{net::UdpSocket, Poll, PollOpt, Ready, Token};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::usize;
-use crate::dispatcher::Trampoline;
-use crate::stream::oxidized::{Consumer, Producer};
-use crate::stream::flow::detached::{Detached, AsyncAction, DetachedLogic};
-use crate::stream::sink::Sinks;
 
 #[derive(Debug)]
 pub struct Datagram {
@@ -201,20 +201,22 @@ impl Consumer<Datagram> for UdpSink {
         producer: Produce,
         ctx: &StreamContext,
     ) -> Trampoline {
-
-
         Trampoline::done()
     }
 
-    fn produced<Produce: Producer<Datagram>>(self, producer: Produce, element: Datagram) -> Trampoline {
+    fn produced<Produce: Producer<Datagram>>(
+        self,
+        producer: Produce,
+        element: Datagram,
+    ) -> Trampoline {
         Trampoline::done()
     }
 
-    fn completed(self) -> Trampoline  {
+    fn completed(self) -> Trampoline {
         Trampoline::done()
     }
 
-    fn failed(self, error: Error) -> Trampoline  {
+    fn failed(self, error: Error) -> Trampoline {
         Trampoline::done()
     }
 }
@@ -295,12 +297,12 @@ impl DetachedLogic<Datagram, (), UdpSinkMsg> for UdpSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::flow::detached::Detached;
+    use crate::stream::source::Sources;
     use crate::stream::*;
     use crate::testkit::*;
     use std::thread;
     use std::time;
-    use crate::stream::source::Sources;
-    use crate::stream::flow::detached::Detached;
 
     #[test]
     fn test_basic_udp() {
@@ -310,7 +312,6 @@ mod tests {
             fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<()>) {
                 if let Signal::Started = signal {
                     let system_context = context.system_context().clone(); // @TODO don't use system context
-
 
                     let udp_source = UdpSource {
                         actor_ref: ActorRef::empty(),
@@ -323,9 +324,7 @@ mod tests {
                         token: 0,
                     };
 
-                  //  let s = Sources::empty().via(Detached::new(udp_source));
-
-
+                    //  let s = Sources::empty().via(Detached::new(udp_source));
 
                     let sink_socket = udp_source.socket.try_clone().unwrap();
 
@@ -343,7 +342,10 @@ mod tests {
 
                                 reverse.push(10);
 
-                                Datagram { data: reverse, address: bs.address }
+                                Datagram {
+                                    data: reverse,
+                                    address: bs.address,
+                                }
                             })
                             .to(sink::detached_logic::DetachedLogicSink::new(UdpSink {
                                 actor_ref: ActorRef::empty(),
@@ -352,7 +354,7 @@ mod tests {
                                 socket: sink_socket.try_clone().unwrap(),
                                 poll: None,
                                 token: 0,
-                            }))
+                            })),
                     );
                 }
             }
@@ -360,8 +362,6 @@ mod tests {
             fn receive(&mut self, msg: (), ctx: &mut ActorContext<()>) {}
         }
 
-        assert!(ActorSystem::new()
-            .spawn(MyTestActor)
-            .is_ok());
+        assert!(ActorSystem::new().spawn(MyTestActor).is_ok());
     }
 }
