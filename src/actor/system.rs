@@ -95,6 +95,8 @@ impl ActorSystemContext {
 
         use crate::actor::actor_ref::*;
 
+        let actor = Box::new(actor);
+
         let empty_ref = ActorRef::empty();
 
         let dispatcher = actor
@@ -110,7 +112,7 @@ impl ActorSystemContext {
             .unwrap_or(self.inner.config.default_actor_throughput);
 
         let mut spawned_actor = SpawnedActor {
-            actor: Box::new(actor),
+            actor,
             context: ActorContext {
                 actor_ref: empty_ref.clone(),
                 children: HashMap::new(),
@@ -416,6 +418,8 @@ impl ActiveActorSystem {
 pub(in crate::actor) enum ReaperMsg {
     Stop,
 
+    ActorStopped(usize, StopReason),
+
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     ReceivedPosixSignal(i32),
 
@@ -468,6 +472,24 @@ where
                 ctx.stop();
             }
 
+            ReaperMsg::ActorStopped(actor_id, StopReason::Failed) => {
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+                self.posix_signals_watchers.remove(&actor_id);
+
+                if actor_id == self.reaper_id {
+                    ctx.fail(Error::new(ErrorKind::Other, "error"));
+                }
+            }
+
+            ReaperMsg::ActorStopped(actor_id, StopReason::Stopped) => {
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+                self.posix_signals_watchers.remove(&actor_id);
+
+                if actor_id == self.reaper_id {
+                    ctx.stop();
+                }
+            }
+
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             ReaperMsg::ReceivedPosixSignal(signal) => {
                 for watcher in self.posix_signals_watchers.values() {
@@ -477,10 +499,12 @@ where
 
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             ReaperMsg::WatchPosixSignals(system_ref) => {
-                ctx.watch_system(&system_ref);
+                let system_ref_id = system_ref.id();
+
+                ctx.watch2(&system_ref, move |reason| ReaperMsg::ActorStopped(system_ref_id, reason));
 
                 self.posix_signals_watchers
-                    .insert(system_ref.id(), system_ref);
+                    .insert(system_ref_id, system_ref);
             }
         }
     }
@@ -494,32 +518,28 @@ where
                         .expect("pantomime bug: ReaperMonitor cannot get actor"),
                 );
 
-                self.reaper_id = actor_ref.id();
+                let actor_ref_id = actor_ref.id();
 
-                ctx.watch(&actor_ref);
+                self.reaper_id = actor_ref_id;
+
+                let failed = self.failed.clone();
+
+                ctx.watch2(
+                    &actor_ref,
+                    move |reason| {
+                        // this will often (e.g. when system is stopped) be dropped,
+                        // so we set failed here
+
+                        if let StopReason::Failed = reason {
+                            failed.store(true, Ordering::Release);
+                        }
+
+                        ReaperMsg::ActorStopped(actor_ref_id, reason)
+                    });
             }
 
-            Signal::ActorStopped(actor, StopReason::Failed) => {
-                let actor_id = actor.id();
-
-                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-                self.posix_signals_watchers.remove(&actor_id);
-
-                if actor_id == self.reaper_id {
-                    self.failed.store(true, Ordering::Release);
-                    ctx.system_context().done();
-                }
-            }
-
-            Signal::ActorStopped(actor, _) => {
-                let actor_id = actor.id();
-
-                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-                self.posix_signals_watchers.remove(&actor_id);
-
-                if actor_id == self.reaper_id {
-                    ctx.system_context().done();
-                }
+            Signal::Stopped => {
+                ctx.system_context().done();
             }
 
             _ => {}

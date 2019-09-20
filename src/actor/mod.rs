@@ -12,8 +12,11 @@ use crate::mailbox::*;
 use crate::timer::*;
 
 pub use self::actor_ref::{
-    Actor, ActorContext, ActorRef, FailureAction, FailureError, FailureReason, Signal,
+    Actor, ActorContext, ActorRef, ActorSpawnContext, FailureAction, FailureError, FailureReason, Signal,
+    Spawnable,
+    StopReason,
     SystemActorRef,
+    Watchable
 };
 pub use self::probe::{Probe, SpawnProbe};
 pub use self::system::{ActiveActorSystem, ActorSystem, ActorSystemContext};
