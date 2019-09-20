@@ -199,7 +199,7 @@ impl ActorSystemConfig {
             ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_FACTOR", "1.0"),
             ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_TASK_QUEUE_FIFO",    "true"),
             ("PANTOMIME_DEFAULT_MAILBOX_LOGIC",                                     "conqueue"),
-            ("PANTOMIME_DEFAULT_STREAMS_BUFFER_SIZE",                               "16"),
+            ("PANTOMIME_DEFAULT_STREAMS_BUFFER_SIZE",                               "15"),
             ("PANTOMIME_LOG_CONFIG_ON_START",                                       "false"),
             ("PANTOMIME_MIO_EVENT_CAPACITY",                                        "1024"),
             ("PANTOMIME_MIO_POLL_ERROR_DELAY_MS",                                   "1000"),

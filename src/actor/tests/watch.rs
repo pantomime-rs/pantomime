@@ -19,6 +19,8 @@ impl Actor<()> for MyActor {
 #[cfg(not(windows))]
 fn basic_test() {
     enum ReaperMsg {
+        FirstChildStopped(StopReason),
+        SecondChildStopped(StopReason),
         Stopped,
         Failed,
     }
@@ -37,26 +39,56 @@ fn basic_test() {
     impl Actor<ReaperMsg> for TestReaper {
         fn receive(&mut self, msg: ReaperMsg, ctx: &mut ActorContext<ReaperMsg>) {
             match self.state {
-                ReaperState::One => {
-                    panic!("unexpected msg in One");
+                ReaperState::One => match msg {
+                    ReaperMsg::FirstChildStopped(StopReason::Failed) => {
+                        self.state = ReaperState::Two;
+
+                        let actor_ref = ctx.spawn(MyActor { fail: false });
+
+                        ctx.watch2(&actor_ref, |reason| ReaperMsg::SecondChildStopped(reason));
+
+                        actor_ref.tell(());
+                    }
+
+                    _ => {
+                        panic!("unexpected msg in One");
+                    }
                 }
 
-                ReaperState::Two => {
-                    panic!("unexpected msg in Two");
+                ReaperState::Two => match msg {
+                    ReaperMsg::SecondChildStopped(StopReason::Stopped) => {
+                        self.state = ReaperState::Three;
+
+                        let actor_ref = ctx.spawn(MyActor { fail: true });
+
+                        ctx.watch2(&actor_ref, |reason| match reason {
+                            StopReason::Stopped => ReaperMsg::Stopped,
+                            StopReason::Failed => ReaperMsg::Failed,
+                        });
+
+                        actor_ref.tell(());
+                    }
+
+                    _ => {
+                        panic!("unexpected msg in Two");
+                    }
                 }
 
                 ReaperState::Three => match msg {
                     ReaperMsg::Failed => {
                         self.state = ReaperState::Four;
 
-                        ctx.spawn_watched_with(MyActor { fail: false }, |reason| match reason {
+                        let actor_ref = ctx.spawn(MyActor { fail: false });
+
+                        ctx.watch2(&actor_ref, |reason| match reason {
                             StopReason::Stopped => ReaperMsg::Stopped,
-                            StopReason::Failed => ReaperMsg::Failed,
-                        })
-                        .tell(());
+                            StopReason::Failed  => ReaperMsg::Failed
+                        });
+
+                        actor_ref.tell(());
                     }
 
-                    ReaperMsg::Stopped => {
+                    _ => {
                         panic!("unexpected msg in Three");
                     }
                 },
@@ -66,7 +98,7 @@ fn basic_test() {
                         ctx.stop();
                     }
 
-                    ReaperMsg::Failed => {
+                    _ => {
                         panic!("unexpected msg in Four");
                     }
                 },
@@ -77,39 +109,19 @@ fn basic_test() {
             match self.state {
                 ReaperState::One => match signal {
                     Signal::Started => {
-                        ctx.spawn_watched(MyActor { fail: true }).tell(());
-                    }
+                        let actor_ref = ctx.spawn(MyActor { fail: true });
 
-                    Signal::ActorStopped(_, StopReason::Failed) => {
-                        self.state = ReaperState::Two;
+                        ctx.watch2(&actor_ref, |reason| ReaperMsg::FirstChildStopped(reason));
 
-                        ctx.spawn_watched(MyActor { fail: false }).tell(());
-                    }
-
-                    _ => {
-                        panic!("unexpected signal in One");
-                    }
-                },
-
-                ReaperState::Two => match signal {
-                    Signal::ActorStopped(_, StopReason::Stopped) => {
-                        self.state = ReaperState::Three;
-
-                        ctx.spawn_watched_with(MyActor { fail: true }, |reason| match reason {
-                            StopReason::Stopped => ReaperMsg::Stopped,
-                            StopReason::Failed => ReaperMsg::Failed,
-                        })
-                        .tell(());
+                        actor_ref.tell(());
                     }
 
                     _ => {
                         panic!("unexpected signal in One");
                     }
-                },
+                }
 
-                ReaperState::Three => {}
-
-                ReaperState::Four => {}
+                _ => {}
             }
         }
     }

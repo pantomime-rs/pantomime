@@ -19,6 +19,7 @@ pub enum SystemMsg {
     Stop(Option<FailureReason>),
     ChildStopped(usize),
     Signaled(Signal),
+    ActorStopped(SystemActorRef, StopReason),
     Watch(SystemActorRef),
     SendDelivery(String, usize),
 }
@@ -77,7 +78,7 @@ pub enum Signal {
     Stopped,
     Failed(FailureReason),
     Resumed,
-    ActorStopped(SystemActorRef, StopReason),
+    //ActorStopped(SystemActorRef, StopReason),
 
     #[cfg(feature = "posix-signals-support")]
     PosixSignal(i32),
@@ -158,13 +159,163 @@ where
 
     pub(in crate::actor) system_context: ActorSystemContext,
 
-    pub(in crate::actor) watching: HashMap<usize, Box<dyn Fn(StopReason) -> Msg + 'static + Send>>,
+    pub(in crate::actor) watching: HashMap<usize, Vec<Box<dyn Fn(StopReason) -> Msg + 'static + Send>>>,
 }
+
+pub trait Spawnable<A, B> {
+    fn perform_spawn(&mut self, a: A) -> B;
+}
+
+pub trait Watchable<S, R, Msg, F> where F: Fn(R) -> Msg {
+    fn perform_watch(&mut self, subject: S, convert: F);
+}
+
+pub struct ActorSpawnContext<'a> {
+    pub(in crate::actor) children: &'a mut HashMap<usize, SystemActorRef>,
+    pub(in crate::actor) system_context: &'a ActorSystemContext,
+    pub(in crate::actor) system_ref: SystemActorRef,
+    pub(in crate::actor) state: &'a SpawnedActorState,
+}
+
+impl<'a> ActorSpawnContext<'a> {
+    pub fn spawn<A, B>(&mut self, a: A) -> B where Self: Spawnable<A, B> {
+        self.perform_spawn(a)
+    }
+
+    pub(crate) fn system_context(&self) -> &ActorSystemContext {
+        &self.system_context
+    }
+
+    fn do_spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
+    where
+        A: 'static + Send,
+        AMsg: 'static + Send
+    {
+        ///////////////////////////////////////////////////////////////////////////////////////////////
+        // NOTE: this is quite similiar to ActorSystemContext::spawn, and changes should be mirrored //
+        ///////////////////////////////////////////////////////////////////////////////////////////////
+
+        let actor = Box::new(actor);
+
+        let empty_ref = ActorRef::empty();
+
+        let dispatcher = actor
+            .config_dispatcher(&self.system_context)
+            .unwrap_or_else(|| self.system_context.new_actor_dispatcher());
+
+        let mailbox = actor
+            .config_mailbox(&self.system_context)
+            .unwrap_or_else(|| self.system_context.new_actor_mailbox());
+
+        let throughput = actor
+            .config_throughput(&self.system_context)
+            .unwrap_or(self.system_context.config().default_actor_throughput);
+
+        let mut spawned_actor = SpawnedActor {
+            actor,
+            context: ActorContext {
+                actor_ref: empty_ref,
+                children: HashMap::new(),
+                deliveries: HashMap::new(),
+                dispatcher: dispatcher.clone(),
+                pending_stop: None,
+                state: SpawnedActorState::Active,
+                system_context: self.system_context.clone(),
+                watching: HashMap::new(),
+            },
+            dispatcher,
+            execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
+            mailbox,
+            parent_ref: self.system_ref.clone(),
+            stash: VecDeque::new(),
+            throughput,
+            watchers: Vec::new(),
+        };
+
+        let actor_ref = ActorRef {
+            inner: Arc::new(Box::new(ActorRefCell {
+                id: self.system_context.new_actor_id(),
+                state: spawned_actor.execution_state.clone(),
+                mailbox_appender: spawned_actor.mailbox.appender(),
+            })),
+        };
+
+        let empty_ref = {
+            let mut actor_ref = actor_ref.clone();
+
+            mem::swap(&mut spawned_actor.context.actor_ref, &mut actor_ref);
+
+            actor_ref
+        };
+
+        spawned_actor
+            .execution_state
+            .clone()
+            .store(SpawnedActorExecutionState::Idle(Box::new(spawned_actor)));
+
+        actor_ref.tell_system(SystemMsg::Signaled(Signal::Started));
+
+        self.children.insert(actor_ref.id(), actor_ref.system_ref());
+
+        let r = match self.state {
+            SpawnedActorState::Stopped
+            | SpawnedActorState::Failed(_)
+            | SpawnedActorState::Stopping(_)
+            | SpawnedActorState::WaitingForStop => {
+                actor_ref.stop();
+
+                empty_ref
+            }
+
+            SpawnedActorState::Active => actor_ref,
+        };
+
+        r
+    }
+}
+
+impl<'a, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorSpawnContext<'a> where AMsg: 'static + Send, A: 'static + Send {
+    fn perform_spawn(&mut self, actor: A) -> ActorRef<AMsg> {
+        self.do_spawn(actor)
+    }
+}
+
+impl<Msg, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorContext<Msg> where Msg: 'static + Send, AMsg: 'static + Send, A: 'static + Send {
+    fn perform_spawn(&mut self, actor: A) -> ActorRef<AMsg> {
+        self.spawn_context().spawn(actor)
+    }
+}
+
+impl<Msg, AMsg, F: Fn(StopReason) -> Msg> Watchable<&ActorRef<AMsg>, StopReason, Msg, F> for ActorContext<Msg> where AMsg: 'static + Send, Msg: 'static + Send, F: 'static + Send {
+    fn perform_watch(&mut self, subject: &ActorRef<AMsg>, convert: F) {
+        self.watch_with(subject, convert)
+    }
+}
+
+impl<Msg, AMsg, F: Fn(StopReason) -> Msg> Watchable<ActorRef<AMsg>, StopReason, Msg, F> for ActorContext<Msg> where AMsg: 'static + Send, Msg: 'static + Send, F: 'static + Send {
+    fn perform_watch(&mut self, subject: ActorRef<AMsg>, convert: F) {
+        self.watch_with(&subject, convert)
+    }
+}
+
+impl<Msg, F: Fn(StopReason) -> Msg> Watchable<&SystemActorRef, StopReason, Msg, F> for ActorContext<Msg> where Msg: 'static + Send, F: 'static + Send {
+    fn perform_watch(&mut self, subject: &SystemActorRef, convert: F) {
+        self.watch_system_with(subject, convert)
+    }
+}
+
+impl<Msg, F: Fn(StopReason) -> Msg> Watchable<SystemActorRef, StopReason, Msg, F> for ActorContext<Msg> where Msg: 'static + Send, F: 'static + Send {
+    fn perform_watch(&mut self, subject: SystemActorRef, convert: F) {
+        self.watch_system_with(&subject, convert)
+    }
+}
+
 
 impl<Msg> ActorContext<Msg>
 where
     Msg: 'static + Send,
 {
+
     /// Obtain a reference to the ActorRef that this context
     /// is attached to.
     pub fn actor_ref(&self) -> &ActorRef<Msg> {
@@ -322,39 +473,13 @@ where
         self.system_context.schedule_thunk(timeout, f);
     }
 
-    /// Watch the supplied actor. When it stops or fails, this actor
-    /// will be messaged with a signal indicating as such.
-    pub fn watch<N>(&mut self, actor_ref: &ActorRef<N>)
-    where
-        N: 'static + Send,
-    {
-        actor_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
-    }
-
-    /// Watch the supplied actor. A function is provided that translates
-    /// a `StopReason` into a custom domain message.
-    pub fn watch_with<N, F: Fn(StopReason) -> Msg>(&mut self, actor_ref: &ActorRef<N>, msg: F)
-    where
-        N: 'static + Send,
-        F: 'static + Send,
-    {
-        self.watching.insert(actor_ref.id(), Box::new(msg));
-        self.watch(actor_ref);
-    }
-
-    pub fn watch_system(&mut self, system_ref: &SystemActorRef) {
-        system_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
-    }
-
-    pub fn watch_system_with<F: Fn(StopReason) -> Msg>(
-        &mut self,
-        system_ref: &SystemActorRef,
-        msg: F,
-    ) where
-        F: 'static + Send,
-    {
-        self.watching.insert(system_ref.id(), Box::new(msg));
-        self.watch_system(system_ref);
+    pub fn spawn_context(&mut self) -> ActorSpawnContext {
+        ActorSpawnContext {
+            children: &mut self.children,
+            system_context: &self.system_context,
+            system_ref: self.actor_ref.system_ref(),
+            state: &self.state
+        }
     }
 
     /// Register interest in receiving POSIX signals. When the process
@@ -368,6 +493,7 @@ where
     /// will be performed when running on Windows systems.
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     pub fn watch_posix_signals(&mut self) {
+        // @TODO use the generalized watch method
         self.system_context
             .tell_reaper_monitor(system::ReaperMsg::WatchPosixSignals(
                 self.actor_ref().system_ref(),
@@ -379,148 +505,77 @@ where
     /// via `receive_signal`.
     ///
     /// Usage is often performed from the root reaper actor, but any
-    /// actor in the system is eligible to watch the signals.
-    ///
-    /// POSIX signals are not supported on Windows and thus no action
-    /// will be performed when running on Windows systems.
+    /// actor in the system is eligible to watch the signals.  POSIX signals are not supported on Windows and thus no action will be performed when running on Windows systems.
     #[cfg(all(feature = "posix-signals-support", target_family = "windows"))]
-    pub fn watch_posix_signals(&mut self) {}
-
-    /// Spawn the supplied actor as a child of this actor. An `ActorRef`
-    /// is returned that can be used to send the actor messages.
-    ///
-    /// If this actor is stopping or already stopped, the supplied actor
-    /// will be spawned and immediately stopped, and an empty ref will
-    /// be returned.
-    pub fn spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
-    where
-        A: 'static + Send,
-        AMsg: 'static + Send,
-        Msg: 'static + Send,
-    {
-        ///////////////////////////////////////////////////////////////////////////////////////////////
-        // NOTE: this is quite similiar to ActorSystemContext::spawn, and changes should be mirrored //
-        ///////////////////////////////////////////////////////////////////////////////////////////////
-
-        let empty_ref = ActorRef::empty();
-
-        let dispatcher = actor
-            .config_dispatcher(&self.system_context)
-            .unwrap_or_else(|| self.system_context.new_actor_dispatcher());
-
-        let mailbox = actor
-            .config_mailbox(&self.system_context)
-            .unwrap_or_else(|| self.system_context.new_actor_mailbox());
-
-        let throughput = actor
-            .config_throughput(&self.system_context)
-            .unwrap_or(self.system_context.config().default_actor_throughput);
-
-        let mut spawned_actor = SpawnedActor {
-            actor: Box::new(actor),
-            context: ActorContext {
-                actor_ref: empty_ref,
-                children: HashMap::new(),
-                deliveries: HashMap::new(),
-                dispatcher: dispatcher.clone(),
-                pending_stop: None,
-                state: SpawnedActorState::Active,
-                system_context: self.system_context.clone(),
-                watching: HashMap::new(),
-            },
-            dispatcher,
-            execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
-            mailbox,
-            parent_ref: self.actor_ref.system_ref(),
-            stash: VecDeque::new(),
-            throughput,
-            watchers: Vec::new(),
-        };
-
-        let actor_ref = ActorRef {
-            inner: Arc::new(Box::new(ActorRefCell {
-                id: self.system_context.new_actor_id(),
-                state: spawned_actor.execution_state.clone(),
-                mailbox_appender: spawned_actor.mailbox.appender(),
-            })),
-        };
-
-        let empty_ref = {
-            let mut actor_ref = actor_ref.clone();
-
-            mem::swap(&mut spawned_actor.context.actor_ref, &mut actor_ref);
-
-            actor_ref
-        };
-
-        spawned_actor
-            .execution_state
-            .clone()
-            .store(SpawnedActorExecutionState::Idle(Box::new(spawned_actor)));
-
-        actor_ref.tell_system(SystemMsg::Signaled(Signal::Started));
-
-        self.children.insert(actor_ref.id(), actor_ref.system_ref());
-
-        match self.state {
-            SpawnedActorState::Stopped
-            | SpawnedActorState::Failed(_)
-            | SpawnedActorState::Stopping(_)
-            | SpawnedActorState::WaitingForStop => {
-                actor_ref.stop();
-
-                empty_ref
-            }
-
-            SpawnedActorState::Active => actor_ref,
-        }
+    pub fn watch_posix_signals(&mut self) {
+        // @TODO use the generalized watch method
     }
 
-    /// Spawn the supplied actor as a child of this actor, and watch
-    /// it for any termination signals.
+    /// Spawn the supplied instance, returning a handle to it.
     ///
-    /// An `ActorRef` is returned that can be used to send the actor
-    /// messages.
-    pub fn spawn_watched<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
-    where
-        A: 'static + Send,
-        AMsg: 'static + Send,
-        Msg: 'static + Send,
-    {
-        let actor_ref = self.spawn(actor);
-
-        self.watch(&actor_ref);
-
-        actor_ref
+    /// This is typically used to spawn the following:
+    ///
+    /// - Actors
+    /// - Streams
+    /// - Stream Combinators
+    pub fn spawn<S, R>(&mut self, spawnable: S) -> R where Self: Spawnable<S, R> {
+        self.perform_spawn(spawnable)
     }
 
-    /// Spawn the supplied actor as a child of this actor.
+    /// Watch the supplied instance, receiving a domain message when
+    /// it completes.
     ///
-    /// A function must be provided that will receive a `StopReason`
-    /// and return a custom domain message.
+    /// This is typically used to watch the following:
     ///
-    /// An `ActorRef` is returned that can be used to send the actor
-    /// messages.
-    pub fn spawn_watched_with<F: Fn(StopReason) -> Msg, AMsg, A: Actor<AMsg>>(
-        &mut self,
-        actor: A,
-        msg: F,
-    ) -> ActorRef<AMsg>
-    where
-        F: 'static + Send,
-        A: 'static + Send,
-        AMsg: 'static + Send,
-        Msg: 'static + Send,
-    {
-        let actor_ref = self.spawn_watched(actor);
-
-        self.watching.insert(actor_ref.id(), Box::new(msg));
-
-        actor_ref
+    /// - Actors (`ActorRef`)
+    /// - Streams (`StreamResult`)
+    ///
+    /// When the std::future modules are fully stable, this will
+    /// also be used to watch futures.
+    pub fn watch2<W, R, F: Fn(R) -> Msg>(&mut self, watchable: W, convert: F) where Self: Watchable<W, R, Msg, F> {
+        self.perform_watch(watchable, convert);
     }
 
     pub(crate) fn system_context(&self) -> &ActorSystemContext {
         &self.system_context
+    }
+
+    fn watch_with<N, F: Fn(StopReason) -> Msg>(&mut self, actor_ref: &ActorRef<N>, msg: F)
+    where
+        N: 'static + Send,
+        F: 'static + Send,
+    {
+        let actor_id = actor_ref.id();
+        let new = !self.watching.contains_key(&actor_id);
+
+        self.watching
+            .entry(actor_id)
+            .or_insert_with(Vec::new)
+            .push(Box::new(msg));
+
+        if new {
+            actor_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
+        }
+    }
+
+    fn watch_system_with<F: Fn(StopReason) -> Msg>(
+        &mut self,
+        system_ref: &SystemActorRef,
+        msg: F,
+    ) where
+        F: 'static + Send,
+    {
+        let actor_id = system_ref.id();
+        let new = !self.watching.contains_key(&actor_id);
+
+        self.watching
+            .entry(actor_id)
+            .or_insert_with(Vec::new)
+            .push(Box::new(msg));
+
+        if new {
+            system_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
+        }
     }
 }
 
@@ -871,17 +926,17 @@ where
             }
 
             (SpawnedActorState::Failed(_), SystemMsg::Watch(watcher)) => {
-                watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                watcher.tell_system(SystemMsg::ActorStopped(
                     watcher.clone(),
                     StopReason::Failed,
-                )));
+                ));
             }
 
             (SpawnedActorState::Stopped, SystemMsg::Watch(watcher)) => {
-                watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                watcher.tell_system(SystemMsg::ActorStopped(
                     watcher.clone(),
                     StopReason::Stopped,
-                )));
+                ));
             }
 
             (SpawnedActorState::Failed(_), _) => {}
@@ -920,19 +975,18 @@ where
                 }
             }
 
-            (_, SystemMsg::Signaled(Signal::ActorStopped(actor_ref, reason))) => {
-                match self.context.watching.remove(&actor_ref.id()) {
-                    Some(ref msg) => {
-                        self.receive(msg(reason));
-                    }
+            (_, SystemMsg::ActorStopped(actor_ref, reason)) => {
+                if let Some(mut msgs) = self.context.watching.remove(&actor_ref.id()) {
+                    for msg in msgs.drain(..) {
+                        match reason {
+                            StopReason::Failed => {
+                                self.receive(msg(StopReason::Failed));
+                            }
 
-                    None => {
-                        self.reset_pending_stop();
-                        self.actor.receive_signal(
-                            Signal::ActorStopped(actor_ref, reason),
-                            &mut self.context,
-                        );
-                        self.check_pending_stop();
+                            StopReason::Stopped => {
+                                self.receive(msg(StopReason::Stopped));
+                            }
+                        }
                     }
                 }
             }
@@ -1096,10 +1150,10 @@ where
                 self.check_pending_stop();
 
                 for watcher in self.watchers.drain(..) {
-                    watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                    watcher.tell_system(SystemMsg::ActorStopped(
                         self.context.actor_ref().system_ref(),
                         StopReason::Stopped,
-                    )));
+                    ));
                 }
             }
 
@@ -1119,10 +1173,10 @@ where
                         self.check_pending_stop();
 
                         for watcher in self.watchers.drain(..) {
-                            watcher.tell_system(SystemMsg::Signaled(Signal::ActorStopped(
+                            watcher.tell_system(SystemMsg::ActorStopped(
                                 self.context.actor_ref().system_ref(),
                                 StopReason::Failed,
-                            )));
+                            ));
                         }
                     }
 
