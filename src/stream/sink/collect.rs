@@ -1,12 +1,12 @@
 use crate::stream::{Action, Logic, StreamContext};
 
-struct CollectSinkLogic<A> {
+pub struct Collect<A> {
     entries: Option<Vec<A>>,
     pulled: bool,
 }
 
-impl<A> CollectSinkLogic<A> {
-    fn new() -> Self {
+impl<A> Collect<A> {
+    pub fn new() -> Self {
         Self {
             entries: Some(Vec::new()),
             pulled: false,
@@ -14,12 +14,12 @@ impl<A> CollectSinkLogic<A> {
     }
 }
 
-impl<A> Logic<A, Vec<A>, ()> for CollectSinkLogic<A>
+impl<A> Logic<A, Vec<A>, ()> for Collect<A>
 where
     A: 'static + Send,
 {
     fn name(&self) -> &'static str {
-        "CollectSinkLogic"
+        "Collect"
     }
 
     fn pulled(&mut self, ctx: &mut StreamContext<A, Vec<A>, ()>) -> Option<Action<Vec<A>, ()>> {
@@ -53,6 +53,11 @@ where
                 .entries
                 .take()
                 .expect("pantomime bug: Collect::entries is None");
+
+            // note that the action we're returning will be synchronously processed, followed
+            // later by this Complete, i.e. the Push is processed first.
+
+            ctx.tell(Action::Complete);
 
             Some(Action::Push(entries))
         } else {

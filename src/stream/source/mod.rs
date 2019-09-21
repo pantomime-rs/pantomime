@@ -1,17 +1,20 @@
-use crate::actor::ActorRef;
 use crate::stream::internal::{
-    LogicContainer, LogicContainerFacade, Producer, ProducerWithFlow, ProducerWithSink,
+    Producer, ProducerWithFlow, ProducerWithSink,
+    SourceLike,
 };
 use crate::stream::sink::Sink;
 use crate::stream::{flow, flow::Flow};
 use crate::stream::{Logic, Stream};
+use std::iter::{Iterator as Iter};
 use std::marker::PhantomData;
 
-pub mod iterator;
-pub mod queue;
-pub mod repeat;
+mod iterator;
+mod queue;
+mod repeat;
 
-use crate::stream::internal::SourceLike;
+pub use iterator::Iterator;
+pub use queue::SourceQueue;
+pub use repeat::Repeat;
 
 pub struct Source<A> {
     pub(in crate::stream) producer: Box<Producer<(), A> + Send>,
@@ -34,22 +37,22 @@ where
         }
     }
 
-    pub fn iterator<I: Iterator<Item = A>>(iterator: I) -> Self
+    pub fn iterator<I: Iter<Item = A>>(iterator: I) -> Self
     where
         I: 'static + Send,
     {
-        Self::new(iterator::Iterator::new(iterator))
+        Self::new(Iterator::new(iterator))
     }
 
-    pub fn queue(capacity: usize) -> queue::SourceQueue<A> {
-        queue::SourceQueue::new(capacity)
+    pub fn queue(capacity: usize) -> SourceQueue<A> {
+        SourceQueue::new(capacity)
     }
 
     pub fn repeat(element: A) -> Self
     where
         A: Clone,
     {
-        Self::new(repeat::Repeat::new(element))
+        Self::new(Repeat::new(element))
     }
 
     pub fn to<Out>(self, sink: Sink<A, Out>) -> Stream<Out>

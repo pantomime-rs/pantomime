@@ -1,15 +1,19 @@
 use crate::stream::{Action, Logic, StreamContext};
 use std::marker::PhantomData;
 
-struct Ignore<A>
-where
-    A: 'static + Send,
-{
+pub struct Ignore {
     pulled: bool,
-    phantom: PhantomData<A>,
 }
 
-impl<A> Logic<A, (), ()> for Ignore<A>
+impl Ignore {
+    pub fn new() -> Self {
+        Self {
+            pulled: false
+        }
+    }
+}
+
+impl<A> Logic<A, (), ()> for Ignore
 where
     A: 'static + Send,
 {
@@ -35,9 +39,14 @@ where
         if self.pulled {
             self.pulled = false;
 
+            // note that the action we're returning will be synchronously processed, followed
+            // later by this Complete, i.e. the Push is processed first.
+
+            ctx.tell(Action::Complete);
+
             Some(Action::Push(()))
         } else {
-            None
+            Some(Action::Complete)
         }
     }
 
