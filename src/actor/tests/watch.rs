@@ -45,7 +45,7 @@ fn basic_test() {
 
                         let actor_ref = ctx.spawn(MyActor { fail: false });
 
-                        ctx.watch2(&actor_ref, |reason| ReaperMsg::SecondChildStopped(reason));
+                        ctx.watch(&actor_ref, ReaperMsg::SecondChildStopped);
 
                         actor_ref.tell(());
                     }
@@ -53,7 +53,7 @@ fn basic_test() {
                     _ => {
                         panic!("unexpected msg in One");
                     }
-                }
+                },
 
                 ReaperState::Two => match msg {
                     ReaperMsg::SecondChildStopped(StopReason::Stopped) => {
@@ -61,7 +61,7 @@ fn basic_test() {
 
                         let actor_ref = ctx.spawn(MyActor { fail: true });
 
-                        ctx.watch2(&actor_ref, |reason| match reason {
+                        ctx.watch(&actor_ref, |reason| match reason {
                             StopReason::Stopped => ReaperMsg::Stopped,
                             StopReason::Failed => ReaperMsg::Failed,
                         });
@@ -72,7 +72,7 @@ fn basic_test() {
                     _ => {
                         panic!("unexpected msg in Two");
                     }
-                }
+                },
 
                 ReaperState::Three => match msg {
                     ReaperMsg::Failed => {
@@ -80,9 +80,9 @@ fn basic_test() {
 
                         let actor_ref = ctx.spawn(MyActor { fail: false });
 
-                        ctx.watch2(&actor_ref, |reason| match reason {
+                        ctx.watch(&actor_ref, |reason| match reason {
                             StopReason::Stopped => ReaperMsg::Stopped,
-                            StopReason::Failed  => ReaperMsg::Failed
+                            StopReason::Failed => ReaperMsg::Failed,
                         });
 
                         actor_ref.tell(());
@@ -111,7 +111,7 @@ fn basic_test() {
                     Signal::Started => {
                         let actor_ref = ctx.spawn(MyActor { fail: true });
 
-                        ctx.watch2(&actor_ref, |reason| ReaperMsg::FirstChildStopped(reason));
+                        ctx.watch(&actor_ref, ReaperMsg::FirstChildStopped);
 
                         actor_ref.tell(());
                     }
@@ -119,7 +119,7 @@ fn basic_test() {
                     _ => {
                         panic!("unexpected signal in One");
                     }
-                }
+                },
 
                 _ => {}
             }

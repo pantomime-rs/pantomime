@@ -1,58 +1,81 @@
-//! MIO support offers TCP/UDP support for actors.
+use crate::actor::ActorRef;
+use crate::stream::internal::{
+    LogicContainer, LogicContainerFacade, Producer, ProducerWithFlow, ProducerWithSink,
+};
+use crate::stream::sink::Sink;
+use crate::stream::{flow, flow::Flow};
+use crate::stream::{Logic, Stream};
+use std::marker::PhantomData;
 
-//pub mod idle;
-pub mod detached_logic;
-pub mod iter;
+pub mod iterator;
+pub mod repeat;
 
-pub(crate) mod io_manager;
-pub(crate) mod io_tcp;
+use crate::stream::internal::SourceLike;
 
-use std::iter as std_iter;
+pub struct Source<A> {
+    pub(in crate::stream) producer: Box<Producer<(), A> + Send>,
+}
 
-use crate::stream::Source;
-pub use iter::Iter;
-
-/// A `Source` is a convention for `Publish`ers that are not
-/// `Subscriber`s, i.e. they have no input but one output.
-///
-/// This provides convenience functions for creating common
-/// sources.
-pub struct Sources;
-
-impl Sources {
-    pub fn iterator<A, I: Iterator<Item = A>>(iterator: I) -> iter::Iter<A, I>
+impl<A> Source<A>
+where
+    A: 'static + Send,
+{
+    pub fn new<Msg, L: Logic<(), A, Msg>>(logic: L) -> Self
     where
-        A: 'static + Send,
+        Msg: 'static + Send,
+        L: 'static + Send,
+    {
+        Self {
+            producer: Box::new(SourceLike {
+                logic,
+                phantom: PhantomData,
+            }),
+        }
+    }
+
+    pub fn iterator<I: Iterator<Item = A>>(iterator: I) -> Self
+    where
         I: 'static + Send,
     {
-        iter::Iter::new(iterator)
+        Self::new(iterator::Iterator::new(iterator))
     }
 
-    pub fn empty<A>() -> iter::Iter<A, std_iter::Empty<A>>
+    pub fn repeat(element: A) -> Self
     where
-        A: Send,
+        A: Clone,
     {
-        iter::Iter::new(std_iter::empty())
+        Self::new(repeat::Repeat::new(element))
     }
 
-    pub fn repeat<A>(element: A) -> iter::Iter<A, std_iter::Repeat<A>>
+    pub fn to<Out>(self, sink: Sink<A, Out>) -> Stream<Out>
     where
-        A: Send + Clone,
+        Out: 'static + Send,
     {
-        iter::Iter::new(std_iter::repeat(element))
+        Stream {
+            runnable_stream: Box::new(ProducerWithSink {
+                producer: self.producer,
+                sink,
+                phantom: PhantomData,
+            }),
+        }
     }
 
-    pub fn single<A>(element: A) -> iter::Iter<A, std_iter::Once<A>>
+    pub fn filter<F: FnMut(&A) -> bool>(self, filter: F) -> Source<A>
     where
-        A: Send,
+        F: 'static + Send,
     {
-        iter::Iter::new(std_iter::once(element))
+        self.via(Flow::new(flow::Filter::new(filter)))
     }
 
-    fn what<A>(element: A) -> impl Source<A>
+    pub fn via<B>(self, flow: Flow<A, B>) -> Source<B>
     where
-        A: Send,
+        B: 'static + Send,
     {
-        iter::Iter::new(std_iter::once(element))
+        Source {
+            producer: Box::new(ProducerWithFlow {
+                producer: self.producer,
+                flow,
+            }),
+        }
     }
 }

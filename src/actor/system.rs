@@ -20,6 +20,9 @@ use std::{cmp, thread, time, usize};
 #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
 use signal_hook::iterator::Signals;
 
+#[cfg(all(feature = "posix-signals-support"))]
+use crate::posix_signals::PosixSignal;
+
 static INITIALIZE_ONCE: Once = Once::new();
 
 const MIO_TOKENS_RESERVED: usize = 100;
@@ -122,6 +125,9 @@ impl ActorSystemContext {
                 state: SpawnedActorState::Active,
                 system_context: self.clone(),
                 watching: HashMap::new(),
+
+                #[cfg(feature = "posix-signals-support")]
+                watching_posix_signals: Vec::new(),
             },
             dispatcher,
             execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
@@ -493,7 +499,7 @@ where
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             ReaperMsg::ReceivedPosixSignal(signal) => {
                 for watcher in self.posix_signals_watchers.values() {
-                    watcher.tell_system(SystemMsg::Signaled(Signal::PosixSignal(signal)));
+                    watcher.tell_system(SystemMsg::PosixSignal(signal));
                 }
             }
 
@@ -501,7 +507,9 @@ where
             ReaperMsg::WatchPosixSignals(system_ref) => {
                 let system_ref_id = system_ref.id();
 
-                ctx.watch2(&system_ref, move |reason| ReaperMsg::ActorStopped(system_ref_id, reason));
+                ctx.watch(&system_ref, move |reason| {
+                    ReaperMsg::ActorStopped(system_ref_id, reason)
+                });
 
                 self.posix_signals_watchers
                     .insert(system_ref_id, system_ref);
@@ -524,21 +532,19 @@ where
 
                 let failed = self.failed.clone();
 
-                ctx.watch2(
-                    &actor_ref,
-                    move |reason| {
-                        // this will often (e.g. when system is stopped) be dropped,
-                        // so we set failed here
+                ctx.watch(&actor_ref, move |reason| {
+                    // this will often (e.g. when system is stopped) be dropped,
+                    // so we set failed here
 
-                        if let StopReason::Failed = reason {
-                            failed.store(true, Ordering::Release);
-                        }
+                    if let StopReason::Failed = reason {
+                        failed.store(true, Ordering::Release);
+                    }
 
-                        ReaperMsg::ActorStopped(actor_ref_id, reason)
-                    });
+                    ReaperMsg::ActorStopped(actor_ref_id, reason)
+                });
             }
 
-            Signal::Stopped => {
+            Signal::Stopped(_) => {
                 ctx.system_context().done();
             }
 

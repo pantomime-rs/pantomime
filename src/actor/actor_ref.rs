@@ -15,6 +15,9 @@ use std::thread;
 use std::time::Duration;
 use std::usize;
 
+#[cfg(feature = "posix-signals-support")]
+use crate::posix_signals::{PosixSignal, PosixSignals};
+
 pub enum SystemMsg {
     Stop(Option<FailureReason>),
     ChildStopped(usize),
@@ -22,6 +25,9 @@ pub enum SystemMsg {
     ActorStopped(SystemActorRef, StopReason),
     Watch(SystemActorRef),
     SendDelivery(String, usize),
+
+    #[cfg(feature = "posix-signals-support")]
+    PosixSignal(i32),
 }
 
 pub enum Envelope<Msg>
@@ -75,13 +81,8 @@ pub enum StopReason {
 
 pub enum Signal {
     Started,
-    Stopped,
-    Failed(FailureReason),
+    Stopped(Option<FailureReason>),
     Resumed,
-    //ActorStopped(SystemActorRef, StopReason),
-
-    #[cfg(feature = "posix-signals-support")]
-    PosixSignal(i32),
 }
 
 pub trait Actor<Msg>: Send
@@ -159,14 +160,22 @@ where
 
     pub(in crate::actor) system_context: ActorSystemContext,
 
-    pub(in crate::actor) watching: HashMap<usize, Vec<Box<dyn Fn(StopReason) -> Msg + 'static + Send>>>,
+    pub(in crate::actor) watching:
+        HashMap<usize, Vec<Box<dyn Fn(StopReason) -> Msg + 'static + Send>>>,
+
+    #[cfg(feature = "posix-signals-support")]
+    pub(in crate::actor) watching_posix_signals:
+        Vec<Box<dyn Fn(PosixSignal) -> Msg + 'static + Send>>,
 }
 
 pub trait Spawnable<A, B> {
     fn perform_spawn(&mut self, a: A) -> B;
 }
 
-pub trait Watchable<S, R, Msg, F> where F: Fn(R) -> Msg {
+pub trait Watchable<S, R, Msg, F>
+where
+    F: Fn(R) -> Msg,
+{
     fn perform_watch(&mut self, subject: S, convert: F);
 }
 
@@ -178,7 +187,10 @@ pub struct ActorSpawnContext<'a> {
 }
 
 impl<'a> ActorSpawnContext<'a> {
-    pub fn spawn<A, B>(&mut self, a: A) -> B where Self: Spawnable<A, B> {
+    pub fn spawn<A, B>(&mut self, a: A) -> B
+    where
+        Self: Spawnable<A, B>,
+    {
         self.perform_spawn(a)
     }
 
@@ -189,7 +201,7 @@ impl<'a> ActorSpawnContext<'a> {
     fn do_spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
     where
         A: 'static + Send,
-        AMsg: 'static + Send
+        AMsg: 'static + Send,
     {
         ///////////////////////////////////////////////////////////////////////////////////////////////
         // NOTE: this is quite similiar to ActorSystemContext::spawn, and changes should be mirrored //
@@ -222,6 +234,9 @@ impl<'a> ActorSpawnContext<'a> {
                 state: SpawnedActorState::Active,
                 system_context: self.system_context.clone(),
                 watching: HashMap::new(),
+
+                #[cfg(feature = "posix-signals-support")]
+                watching_posix_signals: Vec::new(),
             },
             dispatcher,
             execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
@@ -274,48 +289,77 @@ impl<'a> ActorSpawnContext<'a> {
     }
 }
 
-impl<'a, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorSpawnContext<'a> where AMsg: 'static + Send, A: 'static + Send {
+impl<'a, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorSpawnContext<'a>
+where
+    AMsg: 'static + Send,
+    A: 'static + Send,
+{
     fn perform_spawn(&mut self, actor: A) -> ActorRef<AMsg> {
         self.do_spawn(actor)
     }
 }
 
-impl<Msg, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorContext<Msg> where Msg: 'static + Send, AMsg: 'static + Send, A: 'static + Send {
+impl<Msg, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorContext<Msg>
+where
+    Msg: 'static + Send,
+    AMsg: 'static + Send,
+    A: 'static + Send,
+{
     fn perform_spawn(&mut self, actor: A) -> ActorRef<AMsg> {
         self.spawn_context().spawn(actor)
     }
 }
 
-impl<Msg, AMsg, F: Fn(StopReason) -> Msg> Watchable<&ActorRef<AMsg>, StopReason, Msg, F> for ActorContext<Msg> where AMsg: 'static + Send, Msg: 'static + Send, F: 'static + Send {
+impl<Msg, AMsg, F: Fn(StopReason) -> Msg> Watchable<&ActorRef<AMsg>, StopReason, Msg, F>
+    for ActorContext<Msg>
+where
+    AMsg: 'static + Send,
+    Msg: 'static + Send,
+    F: 'static + Send,
+{
     fn perform_watch(&mut self, subject: &ActorRef<AMsg>, convert: F) {
         self.watch_with(subject, convert)
     }
 }
 
-impl<Msg, AMsg, F: Fn(StopReason) -> Msg> Watchable<ActorRef<AMsg>, StopReason, Msg, F> for ActorContext<Msg> where AMsg: 'static + Send, Msg: 'static + Send, F: 'static + Send {
+impl<Msg, AMsg, F: Fn(StopReason) -> Msg> Watchable<ActorRef<AMsg>, StopReason, Msg, F>
+    for ActorContext<Msg>
+where
+    AMsg: 'static + Send,
+    Msg: 'static + Send,
+    F: 'static + Send,
+{
     fn perform_watch(&mut self, subject: ActorRef<AMsg>, convert: F) {
         self.watch_with(&subject, convert)
     }
 }
 
-impl<Msg, F: Fn(StopReason) -> Msg> Watchable<&SystemActorRef, StopReason, Msg, F> for ActorContext<Msg> where Msg: 'static + Send, F: 'static + Send {
+impl<Msg, F: Fn(StopReason) -> Msg> Watchable<&SystemActorRef, StopReason, Msg, F>
+    for ActorContext<Msg>
+where
+    Msg: 'static + Send,
+    F: 'static + Send,
+{
     fn perform_watch(&mut self, subject: &SystemActorRef, convert: F) {
         self.watch_system_with(subject, convert)
     }
 }
 
-impl<Msg, F: Fn(StopReason) -> Msg> Watchable<SystemActorRef, StopReason, Msg, F> for ActorContext<Msg> where Msg: 'static + Send, F: 'static + Send {
+impl<Msg, F: Fn(StopReason) -> Msg> Watchable<SystemActorRef, StopReason, Msg, F>
+    for ActorContext<Msg>
+where
+    Msg: 'static + Send,
+    F: 'static + Send,
+{
     fn perform_watch(&mut self, subject: SystemActorRef, convert: F) {
         self.watch_system_with(&subject, convert)
     }
 }
 
-
 impl<Msg> ActorContext<Msg>
 where
     Msg: 'static + Send,
 {
-
     /// Obtain a reference to the ActorRef that this context
     /// is attached to.
     pub fn actor_ref(&self) -> &ActorRef<Msg> {
@@ -478,37 +522,8 @@ where
             children: &mut self.children,
             system_context: &self.system_context,
             system_ref: self.actor_ref.system_ref(),
-            state: &self.state
+            state: &self.state,
         }
-    }
-
-    /// Register interest in receiving POSIX signals. When the process
-    /// receives a POSIX signal, it will be forwarded to this actor
-    /// via `receive_signal`.
-    ///
-    /// Usage is often performed from the root reaper actor, but any
-    /// actor in the system is eligible to watch the signals.
-    ///
-    /// POSIX signals are not supported on Windows and thus no action
-    /// will be performed when running on Windows systems.
-    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-    pub fn watch_posix_signals(&mut self) {
-        // @TODO use the generalized watch method
-        self.system_context
-            .tell_reaper_monitor(system::ReaperMsg::WatchPosixSignals(
-                self.actor_ref().system_ref(),
-            ));
-    }
-
-    /// Register interest in receiving POSIX signals. When the process
-    /// receives a POSIX signal, it will be forwarded to this actor
-    /// via `receive_signal`.
-    ///
-    /// Usage is often performed from the root reaper actor, but any
-    /// actor in the system is eligible to watch the signals.  POSIX signals are not supported on Windows and thus no action will be performed when running on Windows systems.
-    #[cfg(all(feature = "posix-signals-support", target_family = "windows"))]
-    pub fn watch_posix_signals(&mut self) {
-        // @TODO use the generalized watch method
     }
 
     /// Spawn the supplied instance, returning a handle to it.
@@ -518,7 +533,10 @@ where
     /// - Actors
     /// - Streams
     /// - Stream Combinators
-    pub fn spawn<S, R>(&mut self, spawnable: S) -> R where Self: Spawnable<S, R> {
+    pub fn spawn<S, R>(&mut self, spawnable: S) -> R
+    where
+        Self: Spawnable<S, R>,
+    {
         self.perform_spawn(spawnable)
     }
 
@@ -532,12 +550,37 @@ where
     ///
     /// When the std::future modules are fully stable, this will
     /// also be used to watch futures.
-    pub fn watch2<W, R, F: Fn(R) -> Msg>(&mut self, watchable: W, convert: F) where Self: Watchable<W, R, Msg, F> {
+    pub fn watch<W, R, F: Fn(R) -> Msg>(&mut self, watchable: W, convert: F)
+    where
+        Self: Watchable<W, R, Msg, F>,
+    {
         self.perform_watch(watchable, convert);
     }
 
     pub(crate) fn system_context(&self) -> &ActorSystemContext {
         &self.system_context
+    }
+
+    #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+    pub(crate) fn watch_posix_signals_with<F: Fn(PosixSignal) -> Msg>(&mut self, convert: F)
+    where
+        F: 'static + Send,
+    {
+        let new = self.watching_posix_signals.is_empty();
+
+        self.watching_posix_signals.push(Box::new(convert));
+
+        self.system_context
+            .tell_reaper_monitor(system::ReaperMsg::WatchPosixSignals(
+                self.actor_ref().system_ref(),
+            ));
+    }
+
+    #[cfg(all(feature = "posix-signals-support", target_family = "windows"))]
+    pub(crate) fn watch_posix_signals_with<F: Fn(PosixSignal) -> Msg>(&mut self, convert: F)
+    where
+        F: 'static + Send,
+    {
     }
 
     fn watch_with<N, F: Fn(StopReason) -> Msg>(&mut self, actor_ref: &ActorRef<N>, msg: F)
@@ -558,11 +601,8 @@ where
         }
     }
 
-    fn watch_system_with<F: Fn(StopReason) -> Msg>(
-        &mut self,
-        system_ref: &SystemActorRef,
-        msg: F,
-    ) where
+    fn watch_system_with<F: Fn(StopReason) -> Msg>(&mut self, system_ref: &SystemActorRef, msg: F)
+    where
         F: 'static + Send,
     {
         let actor_id = system_ref.id();
@@ -926,10 +966,7 @@ where
             }
 
             (SpawnedActorState::Failed(_), SystemMsg::Watch(watcher)) => {
-                watcher.tell_system(SystemMsg::ActorStopped(
-                    watcher.clone(),
-                    StopReason::Failed,
-                ));
+                watcher.tell_system(SystemMsg::ActorStopped(watcher.clone(), StopReason::Failed));
             }
 
             (SpawnedActorState::Stopped, SystemMsg::Watch(watcher)) => {
@@ -997,6 +1034,31 @@ where
                 self.check_pending_stop();
             }
 
+            #[cfg(feature = "posix-signals-support")]
+            (_, SystemMsg::PosixSignal(signal)) => {
+                // @FIXME should we support numeric signals?
+
+                let mut messages = Vec::new();
+
+                for converter in self.context.watching_posix_signals.iter() {
+                    let sig_hup = PosixSignal::SIGHUP as i32;
+                    let sig_int = PosixSignal::SIGINT as i32;
+                    let sig_term = PosixSignal::SIGTERM as i32;
+
+                    if signal == PosixSignal::SIGHUP as i32 {
+                        messages.push(converter(PosixSignal::SIGHUP));
+                    } else if signal == PosixSignal::SIGINT as i32 {
+                        messages.push(converter(PosixSignal::SIGINT));
+                    } else if signal == PosixSignal::SIGTERM as i32 {
+                        messages.push(converter(PosixSignal::SIGTERM));
+                    }
+                }
+
+                for message in messages.drain(..) {
+                    self.receive(message);
+                }
+            }
+
             (SpawnedActorState::Stopping(None), SystemMsg::Stop(Some(_))) => {
                 // @TODO do something with reason?
                 // We've failed while we were stopping, which means that a signal
@@ -1012,7 +1074,7 @@ where
             (_, SystemMsg::ChildStopped(child_id)) => {
                 self.context.children.remove(&child_id);
 
-                // @TODO log this? shouldnt happe
+                // @TODO log this? shouldnt happen
             }
         }
     }
@@ -1146,7 +1208,7 @@ where
                 self.context.state = SpawnedActorState::Stopped;
                 self.reset_pending_stop();
                 self.actor
-                    .receive_signal(Signal::Stopped, &mut self.context);
+                    .receive_signal(Signal::Stopped(None), &mut self.context);
                 self.check_pending_stop();
 
                 for watcher in self.watchers.drain(..) {
@@ -1169,7 +1231,7 @@ where
                     SpawnedActorState::Failed(reason) => {
                         self.reset_pending_stop();
                         self.actor
-                            .receive_signal(Signal::Failed(reason), &mut self.context);
+                            .receive_signal(Signal::Stopped(Some(reason)), &mut self.context);
                         self.check_pending_stop();
 
                         for watcher in self.watchers.drain(..) {

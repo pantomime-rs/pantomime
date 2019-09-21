@@ -1,99 +1,71 @@
-use crate::dispatcher::{BoxedFn2In0Out, Trampoline};
-use crate::stream::oxidized::*;
-use crate::stream::*;
+use crate::stream::{Action, Logic, StreamContext};
 use std::marker::PhantomData;
 
-/// A `Sink` that stores the first emitted element, offering it to
-/// the registered termination handler when it terminates.
-///
-/// Once the first element is received, upstream is cancelled.
-pub struct First<A, Up: Producer<A>>
-where
-    A: 'static + Send,
-{
-    element: Option<A>,
-    on_termination: Option<Box<dyn BoxedFn2In0Out<Terminated, Option<A>> + 'static + Send>>,
-    upstream: Up,
-    phantom: PhantomData<A>,
+pub struct First<A> {
+    first: Option<A>,
+    pulled: bool,
 }
 
-impl<A, Up: Producer<A>> First<A, Up>
-where
-    A: 'static + Send,
-{
-    pub fn new() -> impl FnOnce(Up) -> Self {
-        move |upstream| Self {
-            element: None,
-            on_termination: None,
-            upstream,
-            phantom: PhantomData,
+impl<A> First<A> {
+    pub fn new() -> Self {
+        Self {
+            first: None,
+            pulled: false,
         }
-    }
-
-    // @TODO UnwindSafe
-    pub fn watch_termination<T: FnOnce(Terminated, Option<A>)>(mut self, f: T) -> Self
-    where
-        T: 'static + Send,
-    {
-        self.on_termination = Some(Box::new(f));
-        self
     }
 }
 
-impl<A, Up: Producer<A>> Consumer<A> for First<A, Up>
+impl<A> Logic<A, Option<A>, ()> for First<A>
 where
     A: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce, _: &StreamContext) -> Trampoline {
-        producer.pull(self)
+    fn name(&self) -> &'static str {
+        "First"
     }
 
-    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
-        self.element = Some(element);
+    fn pulled(
+        &mut self,
+        ctx: &mut StreamContext<A, Option<A>, ()>,
+    ) -> Option<Action<Option<A>, ()>> {
+        self.pulled = true;
 
-        Trampoline::bounce(move || producer.cancel(self))
+        None
     }
 
-    fn completed(self) -> Trampoline {
-        if let Some(f) = self.on_termination {
-            f.apply(Terminated::Completed, self.element);
-            /*
-            if let Err(e) = catch_unwind(move || f.apply(Terminated::Completed)) {
-                // @TODO we should have some mechanism for this
-                debug!("user-supplied watch_termination function panicked");
-            }*/
+    fn pushed(
+        &mut self,
+        el: A,
+        ctx: &mut StreamContext<A, Option<A>, ()>,
+    ) -> Option<Action<Option<A>, ()>> {
+        if self.first.is_none() {
+            self.first = Some(el);
         }
 
-        Trampoline::done()
+        Some(Action::Cancel)
     }
 
-    fn failed(self, e: Error) -> Trampoline {
-        if let Some(f) = self.on_termination {
-            f.apply(Terminated::Failed(e), self.element);
+    fn started(
+        &mut self,
+        ctx: &mut StreamContext<A, Option<A>, ()>,
+    ) -> Option<Action<Option<A>, ()>> {
+        Some(Action::Pull)
+    }
 
-            /*
-            if let Err(e) = catch_unwind(move || f.apply(Terminated::Failed(e))) {
-                // @TODO we should have some mechanism for this
-                debug!("user-supplied watch_termination function panicked");
-            }*/
+    fn stopped(
+        &mut self,
+        ctx: &mut StreamContext<A, Option<A>, ()>,
+    ) -> Option<Action<Option<A>, ()>> {
+        if self.pulled {
+            self.pulled = false;
+
+            // note that the action we're returning will be synchronously processed, followed
+            // later by this Complete, i.e. the Push is processed first.
+
+            ctx.tell(Action::Complete);
+
+            Some(Action::Push(self.first.take()))
+        } else {
+            Some(Action::Complete)
         }
-
-        Trampoline::done()
-    }
-}
-
-impl<A, Up: Producer<A>> Sink<A> for First<A, Up>
-where
-    A: 'static + Send,
-{
-    fn start(self, stream_context: &StreamContext) -> Trampoline {
-        let sink = First {
-            element: self.element,
-            on_termination: self.on_termination,
-            upstream: Disconnected,
-            phantom: PhantomData,
-        };
-
-        self.upstream.attach(sink, stream_context)
     }
 }

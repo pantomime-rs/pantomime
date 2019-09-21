@@ -1,22 +1,44 @@
-pub mod attached;
-pub mod detached;
-pub mod filter;
-pub mod filter_map;
-pub mod identity;
-pub mod map;
-pub mod take_while;
-pub mod throttle;
+use crate::stream::internal::{LogicContainer, LogicContainerFacade, ProtectedStreamCtl};
+use crate::stream::Logic;
+use std::marker::PhantomData;
 
-pub use attached::Attached;
-pub use detached::Detached;
-pub use filter::Filter;
-pub use filter_map::FilterMap;
-pub use identity::Identity;
-pub use map::Map;
-pub use take_while::TakeWhile;
+mod delay;
+mod filter;
+mod identity;
+mod map;
+mod take_while;
 
-/// A `Flow` is a convention for `Subscriber`s that are also
-/// `Publish`ers. This type is currently not used for much,
-/// as flows currently appear to be better expressed as
-/// simple functions given the convenience of `impl` traits.
-pub struct Flow;
+pub use self::delay::Delay;
+pub use self::filter::Filter;
+pub use self::identity::Identity;
+pub use self::map::Map;
+
+pub struct Flow<A, B> {
+    pub(in crate::stream) logic: Box<LogicContainerFacade<A, B, ProtectedStreamCtl> + Send>,
+}
+
+impl<A, B> Flow<A, B>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+{
+    pub fn new<Msg, L: Logic<A, B, Msg>>(logic: L) -> Self
+    where
+        Msg: 'static + Send,
+        L: 'static + Send,
+    {
+        Self {
+            logic: Box::new(LogicContainer {
+                logic,
+                phantom: PhantomData,
+            }),
+        }
+    }
+
+    pub fn map<F: FnMut(A) -> B>(map_fn: F) -> Self
+    where
+        F: 'static + Send,
+    {
+        Self::new(Map::new(map_fn))
+    }
+}
