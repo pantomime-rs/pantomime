@@ -8,6 +8,7 @@ use crate::stream::{Logic, Stream};
 use std::marker::PhantomData;
 
 pub mod iterator;
+pub mod queue;
 pub mod repeat;
 
 use crate::stream::internal::SourceLike;
@@ -40,6 +41,10 @@ where
         Self::new(iterator::Iterator::new(iterator))
     }
 
+    pub fn queue(capacity: usize) -> queue::SourceQueue<A> {
+        queue::SourceQueue::new(capacity)
+    }
+
     pub fn repeat(element: A) -> Self
     where
         A: Clone,
@@ -65,6 +70,14 @@ where
         F: 'static + Send,
     {
         self.via(Flow::new(flow::Filter::new(filter)))
+    }
+
+    pub fn map<B, F: FnMut(A) -> B>(self, map_fn: F) -> Source<B>
+    where
+        B: 'static + Send,
+        F: 'static + Send,
+    {
+        self.via(Flow::new(flow::Map::new(map_fn)))
     }
 
     pub fn via<B>(self, flow: Flow<A, B>) -> Source<B>
