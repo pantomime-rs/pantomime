@@ -7,9 +7,7 @@ pub struct Ignore {
 
 impl Ignore {
     pub fn new() -> Self {
-        Self {
-            pulled: false
-        }
+        Self { pulled: false }
     }
 }
 

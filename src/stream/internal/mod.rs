@@ -632,7 +632,7 @@ where
         downstream: ActorRef<DownstreamStageMsg<A>>,
         context: &mut ActorSpawnContext,
     ) -> ActorRef<DownstreamStageMsg<()>> {
-        let upstream = self.producer.spawn(downstream.clone(), context);
+        let upstream = self.producer().spawn(downstream.clone(), context);
 
         // @TODO double conversion here..
         downstream.tell(DownstreamStageMsg::SetUpstream(
