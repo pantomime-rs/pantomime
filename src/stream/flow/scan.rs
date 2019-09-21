@@ -9,7 +9,7 @@ where
     scan_fn: F,
     phantom: PhantomData<(A, B)>,
     sent: bool,
-    last: Option<B>
+    last: Option<B>,
 }
 
 impl<A, B, F: FnMut(B, A) -> B> Scan<A, B, F>
@@ -22,7 +22,7 @@ where
             scan_fn,
             phantom: PhantomData,
             sent: false,
-            last: Some(zero)
+            last: Some(zero),
         }
     }
 }
@@ -42,7 +42,11 @@ where
         } else {
             self.sent = true;
 
-            let last = self.last.as_ref().expect("pantomime bug: Scan::last is None").clone();
+            let last = self
+                .last
+                .as_ref()
+                .expect("pantomime bug: Scan::last is None")
+                .clone();
 
             Some(Action::Push(last))
         }
@@ -58,4 +62,3 @@ where
         action
     }
 }
-

@@ -1,23 +1,22 @@
-use crate::stream::internal::{
-    Producer, ProducerWithFlow, ProducerWithSink,
-    SourceLike,
-};
+use crate::stream::internal::{Producer, ProducerWithFlow, ProducerWithSink, SourceLike};
 use crate::stream::sink::Sink;
 use crate::stream::{flow, flow::Flow};
 use crate::stream::{Logic, Stream};
-use std::iter::{Iterator as Iter};
+use std::iter::Iterator as Iter;
 use std::marker::PhantomData;
 
 mod iterator;
+mod merge;
 mod queue;
 mod repeat;
 
 pub use iterator::Iterator;
+pub use merge::Merge;
 pub use queue::SourceQueue;
 pub use repeat::Repeat;
 
 pub struct Source<A> {
-    pub(in crate::stream) producer: Box<Producer<(), A> + Send>,
+    pub(in crate::stream) producers: Vec<Box<Producer<(), A> + Send>>,
 }
 
 impl<A> Source<A>
@@ -30,10 +29,10 @@ where
         L: 'static + Send,
     {
         Self {
-            producer: Box::new(SourceLike {
+            producers: vec![Box::new(SourceLike {
                 logic,
                 phantom: PhantomData,
-            }),
+            })],
         }
     }
 
@@ -61,7 +60,7 @@ where
     {
         Stream {
             runnable_stream: Box::new(ProducerWithSink {
-                producer: self.producer,
+                producer: self.producer(),
                 sink,
                 phantom: PhantomData,
             }),
@@ -83,15 +82,38 @@ where
         self.via(Flow::new(flow::Map::new(map_fn)))
     }
 
+    pub fn merge(self, source: Source<A>) -> Self {
+        let mut producers = self.producers;
+
+        for p in source.producers {
+            producers.push(p);
+        }
+
+        Source { producers }
+    }
+
     pub fn via<B>(self, flow: Flow<A, B>) -> Source<B>
     where
         B: 'static + Send,
     {
         Source {
-            producer: Box::new(ProducerWithFlow {
-                producer: self.producer,
+            producers: vec![Box::new(ProducerWithFlow {
+                producer: self.producer(),
                 flow,
-            }),
+            })],
+        }
+    }
+
+    pub(in crate::stream) fn producer(mut self) -> Box<Producer<(), A> + Send> {
+        if self.producers.len() > 1 {
+            Box::new(SourceLike {
+                logic: Merge::new(self.producers),
+                phantom: PhantomData,
+            })
+        } else {
+            self.producers
+                .pop()
+                .expect("pantomime bug: Source::producers is empty")
         }
     }
 }

@@ -47,7 +47,7 @@ where
     pub fn scan<F: FnMut(B, A) -> B>(zero: B, scan_fn: F) -> Self
     where
         F: 'static + Send,
-        B: Clone
+        B: Clone,
     {
         Self::new(Scan::new(zero, scan_fn))
     }
@@ -55,7 +55,7 @@ where
 
 impl<A> Flow<A, A>
 where
-    A: 'static + Send
+    A: 'static + Send,
 {
     pub fn filter<F: FnMut(&A) -> bool>(filter_fn: F) -> Self
     where

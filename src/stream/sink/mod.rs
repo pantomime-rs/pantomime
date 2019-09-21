@@ -51,7 +51,10 @@ where
     }
 }
 
-impl<A> Sink<A, Option<A>> where A: Send {
+impl<A> Sink<A, Option<A>>
+where
+    A: Send,
+{
     pub fn first() -> Self {
         Sink::new(First::new())
     }
@@ -65,7 +68,6 @@ impl<A> Sink<A, ()>
 where
     A: 'static + Send,
 {
-
     pub fn for_each<F: FnMut(A) -> ()>(for_each_fn: F) -> Self
     where
         F: 'static + Send,

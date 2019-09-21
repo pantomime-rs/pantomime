@@ -155,8 +155,68 @@ fn test3() {
                     }
 
                     let (_, result) = ctx.spawn(
-                        Source::iterator(1..= 3)
+                        Source::iterator(1..=3)
                             .via(Flow::scan(0, |last, next| last + next))
+                            .to(Sink::last()),
+                    );
+
+                    ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());
+                }
+
+                _ => {}
+            }
+        }
+    }
+
+    assert!(ActorSystem::new().spawn(TestReaper::new()).is_ok());
+}
+
+#[test]
+fn test4() {
+    use crate::actor::*;
+    use crate::stream::flow::Delay;
+    use std::io::{Error, ErrorKind};
+
+    struct TestReaper {
+        n: usize,
+    }
+
+    impl TestReaper {
+        fn new() -> Self {
+            Self { n: 0 }
+        }
+    }
+
+    impl Actor<usize> for TestReaper {
+        fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
+            self.n += value;
+
+            if self.n == 465 {
+                ctx.stop();
+            }
+        }
+
+        fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<usize>) {
+            match signal {
+                Signal::Started => {
+                    {
+                        let actor_ref = ctx.actor_ref().clone();
+
+                        ctx.schedule_thunk(Duration::from_secs(10), move || {
+                            actor_ref
+                                .fail(FailureError::new(Error::new(ErrorKind::Other, "failed")))
+                        });
+                    }
+
+                    let a = Source::iterator(1..=10);
+                    let b = Source::iterator(11..=20);
+                    let c = Source::iterator(21..=30);
+
+                    let (_, result) = ctx.spawn(
+                        a.merge(b)
+                            .merge(c)
+                            .via(Flow::scan(0, |last, next| last + next))
+                            .via(Flow::new(Delay::new(Duration::from_millis(50))))
                             .to(Sink::last()),
                     );
 
