@@ -4,11 +4,17 @@ use crate::stream::internal::{
 use crate::stream::Logic;
 use std::marker::PhantomData;
 
-pub mod collect;
-pub mod first;
-pub mod for_each;
-pub mod ignore;
-pub mod last;
+mod collect;
+mod first;
+mod for_each;
+mod ignore;
+mod last;
+
+pub use collect::Collect;
+pub use first::First;
+pub use for_each::ForEach;
+pub use ignore::Ignore;
+pub use last::Last;
 
 /// A `Sink` is a stage that accepts a single output, and outputs a
 /// terminal value.
@@ -45,23 +51,25 @@ where
     }
 }
 
-// @TODO redo this
+impl<A> Sink<A, Option<A>> where A: Send {
+    pub fn first() -> Self {
+        Sink::new(First::new())
+    }
+
+    pub fn last() -> Self {
+        Sink::new(Last::new())
+    }
+}
+
 impl<A> Sink<A, ()>
 where
     A: 'static + Send,
 {
-    pub fn first() -> Sink<A, Option<A>> {
-        Sink::new(first::First::new())
-    }
 
-    pub fn last() -> Sink<A, Option<A>> {
-        Sink::new(last::Last::new())
-    }
-
-    pub fn for_each<F: FnMut(A) -> ()>(for_each_fn: F) -> Sink<A, ()>
+    pub fn for_each<F: FnMut(A) -> ()>(for_each_fn: F) -> Self
     where
         F: 'static + Send,
     {
-        Sink::new(for_each::ForEach::new(for_each_fn))
+        Sink::new(ForEach::new(for_each_fn))
     }
 }

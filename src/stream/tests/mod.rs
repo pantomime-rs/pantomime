@@ -112,3 +112,61 @@ fn test2() {
 
     assert!(ActorSystem::new().spawn(TestReaper::new()).is_ok());
 }
+
+#[test]
+fn test3() {
+    use crate::actor::*;
+    use crate::stream::flow::Delay;
+    use std::io::{Error, ErrorKind};
+
+    struct TestReaper {
+        n: usize,
+    }
+
+    impl TestReaper {
+        fn new() -> Self {
+            Self { n: 0 }
+        }
+    }
+
+    impl Actor<usize> for TestReaper {
+        fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
+            self.n += value;
+
+            if self.n == 6 {
+                // 0 + 1 -> 1
+                // 1 + 2 -> 3
+                // 3 + 3 -> 6
+
+                ctx.stop();
+            }
+        }
+
+        fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<usize>) {
+            match signal {
+                Signal::Started => {
+                    {
+                        let actor_ref = ctx.actor_ref().clone();
+
+                        ctx.schedule_thunk(Duration::from_secs(10), move || {
+                            actor_ref
+                                .fail(FailureError::new(Error::new(ErrorKind::Other, "failed")))
+                        });
+                    }
+
+                    let (_, result) = ctx.spawn(
+                        Source::iterator(1..= 3)
+                            .via(Flow::scan(0, |last, next| last + next))
+                            .to(Sink::last()),
+                    );
+
+                    ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());
+                }
+
+                _ => {}
+            }
+        }
+    }
+
+    assert!(ActorSystem::new().spawn(TestReaper::new()).is_ok());
+}
