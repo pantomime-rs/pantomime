@@ -54,6 +54,10 @@ where
         Sink::new(first::First::new())
     }
 
+    pub fn last() -> Sink<A, Option<A>> {
+        Sink::new(last::Last::new())
+    }
+
     pub fn for_each<F: FnMut(A) -> ()>(for_each_fn: F) -> Sink<A, ()>
     where
         F: 'static + Send,
