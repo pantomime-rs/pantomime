@@ -1,99 +1,75 @@
-use crate::dispatcher::{BoxedFn1In0Out, Trampoline};
-use crate::stream::oxidized::*;
-use crate::stream::*;
+use crate::stream::{Action, Logic, StreamContext};
 use std::marker::PhantomData;
 
-pub struct ForEach<A, F: FnMut(A), Up: Producer<A>>
+pub struct ForEach<A, F>
 where
+    F: FnMut(A) -> (),
     A: 'static + Send,
-    F: 'static + Send,
 {
-    func: F,
-    on_termination: Option<Box<dyn BoxedFn1In0Out<Terminated> + 'static + Send>>,
-    upstream: Up,
+    for_each_fn: F,
+    pulled: bool,
     phantom: PhantomData<A>,
 }
 
-impl<A, F: FnMut(A), Up: Producer<A>> ForEach<A, F, Up>
+impl<A, F: FnMut(A) -> ()> ForEach<A, F>
 where
-    A: 'static + Send,
     F: 'static + Send,
+    A: 'static + Send,
 {
-    pub fn new(func: F) -> impl FnOnce(Up) -> Self {
-        move |upstream| Self {
-            func,
-            on_termination: None,
-            upstream,
+    pub fn new(for_each_fn: F) -> Self {
+        Self {
+            for_each_fn,
+            pulled: false,
             phantom: PhantomData,
         }
     }
-
-    // @TODO UnwindSafe
-    pub fn watch_termination<T: FnOnce(Terminated)>(mut self, f: T) -> Self
-    where
-        T: 'static + Send,
-    {
-        self.on_termination = Some(Box::new(f));
-        self
-    }
 }
 
-impl<A, F: FnMut(A), Up: Producer<A>> Consumer<A> for ForEach<A, F, Up>
+impl<A, F> Logic<A, (), ()> for ForEach<A, F>
 where
+    F: FnMut(A) -> (),
     A: 'static + Send,
-    F: 'static + Send,
 {
-    fn started<Produce: Producer<A>>(self, producer: Produce, _: &StreamContext) -> Trampoline {
-        producer.pull(self)
+    fn name(&self) -> &'static str {
+        "ForEach"
     }
 
-    fn produced<Produce: Producer<A>>(mut self, producer: Produce, element: A) -> Trampoline {
-        (self.func)(element);
+    fn pulled(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
+        self.pulled = true;
 
-        Trampoline::bounce(move || producer.pull(self))
+        None
     }
 
-    fn completed(self) -> Trampoline {
-        if let Some(f) = self.on_termination {
-            f.apply(Terminated::Completed);
-            /*
-            if let Err(e) = catch_unwind(move || f.apply(Terminated::Completed)) {
-                // @TODO we should have some mechanism for this
-                debug!("user-supplied watch_termination function panicked");
-            }*/
+    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
+        (self.for_each_fn)(el);
+
+        Some(Action::Pull)
+    }
+
+    fn started(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
+        Some(Action::Pull)
+    }
+
+    fn stopped(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
+        if self.pulled {
+            self.pulled = false;
+
+            let actor_ref = ctx.actor_ref();
+
+            actor_ref.tell(Action::Push(()));
+            actor_ref.tell(Action::Complete);
+
+            None
+        } else {
+            Some(Action::Complete)
         }
-
-        Trampoline::done()
     }
 
-    fn failed(self, e: Error) -> Trampoline {
-        if let Some(f) = self.on_termination {
-            f.apply(Terminated::Failed(e));
-
-            /*
-            if let Err(e) = catch_unwind(move || f.apply(Terminated::Failed(e))) {
-                // @TODO we should have some mechanism for this
-                debug!("user-supplied watch_termination function panicked");
-            }*/
-        }
-
-        Trampoline::done()
+    fn cancelled(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
+        Some(Action::Complete)
     }
-}
 
-impl<A, F: FnMut(A), Up: Producer<A>> Sink<A> for ForEach<A, F, Up>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    fn start(mut self, stream_context: &StreamContext) -> Trampoline {
-        let sink = ForEach {
-            func: self.func,
-            on_termination: self.on_termination.take(),
-            upstream: Disconnected,
-            phantom: PhantomData,
-        };
-
-        self.upstream.attach(sink, &stream_context)
+    fn forwarded(&mut self, msg: (), ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
+        None
     }
 }

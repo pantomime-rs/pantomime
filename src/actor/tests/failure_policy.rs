@@ -25,7 +25,7 @@ impl Actor<MyMsg> for MyActor {
 
     fn receive_signal(&mut self, signal: Signal, _: &mut ActorContext<MyMsg>) {
         match (self.id, signal) {
-            (0, Signal::Failed(_)) => {
+            (0, Signal::Stopped(Some(_))) => {
                 self.actor_ref.tell(self.num);
             }
 

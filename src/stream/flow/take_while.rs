@@ -1,13 +1,13 @@
-use crate::stream::flow::attached::*;
-use crate::stream::*;
+use crate::stream::{Action, Logic, StreamContext};
 use std::marker::PhantomData;
 
-pub struct TakeWhile<A, F: FnMut(&A) -> bool>
+struct TakeWhile<A, F: FnMut(&A) -> bool>
 where
     A: 'static + Send,
     F: 'static + Send,
 {
-    func: F,
+    while_fn: F,
+    cancelled: bool,
     phantom: PhantomData<A>,
 }
 
@@ -16,38 +16,53 @@ where
     A: 'static + Send,
     F: 'static + Send,
 {
-    pub fn new(func: F) -> Self {
+    fn new(while_fn: F) -> Self {
         Self {
-            func,
+            while_fn,
+            cancelled: false,
             phantom: PhantomData,
         }
     }
 }
 
-impl<A, F: FnMut(&A) -> bool> AttachedLogic<A, A> for TakeWhile<A, F>
+impl<A, F: FnMut(&A) -> bool> Logic<A, A, ()> for TakeWhile<A, F>
 where
     A: 'static + Send,
     F: 'static + Send,
 {
-    fn attach(&mut self, _: &StreamContext) {}
+    fn name(&self) -> &'static str {
+        "TakeWhile"
+    }
 
-    fn produced(&mut self, elem: A) -> Action<A> {
-        if (self.func)(&elem) {
-            Action::Push(elem)
+    fn pulled(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        Some(Action::Pull)
+    }
+
+    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        if self.cancelled {
+            None
+        } else if (self.while_fn)(&el) {
+            Some(Action::Push(el))
         } else {
-            Action::Cancel
+            self.cancelled = true;
+
+            Some(Action::Complete)
         }
     }
 
-    fn pulled(&mut self) -> Action<A> {
-        Action::Pull
+    fn started(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        None
     }
 
-    fn completed(&mut self) -> Action<A> {
-        Action::Complete
+    fn stopped(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        Some(Action::Complete)
     }
 
-    fn failed(&mut self, error: Error) -> Action<A> {
-        Action::Fail(error)
+    fn cancelled(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        Some(Action::Complete)
+    }
+
+    fn forwarded(&mut self, msg: (), ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        None
     }
 }

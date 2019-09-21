@@ -183,10 +183,11 @@ impl ActorSystemConfig {
     pub fn new(cfg: &Config) -> io::Result<Self> {
         #[cfg(feature = "posix-signals-support")]
         fn posix_signal(sig: String) -> i32 {
+            // @FIXME support numeric specification
             match sig.as_str() {
-                "SIGHUP"  => crate::posix_signals::SIGHUP,
-                "SIGINT"  => crate::posix_signals::SIGINT,
-                "SIGTERM" => crate::posix_signals::SIGTERM,
+                "SIGHUP"  => crate::posix_signals::PosixSignal::SIGHUP as i32,
+                "SIGINT"  => crate::posix_signals::PosixSignal::SIGINT as i32,
+                "SIGTERM" => crate::posix_signals::PosixSignal::SIGTERM as i32,
                 _         => 0,
             }
         }
@@ -206,7 +207,7 @@ impl ActorSystemConfig {
             ("PANTOMIME_NUM_CPUS",                                                  "0"),
             ("PANTOMIME_PROCESS_EXIT",                                              "true"),
             ("PANTOMIME_TICKER_INTERVAL_MS",                                        "10"),
-            ("PANTOMIME_POSIX_SIGNALS",                                             "SIGINT,SIGTERM,SIGHUP,SIGUSR1,SIGUSR2"),
+            ("PANTOMIME_POSIX_SIGNALS",                                             "SIGINT,SIGTERM,SIGHUP"),
             ("PANTOMIME_POSIX_EXIT_SIGNALS",                                        "SIGINT,SIGTERM"),
         ]);
 

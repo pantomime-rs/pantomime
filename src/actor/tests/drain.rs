@@ -44,7 +44,7 @@ impl Actor<usize> for MyActor {
                 }
             }
 
-            Signal::Stopped => {
+            Signal::Stopped(None) => {
                 if self.id == 0 {
                     self.actor_ref.tell(self.count);
                 }

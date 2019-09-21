@@ -1,52 +1,43 @@
-use crate::stream::flow::attached::*;
-use crate::stream::*;
+use crate::stream::{Action, Logic, StreamContext};
 use std::marker::PhantomData;
 
 pub struct Map<A, B, F: FnMut(A) -> B>
 where
-    A: 'static + Send,
-    B: 'static + Send,
-    F: 'static + Send,
+    A: Send,
+    B: Send,
 {
-    map: F,
+    map_fn: F,
     phantom: PhantomData<(A, B)>,
 }
 
 impl<A, B, F: FnMut(A) -> B> Map<A, B, F>
 where
-    A: 'static + Send,
-    B: 'static + Send,
-    F: 'static + Send,
+    A: Send,
+    B: Send,
 {
-    pub fn new(map: F) -> Self {
+    pub fn new(map_fn: F) -> Self {
         Self {
-            map,
+            map_fn,
             phantom: PhantomData,
         }
     }
 }
 
-impl<A, B, F: FnMut(A) -> B> AttachedLogic<A, B> for Map<A, B, F>
+impl<A, B, F> Logic<A, B, ()> for Map<A, B, F>
 where
+    F: FnMut(A) -> B,
     A: 'static + Send,
     B: 'static + Send,
-    F: 'static + Send,
 {
-    fn attach(&mut self, _: &StreamContext) {}
-
-    fn produced(&mut self, elem: A) -> Action<B> {
-        Action::Push((self.map)(elem))
+    fn name(&self) -> &'static str {
+        "Map"
     }
 
-    fn pulled(&mut self) -> Action<B> {
-        Action::Pull
+    fn pulled(&mut self, ctx: &mut StreamContext<A, B, ()>) -> Option<Action<B, ()>> {
+        Some(Action::Pull)
     }
 
-    fn completed(&mut self) -> Action<B> {
-        Action::Complete
-    }
-
-    fn failed(&mut self, error: Error) -> Action<B> {
-        Action::Fail(error)
+    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, B, ()>) -> Option<Action<B, ()>> {
+        Some(Action::Push((self.map_fn)(el)))
     }
 }

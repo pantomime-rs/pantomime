@@ -1,5 +1,4 @@
-use crate::stream::flow::attached::*;
-use crate::stream::*;
+use crate::stream::{Action, Logic, StreamContext};
 use std::marker::PhantomData;
 
 pub struct Filter<A, F: FnMut(&A) -> bool>
@@ -8,7 +7,7 @@ where
     F: 'static + Send,
 {
     filter: F,
-    phantom: PhantomData<(A)>,
+    phantom: PhantomData<A>,
 }
 
 impl<A, F: FnMut(&A) -> bool> Filter<A, F>
@@ -24,30 +23,24 @@ where
     }
 }
 
-impl<A, F: FnMut(&A) -> bool> AttachedLogic<A, A> for Filter<A, F>
+impl<A, F: FnMut(&A) -> bool> Logic<A, A, ()> for Filter<A, F>
 where
     A: 'static + Send,
     F: 'static + Send,
 {
-    fn attach(&mut self, _: &StreamContext) {}
+    fn name(&self) -> &'static str {
+        "Filter"
+    }
 
-    fn produced(&mut self, elem: A) -> Action<A> {
-        if (self.filter)(&elem) {
-            Action::Push(elem)
+    fn pulled(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        Some(Action::Pull)
+    }
+
+    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
+        Some(if (self.filter)(&el) {
+            Action::Push(el)
         } else {
             Action::Pull
-        }
-    }
-
-    fn pulled(&mut self) -> Action<A> {
-        Action::Pull
-    }
-
-    fn completed(&mut self) -> Action<A> {
-        Action::Complete
-    }
-
-    fn failed(&mut self, error: Error) -> Action<A> {
-        Action::Fail(error)
+        })
     }
 }

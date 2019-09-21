@@ -32,7 +32,7 @@ impl Actor<()> for MyActor {
                 }
             }
 
-            Signal::Failed(_) => {
+            Signal::Stopped(Some(_)) => {
                 self.actor_ref.tell(0);
             }
 
