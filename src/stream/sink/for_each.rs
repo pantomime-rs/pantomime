@@ -57,16 +57,16 @@ where
             let actor_ref = ctx.actor_ref();
 
             actor_ref.tell(Action::Push(()));
-            actor_ref.tell(Action::Complete);
+            actor_ref.tell(Action::Complete(None));
 
             None
         } else {
-            Some(Action::Complete)
+            Some(Action::Complete(None))
         }
     }
 
     fn cancelled(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        Some(Action::Complete)
+        Some(Action::Complete(None))
     }
 
     fn forwarded(&mut self, msg: (), ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {

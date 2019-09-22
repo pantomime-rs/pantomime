@@ -1,4 +1,4 @@
-use crate::stream::internal::{LogicContainer, LogicContainerFacade, ProtectedStreamCtl};
+use crate::stream::internal::{FlowWithFlow, LogicContainer, LogicContainerFacade, ProtectedStreamCtl};
 use crate::stream::Logic;
 use std::marker::PhantomData;
 
@@ -50,6 +50,15 @@ where
         B: Clone,
     {
         Self::new(Scan::new(zero, scan_fn))
+    }
+
+    pub fn via<C>(self, flow: Flow<B, C>) -> Flow<A, C> where C: 'static + Send {
+        Flow {
+            logic: Box::new(FlowWithFlow {
+                one: self,
+                two: flow
+            })
+        }
     }
 }
 

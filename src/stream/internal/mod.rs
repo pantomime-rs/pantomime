@@ -1,5 +1,5 @@
 use crate::actor::{
-    Actor, ActorContext, ActorRef, ActorSpawnContext, Signal, Spawnable, StopReason, Watchable,
+    Actor, ActorContext, ActorRef, ActorSpawnContext, FailureReason, Signal, Spawnable, StopReason, Watchable,
 };
 use crate::stream::flow::Flow;
 use crate::stream::sink::Sink;
@@ -34,6 +34,73 @@ where
     pub(in crate::stream) phantom: PhantomData<(A, B, Msg)>,
 }
 
+pub(in crate::stream) struct FlowWithFlow<A, B, C> {
+    pub(in crate::stream) one: Flow<A, B>,
+    pub(in crate::stream) two: Flow<B, C>,
+}
+
+impl<A, B, C> LogicContainerFacade<A, C, ProtectedStreamCtl> for FlowWithFlow<A, B, C>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    C: 'static + Send,
+{
+    fn spawn(
+        self: Box<Self>,
+        downstream: ActorRef<DownstreamStageMsg<C>>,
+        context: &mut ActorSpawnContext,
+    ) -> ActorRef<DownstreamStageMsg<A>> {
+        let two = self.two.logic.spawn(downstream, context);
+        let one = self.one.logic.spawn(two, context);
+
+        one
+    }
+}
+
+
+/*
+impl<A, B, C> Producer<A, C> for ProducerWithFlow<A, B, C>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    C: 'static + Send,
+{
+    fn spawn(
+        self: Box<Self>,
+        downstream: ActorRef<DownstreamStageMsg<C>>,
+        context: &mut ActorSpawnContext,
+    ) -> ActorRef<DownstreamStageMsg<A>> {
+        let flow_ref = self.flow.logic.spawn(downstream, context);
+
+        let upstream = self.producer.spawn(flow_ref.clone(), context);
+
+        // @TODO double conversion here..
+        flow_ref.tell(DownstreamStageMsg::SetUpstream(
+            upstream.convert(upstream_stage_msg_to_downstream_stage_msg),
+        ));
+
+        upstream
+    }
+}
+
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 pub(in crate::stream) enum UpstreamStageMsg {
     Cancel,
     Pull(u64),
@@ -44,7 +111,7 @@ where
     A: 'static + Send,
 {
     Produce(A),
-    Complete,
+    Complete(Option<FailureReason>),
     SetUpstream(ActorRef<UpstreamStageMsg>),
     Converted(UpstreamStageMsg),
 }
@@ -58,7 +125,7 @@ where
     SetUpstream(ActorRef<UpstreamStageMsg>),
     Pull(u64),
     Cancel,
-    Stopped,
+    Stopped(Option<FailureReason>),
     Consume(A),
     Action(Action<B, Msg>),
 }
@@ -71,7 +138,7 @@ where
 {
     match msg {
         DownstreamStageMsg::Produce(el) => StageMsg::Consume(el),
-        DownstreamStageMsg::Complete => StageMsg::Stopped,
+        DownstreamStageMsg::Complete(reason) => StageMsg::Stopped(reason),
         DownstreamStageMsg::SetUpstream(upstream) => StageMsg::SetUpstream(upstream),
         DownstreamStageMsg::Converted(UpstreamStageMsg::Pull(demand)) => StageMsg::Pull(demand),
         DownstreamStageMsg::Converted(UpstreamStageMsg::Cancel) => StageMsg::Cancel,
@@ -249,8 +316,8 @@ where
                 }
             }
 
-            Action::Complete => {
-                self.downstream.tell(DownstreamStageMsg::Complete);
+            Action::Complete(reason) => {
+                self.downstream.tell(DownstreamStageMsg::Complete(reason));
 
                 self.midstream_stopped = true;
 
@@ -331,7 +398,7 @@ where
                         }
                     }
 
-                    StageMsg::Stopped => {
+                    StageMsg::Stopped(reason) => {
                         // upstream has stopped, need to drain buffers and be done
 
                         println!("{} UPSTREAM HAS STOPPED", self.logic.name());
@@ -745,7 +812,7 @@ where
                 println!("sink got final value");
             }
 
-            InternalStreamCtl::FromSink(DownstreamStageMsg::Complete) => {
+            InternalStreamCtl::FromSink(DownstreamStageMsg::Complete(reason)) => {
                 println!("sink completed");
 
                 assert!(self.produced, "pantomime bug: sink did not produce a value");
@@ -765,7 +832,7 @@ where
 
                 println!("telling downstream (which is the source) we're done");
 
-                downstream.tell(DownstreamStageMsg::Complete);
+                downstream.tell(DownstreamStageMsg::Complete(None));
             }
 
             InternalStreamCtl::FromSource(UpstreamStageMsg::Pull(value)) => {

@@ -62,7 +62,7 @@ where
 
             None
         } else {
-            Some(Action::Complete)
+            Some(Action::Complete(None))
         }
     }
 
@@ -74,7 +74,7 @@ where
         match msg {
             DelayMsg::Ready(el) => {
                 if self.stopped {
-                    ctx.tell(Action::Complete);
+                    ctx.tell(Action::Complete(None));
                 }
 
                 Some(Action::Push(el))

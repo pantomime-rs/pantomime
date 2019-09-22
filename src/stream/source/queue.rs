@@ -282,7 +282,7 @@ where
                 }
             }
 
-            QueueLogicCtl::Complete => Some(Action::Complete),
+            QueueLogicCtl::Complete => Some(Action::Complete(None)),
         }
     }
 }

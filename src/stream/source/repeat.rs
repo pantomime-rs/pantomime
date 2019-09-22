@@ -38,6 +38,6 @@ where
     }
 
     fn cancelled(&mut self, ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        Some(Action::Complete)
+        Some(Action::Complete(None))
     }
 }

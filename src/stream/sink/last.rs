@@ -59,11 +59,11 @@ where
             // note that the action we're returning will be synchronously processed, followed
             // later by this Complete, i.e. the Push is processed first.
 
-            ctx.tell(Action::Complete);
+            ctx.tell(Action::Complete(None));
 
             Some(Action::Push(self.last.take()))
         } else {
-            Some(Action::Complete)
+            Some(Action::Complete(None))
         }
     }
 }
