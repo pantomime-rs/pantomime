@@ -84,7 +84,7 @@ where
                 .tell(DownstreamStageMsg::SetUpstream(ctx.actor_ref().convert(
                     move |msg| Action::Forward(MergeMsg::ForUpstream(id, msg)),
                 )));
-            actor_ref.tell(DownstreamStageMsg::Complete);
+            actor_ref.tell(DownstreamStageMsg::Complete(None));
 
             self.actors.push(actor_ref);
             self.demand.push(0);
@@ -105,7 +105,13 @@ where
     ) -> Option<Action<A, MergeMsg<A>>> {
         self.completed = self.actors.len();
 
-        Some(Action::Complete)
+        for producer in self.actors.iter() {
+            producer.tell(
+                DownstreamStageMsg::Converted(UpstreamStageMsg::Cancel)
+            );
+        }
+
+        Some(Action::Complete(None))
     }
 
     fn pulled(
@@ -115,7 +121,7 @@ where
         match self.buffer.pop_front() {
             Some(el) => Some(Action::Push(el)),
 
-            None if self.completed == self.actors.len() => Some(Action::Complete),
+            None if self.completed == self.actors.len() => Some(Action::Complete(None)),
 
             None => {
                 self.pulled = true;
@@ -151,11 +157,11 @@ where
                 result
             }
 
-            MergeMsg::FromUpstream(id, DownstreamStageMsg::Complete) => {
+            MergeMsg::FromUpstream(id, DownstreamStageMsg::Complete(reason)) => {
                 self.completed = self.actors.len().min(self.completed + 1);
 
                 if self.completed == self.actors.len() && self.buffer.is_empty() {
-                    Some(Action::Complete)
+                    Some(Action::Complete(None))
                 } else {
                     None
                 }

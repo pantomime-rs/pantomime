@@ -1,4 +1,4 @@
-use crate::actor::{Actor, ActorContext, ActorRef};
+use crate::actor::{Actor, ActorContext, ActorRef, FailureReason};
 use crate::stream::internal::{InternalStreamCtl, RunnableStream, StageMsg};
 use crossbeam::atomic::AtomicCell;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ mod tests;
 
 pub enum Action<A, Msg> {
     Cancel,
-    Complete,
+    Complete(Option<FailureReason>),
     Pull,
     Push(A),
     Forward(Msg),
@@ -69,7 +69,7 @@ where
     /// Indicates that upstream has been stopped.
     #[must_use]
     fn stopped(&mut self, ctx: &mut StreamContext<A, B, Msg>) -> Option<Action<B, Msg>> {
-        Some(Action::Complete)
+        Some(Action::Complete(None))
     }
 
     /// Indicates that downstream has cancelled. This normally doesn't
@@ -77,7 +77,7 @@ where
     /// doing.
     #[must_use]
     fn cancelled(&mut self, ctx: &mut StreamContext<A, B, Msg>) -> Option<Action<B, Msg>> {
-        Some(Action::Complete)
+        Some(Action::Complete(None))
     }
 
     #[must_use]

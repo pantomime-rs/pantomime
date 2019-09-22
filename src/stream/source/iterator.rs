@@ -28,7 +28,7 @@ where
     fn pulled(&mut self, ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
         Some(match self.iterator.next() {
             Some(element) => Action::Push(element),
-            None => Action::Complete,
+            None => Action::Complete(None),
         })
     }
 

@@ -46,23 +46,7 @@ where
         } else {
             self.cancelled = true;
 
-            Some(Action::Complete)
+            Some(Action::Complete(None))
         }
-    }
-
-    fn started(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
-        None
-    }
-
-    fn stopped(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
-        Some(Action::Complete)
-    }
-
-    fn cancelled(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
-        Some(Action::Complete)
-    }
-
-    fn forwarded(&mut self, msg: (), ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
-        None
     }
 }

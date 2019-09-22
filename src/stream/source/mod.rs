@@ -9,6 +9,7 @@ mod iterator;
 mod merge;
 mod queue;
 mod repeat;
+mod restart;
 
 pub use iterator::Iterator;
 pub use merge::Merge;

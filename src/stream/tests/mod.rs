@@ -3,7 +3,7 @@ use crate::stream::*;
 use std::time::Duration;
 
 #[test]
-fn test() {
+fn test1() {
     use crate::actor::*;
     use crate::stream::flow::Delay;
     use std::task::Poll;
@@ -40,9 +40,14 @@ fn test() {
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             match signal {
                 Signal::Started => {
+                    // @TODO this fails to complete due to a bug...
+
                     let (stream_ref, result) = ctx.spawn(
                         Source::iterator(1..=20)
-                            .via(Flow::new(Delay::new(Duration::from_millis(50))))
+                            .via(
+                                Flow::new(Delay::new(Duration::from_millis(50)))
+                            )
+                            .via(Flow::new(Delay::new(Duration::from_millis(500))))
                             .to(Sink::for_each(|n| println!("got {}", n))),
                     );
 
