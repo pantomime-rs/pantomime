@@ -1,4 +1,4 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
 pub struct Repeat<A>
@@ -17,27 +17,32 @@ where
     }
 }
 
-impl<A> Logic<(), A, ()> for Repeat<A>
+impl<A> Logic for Repeat<A>
 where
     A: 'static + Clone + Send,
 {
-    fn name(&self) -> &'static str {
-        "Repeat"
-    }
+    type In = ();
+    type Out = A;
+    type Msg = ();
 
-    fn pulled(&mut self, ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        Some(Action::Push(self.element.clone()))
-    }
+    fn receive(
+        &mut self,
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pulled => {
+                ctx.tell(Action::Push(self.element.clone()));
+            }
 
-    fn pushed(&mut self, el: (), ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        None
-    }
+            LogicEvent::Cancelled => {
+                ctx.tell(Action::Complete(None));
+            }
 
-    fn stopped(&mut self, ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        None
-    }
-
-    fn cancelled(&mut self, ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        Some(Action::Complete(None))
+            LogicEvent::Pushed(())
+            | LogicEvent::Stopped
+            | LogicEvent::Started
+            | LogicEvent::Forwarded(()) => {}
+        }
     }
 }

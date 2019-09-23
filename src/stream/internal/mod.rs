@@ -1,10 +1,11 @@
 use crate::actor::{
-    Actor, ActorContext, ActorRef, ActorSpawnContext, FailureReason, Signal, Spawnable, StopReason, Watchable,
+    Actor, ActorContext, ActorRef, ActorSpawnContext, FailureReason, Signal, Spawnable, StopReason,
+    Watchable,
 };
 use crate::stream::flow::Flow;
 use crate::stream::sink::Sink;
 use crate::stream::source::Source;
-use crate::stream::{Action, Logic, Stream, StreamComplete, StreamContext, StreamCtl};
+use crate::stream::{Action, Logic, LogicEvent, Stream, StreamComplete, StreamContext, StreamCtl};
 use crossbeam::atomic::AtomicCell;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -25,7 +26,7 @@ where
 
 pub(in crate::stream) struct LogicContainer<A, B, Msg, L>
 where
-    L: Logic<A, B, Msg>,
+    L: Logic<In = A, Out = B, Msg = Msg>,
     A: Send,
     B: Send,
     Msg: Send,
@@ -57,7 +58,6 @@ where
     }
 }
 
-
 /*
 impl<A, B, C> Producer<A, C> for ProducerWithFlow<A, B, C>
 where
@@ -84,22 +84,6 @@ where
 }
 
 */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 pub(in crate::stream) enum UpstreamStageMsg {
     Cancel,
@@ -180,9 +164,8 @@ where
     DownstreamStageMsg::Converted(msg)
 }
 
-struct Stage<A, B, Msg, L>
+pub(in crate::stream) struct Stage<A, B, Msg, L: Logic<In = A, Out = B, Msg = Msg>>
 where
-    L: Logic<A, B, Msg>,
     A: 'static + Send,
     B: 'static + Send,
     Msg: 'static + Send,
@@ -209,9 +192,9 @@ where
     Running(ActorRef<UpstreamStageMsg>),
 }
 
-impl<A, B, Msg, L> Stage<A, B, Msg, L>
+impl<A, B, Msg, L: Logic<In = A, Out = B, Msg = Msg>> Stage<A, B, Msg, L>
 where
-    L: Logic<A, B, Msg> + Send,
+    L: 'static + Send,
     A: 'static + Send,
     B: 'static + Send,
     Msg: 'static + Send,
@@ -264,16 +247,13 @@ where
                             self.upstream_demand -= 1;
                             self.check_upstream_demand(ctx);
 
-                            if let Some(action) = self.logic.pushed(el, &mut StreamContext { ctx })
-                            {
-                                self.receive_action(action, ctx);
-                            }
+                            self.logic
+                                .receive(LogicEvent::Pushed(el), &mut StreamContext::new(ctx));
                         }
 
                         None if self.upstream_stopped => {
-                            if let Some(action) = self.logic.stopped(&mut StreamContext { ctx }) {
-                                self.receive_action(action, ctx);
-                            }
+                            self.logic
+                                .receive(LogicEvent::Stopped, &mut StreamContext::new(ctx));
                         }
 
                         None => {
@@ -294,18 +274,16 @@ where
                     self.downstream_demand -= 1;
 
                     if self.downstream_demand > 0 {
-                        if let Some(action) = self.logic.pulled(&mut StreamContext { ctx }) {
-                            self.receive_action(action, ctx);
-                        }
+                        self.logic
+                            .receive(LogicEvent::Pulled, &mut StreamContext::new(ctx));
                     }
                 }
             }
 
             Action::Forward(msg) => {
                 println!("{} Action::Forward", self.logic.name());
-                if let Some(action) = self.logic.forwarded(msg, &mut StreamContext { ctx }) {
-                    self.receive_action(action, ctx);
-                }
+                self.logic
+                    .receive(LogicEvent::Forwarded(msg), &mut StreamContext::new(ctx));
             }
 
             Action::Cancel => {
@@ -327,9 +305,10 @@ where
     }
 }
 
-impl<A, B, Msg, L> Actor<StageMsg<A, B, Msg>> for Stage<A, B, Msg, L>
+impl<A, B, Msg, L: Logic<In = A, Out = B, Msg = Msg>> Actor<StageMsg<A, B, Msg>>
+    for Stage<A, B, Msg, L>
 where
-    L: Logic<A, B, Msg> + Send,
+    L: 'static + Send,
     A: 'static + Send,
     B: 'static + Send,
     Msg: 'static + Send,
@@ -351,9 +330,8 @@ where
                         //println!("pull! downstream demand is now {}", self.downstream_demand);
 
                         if self.downstream_demand > 0 {
-                            if let Some(action) = self.logic.pulled(&mut StreamContext { ctx }) {
-                                self.receive_action(action, ctx);
-                            }
+                            self.logic
+                                .receive(LogicEvent::Pulled, &mut StreamContext::new(ctx));
                         }
                     }
 
@@ -369,11 +347,8 @@ where
 
                                 // @TODO assert buffer is empty
 
-                                if let Some(action) =
-                                    self.logic.pushed(el, &mut StreamContext { ctx })
-                                {
-                                    self.receive_action(action, ctx);
-                                }
+                                self.logic
+                                    .receive(LogicEvent::Pushed(el), &mut StreamContext::new(ctx));
 
                                 self.check_upstream_demand(ctx);
                             } else {
@@ -393,9 +368,8 @@ where
                             upstream.tell(UpstreamStageMsg::Cancel);
                         }
 
-                        if let Some(action) = self.logic.cancelled(&mut StreamContext { ctx }) {
-                            self.receive_action(action, ctx);
-                        }
+                        self.logic
+                            .receive(LogicEvent::Cancelled, &mut StreamContext::new(ctx));
                     }
 
                     StageMsg::Stopped(reason) => {
@@ -405,9 +379,8 @@ where
                         self.upstream_stopped = true;
 
                         if self.buffer.is_empty() {
-                            if let Some(action) = self.logic.stopped(&mut StreamContext { ctx }) {
-                                self.receive_action(action, ctx);
-                            }
+                            self.logic
+                                .receive(LogicEvent::Stopped, &mut StreamContext::new(ctx));
                         }
                     }
 
@@ -422,9 +395,8 @@ where
                     StageMsg::SetUpstream(upstream) => {
                         self.state = StageState::Running(upstream);
 
-                        if let Some(action) = self.logic.started(&mut StreamContext { ctx }) {
-                            self.receive_action(action, ctx);
-                        }
+                        self.logic
+                            .receive(LogicEvent::Started, &mut StreamContext::new(ctx));
 
                         self.check_upstream_demand(ctx);
                     }
@@ -452,9 +424,8 @@ where
 
                     self.state = StageState::Running(upstream);
 
-                    if let Some(action) = self.logic.started(&mut StreamContext { ctx }) {
-                        self.receive_action(action, ctx);
-                    }
+                    self.logic
+                        .receive(LogicEvent::Started, &mut StreamContext::new(ctx));
 
                     self.check_upstream_demand(ctx);
 
@@ -477,7 +448,7 @@ where
 
 impl<A, B, Ctl, Msg, L> LogicContainerFacade<A, B, Ctl> for LogicContainer<A, B, Msg, L>
 where
-    L: 'static + Logic<A, B, Msg> + Send,
+    L: 'static + Logic<In = A, Out = B, Msg = Msg> + Send,
     A: 'static + Send,
     B: 'static + Send,
     Ctl: 'static + Send,
@@ -614,7 +585,7 @@ where
 
 pub(in crate::stream) struct SourceLike<A, M, L>
 where
-    L: Logic<(), A, M>,
+    L: Logic<In = (), Out = A, Msg = M>,
     A: Send,
     M: Send,
 {
@@ -624,7 +595,7 @@ where
 
 impl<A, M, L> Producer<(), A> for SourceLike<A, M, L>
 where
-    L: 'static + Logic<(), A, M> + Send,
+    L: 'static + Logic<In = (), Out = A, Msg = M> + Send,
     A: 'static + Send,
     M: 'static + Send,
 {

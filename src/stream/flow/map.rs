@@ -1,4 +1,4 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
 pub struct Map<A, B, F: FnMut(A) -> B>
@@ -23,21 +23,35 @@ where
     }
 }
 
-impl<A, B, F> Logic<A, B, ()> for Map<A, B, F>
+impl<A, B, F: FnMut(A) -> B> Logic for Map<A, B, F>
 where
-    F: FnMut(A) -> B,
+    F: 'static + Send,
     A: 'static + Send,
     B: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "Map"
-    }
+    type In = A;
+    type Out = B;
+    type Msg = ();
 
-    fn pulled(&mut self, ctx: &mut StreamContext<A, B, ()>) -> Option<Action<B, ()>> {
-        Some(Action::Pull)
-    }
+    fn receive(
+        &mut self,
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pulled => {
+                ctx.tell(Action::Pull);
+            }
 
-    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, B, ()>) -> Option<Action<B, ()>> {
-        Some(Action::Push((self.map_fn)(el)))
+            LogicEvent::Pushed(element) => {
+                ctx.tell(Action::Push((self.map_fn)(element)));
+            }
+
+            LogicEvent::Stopped | LogicEvent::Cancelled => {
+                ctx.tell(Action::Complete(None));
+            }
+
+            LogicEvent::Started | LogicEvent::Forwarded(()) => {}
+        }
     }
 }

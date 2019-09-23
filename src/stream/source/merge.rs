@@ -1,6 +1,6 @@
 use crate::actor::ActorRef;
 use crate::stream::internal::{DownstreamStageMsg, Producer, UpstreamStageMsg};
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
@@ -17,12 +17,23 @@ where
 }
 
 // @TODO visibility here...
-pub(in crate::stream) enum MergeMsg<A>
+pub enum MergeMsg<A>
 where
     A: 'static + Send,
 {
-    FromUpstream(usize, DownstreamStageMsg<A>),
-    ForUpstream(usize, UpstreamStageMsg),
+    FromUpstream(usize, FromUpstreamMsg<A>),
+    ForUpstream(usize, ForUpstreamMsg),
+}
+
+pub struct FromUpstreamMsg<A>
+where
+    A: 'static + Send,
+{
+    msg: DownstreamStageMsg<A>,
+}
+
+pub struct ForUpstreamMsg {
+    msg: UpstreamStageMsg,
 }
 
 const BUFFER_SIZE_TEMP: u64 = 16;
@@ -56,95 +67,50 @@ where
     }
 }
 
-impl<A> Logic<(), A, MergeMsg<A>> for Merge<A>
+impl<A> Logic for Merge<A>
 where
     A: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "Merge"
-    }
+    type In = ();
+    type Out = A;
+    type Msg = MergeMsg<A>;
 
     fn buffer_size(&self) -> Option<usize> {
         Some(0)
     }
 
-    fn started(
+    fn receive(
         &mut self,
-        ctx: &mut StreamContext<(), A, MergeMsg<A>>,
-    ) -> Option<Action<A, MergeMsg<A>>> {
-        for (id, p) in self.producers.drain(..).enumerate() {
-            let downstream = ctx
-                .actor_ref()
-                .convert(move |msg| Action::Forward(MergeMsg::FromUpstream(id, msg)));
-            let mut spawn_ctx = ctx.ctx.spawn_context();
-
-            let actor_ref = p.spawn(downstream, &mut spawn_ctx);
-
-            actor_ref
-                .tell(DownstreamStageMsg::SetUpstream(ctx.actor_ref().convert(
-                    move |msg| Action::Forward(MergeMsg::ForUpstream(id, msg)),
-                )));
-            actor_ref.tell(DownstreamStageMsg::Complete(None));
-
-            self.actors.push(actor_ref);
-            self.demand.push(0);
-        }
-
-        for id in 0..self.actors.len() {
-            self.check_demand(id);
-        }
-
-        self.producers = Vec::with_capacity(0);
-
-        None
-    }
-
-    fn cancelled(
-        &mut self,
-        ctx: &mut StreamContext<(), A, MergeMsg<A>>,
-    ) -> Option<Action<A, MergeMsg<A>>> {
-        self.completed = self.actors.len();
-
-        for producer in self.actors.iter() {
-            producer.tell(
-                DownstreamStageMsg::Converted(UpstreamStageMsg::Cancel)
-            );
-        }
-
-        Some(Action::Complete(None))
-    }
-
-    fn pulled(
-        &mut self,
-        ctx: &mut StreamContext<(), A, MergeMsg<A>>,
-    ) -> Option<Action<A, MergeMsg<A>>> {
-        match self.buffer.pop_front() {
-            Some(el) => Some(Action::Push(el)),
-
-            None if self.completed == self.actors.len() => Some(Action::Complete(None)),
-
-            None => {
-                self.pulled = true;
-
-                None
-            }
-        }
-    }
-
-    fn forwarded(
-        &mut self,
-        msg: MergeMsg<A>,
-        ctx: &mut StreamContext<(), A, MergeMsg<A>>,
-    ) -> Option<Action<A, MergeMsg<A>>> {
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
         match msg {
-            MergeMsg::FromUpstream(id, DownstreamStageMsg::Produce(a)) => {
-                let result = if self.pulled {
+            LogicEvent::Pulled => match self.buffer.pop_front() {
+                Some(el) => {
+                    ctx.tell(Action::Push(el));
+                }
+
+                None if self.completed == self.actors.len() => {
+                    ctx.tell(Action::Complete(None));
+                }
+
+                None => {
+                    self.pulled = true;
+                }
+            },
+
+            LogicEvent::Forwarded(MergeMsg::FromUpstream(
+                id,
+                FromUpstreamMsg {
+                    msg: DownstreamStageMsg::Produce(a),
+                },
+            )) => {
+                if self.pulled {
                     self.pulled = false;
 
-                    Some(Action::Push(a))
+                    ctx.tell(Action::Push(a));
                 } else {
                     self.buffer.push_back(a);
-                    None
                 };
 
                 if self.demand[id] == 0 {
@@ -153,62 +119,102 @@ where
                     self.demand[id] -= 1;
                     self.check_demand(id);
                 }
-
-                result
             }
 
-            MergeMsg::FromUpstream(id, DownstreamStageMsg::Complete(reason)) => {
+            LogicEvent::Forwarded(MergeMsg::FromUpstream(
+                id,
+                FromUpstreamMsg {
+                    msg: DownstreamStageMsg::Complete(reason),
+                },
+            )) => {
                 self.completed = self.actors.len().min(self.completed + 1);
 
                 if self.completed == self.actors.len() && self.buffer.is_empty() {
-                    Some(Action::Complete(None))
-                } else {
-                    None
+                    ctx.tell(Action::Complete(None));
                 }
             }
 
-            MergeMsg::FromUpstream(id, DownstreamStageMsg::SetUpstream(upstream)) => {
-                // @TODO not sure what this means
-                None
-            }
-
-            MergeMsg::FromUpstream(
+            LogicEvent::Forwarded(MergeMsg::FromUpstream(
                 id,
-                DownstreamStageMsg::Converted(UpstreamStageMsg::Pull(demand)),
-            ) => {
+                FromUpstreamMsg {
+                    msg: DownstreamStageMsg::SetUpstream(upstream),
+                },
+            )) => {
                 // @TODO not sure what this means
-                None
             }
 
-            MergeMsg::FromUpstream(id, DownstreamStageMsg::Converted(UpstreamStageMsg::Cancel)) => {
+            LogicEvent::Forwarded(MergeMsg::FromUpstream(
+                id,
+                FromUpstreamMsg {
+                    msg: DownstreamStageMsg::Converted(UpstreamStageMsg::Pull(demand)),
+                },
+            )) => {
                 // @TODO not sure what this means
-                None
             }
 
-            MergeMsg::ForUpstream(id, UpstreamStageMsg::Pull(_)) => {
-                // ignore
-                None
+            LogicEvent::Forwarded(MergeMsg::FromUpstream(
+                id,
+                FromUpstreamMsg {
+                    msg: DownstreamStageMsg::Converted(UpstreamStageMsg::Cancel),
+                },
+            )) => {
+                // @TODO not sure what this means
             }
 
-            MergeMsg::ForUpstream(id, UpstreamStageMsg::Cancel) => {
+            LogicEvent::Forwarded(MergeMsg::ForUpstream(
+                id,
+                ForUpstreamMsg {
+                    msg: UpstreamStageMsg::Pull(_),
+                },
+            )) => {
                 // ignore
-                None
             }
+
+            LogicEvent::Forwarded(MergeMsg::ForUpstream(
+                id,
+                ForUpstreamMsg {
+                    msg: UpstreamStageMsg::Cancel,
+                },
+            )) => {
+                // ignore
+            }
+
+            LogicEvent::Cancelled => {
+                self.completed = self.actors.len();
+
+                for producer in self.actors.iter() {
+                    producer.tell(DownstreamStageMsg::Converted(UpstreamStageMsg::Cancel));
+                }
+            }
+
+            LogicEvent::Started => {
+                for (id, p) in self.producers.drain(..).enumerate() {
+                    let downstream = ctx.actor_ref().convert(move |msg| {
+                        Action::Forward(MergeMsg::FromUpstream(id, FromUpstreamMsg { msg }))
+                    });
+                    let mut spawn_ctx = ctx.ctx.spawn_context();
+
+                    let actor_ref = p.spawn(downstream, &mut spawn_ctx);
+
+                    actor_ref.tell(DownstreamStageMsg::SetUpstream(ctx.actor_ref().convert(
+                        move |msg| {
+                            Action::Forward(MergeMsg::ForUpstream(id, ForUpstreamMsg { msg }))
+                        },
+                    )));
+                    actor_ref.tell(DownstreamStageMsg::Complete(None));
+
+                    self.actors.push(actor_ref);
+                    self.demand.push(0);
+                }
+
+                for id in 0..self.actors.len() {
+                    self.check_demand(id);
+                }
+
+                self.producers = Vec::with_capacity(0);
+            }
+
+            LogicEvent::Pushed(()) | LogicEvent::Stopped => {}
         }
-    }
-
-    fn pushed(
-        &mut self,
-        el: (),
-        ctx: &mut StreamContext<(), A, MergeMsg<A>>,
-    ) -> Option<Action<A, MergeMsg<A>>> {
-        None
-    }
-
-    fn stopped(
-        &mut self,
-        ctx: &mut StreamContext<(), A, MergeMsg<A>>,
-    ) -> Option<Action<A, MergeMsg<A>>> {
-        None
     }
 }

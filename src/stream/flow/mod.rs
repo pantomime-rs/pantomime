@@ -1,5 +1,7 @@
-use crate::stream::internal::{FlowWithFlow, LogicContainer, LogicContainerFacade, ProtectedStreamCtl};
-use crate::stream::Logic;
+use crate::stream::internal::{
+    FlowWithFlow, LogicContainer, LogicContainerFacade, ProtectedStreamCtl,
+};
+use crate::stream::{Logic, Source};
 use std::marker::PhantomData;
 
 mod delay;
@@ -24,7 +26,7 @@ where
     A: 'static + Send,
     B: 'static + Send,
 {
-    pub fn new<Msg, L: Logic<A, B, Msg>>(logic: L) -> Self
+    pub fn new<Msg, L: Logic<In = A, Out = B, Msg = Msg>>(logic: L) -> Self
     where
         Msg: 'static + Send,
         L: 'static + Send,
@@ -52,12 +54,15 @@ where
         Self::new(Scan::new(zero, scan_fn))
     }
 
-    pub fn via<C>(self, flow: Flow<B, C>) -> Flow<A, C> where C: 'static + Send {
+    pub fn via<C>(self, flow: Flow<B, C>) -> Flow<A, C>
+    where
+        C: 'static + Send,
+    {
         Flow {
             logic: Box::new(FlowWithFlow {
                 one: self,
-                two: flow
-            })
+                two: flow,
+            }),
         }
     }
 }
@@ -71,5 +76,14 @@ where
         F: 'static + Send,
     {
         Self::new(Filter::new(filter_fn))
+    }
+}
+
+impl<A> Flow<(), A>
+where
+    A: 'static + Send,
+{
+    pub fn from_source(source: Source<A>) -> Self {
+        unimplemented!()
     }
 }

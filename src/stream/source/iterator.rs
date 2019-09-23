@@ -1,4 +1,4 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
 pub struct Iterator<A, I: std::iter::Iterator<Item = A>>
@@ -17,26 +17,39 @@ where
     }
 }
 
-impl<A, I: std::iter::Iterator<Item = A>> Logic<(), A, ()> for Iterator<A, I>
+impl<A, I: std::iter::Iterator<Item = A>> Logic for Iterator<A, I>
 where
     A: 'static + Send,
+    I: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "Iterator"
-    }
+    type In = ();
+    type Out = A;
+    type Msg = ();
 
-    fn pulled(&mut self, ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        Some(match self.iterator.next() {
-            Some(element) => Action::Push(element),
-            None => Action::Complete(None),
-        })
-    }
+    fn receive(
+        &mut self,
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pulled => match self.iterator.next() {
+                Some(element) => {
+                    ctx.tell(Action::Push(element));
+                }
 
-    fn pushed(&mut self, el: (), ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        None
-    }
+                None => {
+                    ctx.tell(Action::Complete(None));
+                }
+            },
 
-    fn stopped(&mut self, ctx: &mut StreamContext<(), A, ()>) -> Option<Action<A, ()>> {
-        None
+            LogicEvent::Cancelled => {
+                ctx.tell(Action::Complete(None));
+            }
+
+            LogicEvent::Pushed(())
+            | LogicEvent::Stopped
+            | LogicEvent::Started
+            | LogicEvent::Forwarded(()) => {}
+        }
     }
 }
