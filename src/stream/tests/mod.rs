@@ -44,9 +44,7 @@ fn test1() {
 
                     let (stream_ref, result) = ctx.spawn(
                         Source::iterator(1..=20)
-                            .via(
-                                Flow::new(Delay::new(Duration::from_millis(50)))
-                            )
+                            .via(Flow::new(Delay::new(Duration::from_millis(50))))
                             .via(Flow::new(Delay::new(Duration::from_millis(500))))
                             .to(Sink::for_each(|n| println!("got {}", n))),
                     );

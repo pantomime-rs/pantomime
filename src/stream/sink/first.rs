@@ -1,4 +1,4 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
 pub struct First<A> {
@@ -15,57 +15,47 @@ impl<A> First<A> {
     }
 }
 
-impl<A> Logic<A, Option<A>, ()> for First<A>
+impl<A> Logic for First<A>
 where
     A: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "First"
-    }
+    type In = A;
+    type Out = Option<A>;
+    type Msg = ();
 
-    fn pulled(
+    fn receive(
         &mut self,
-        ctx: &mut StreamContext<A, Option<A>, ()>,
-    ) -> Option<Action<Option<A>, ()>> {
-        self.pulled = true;
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pushed(element) => {
+                if self.first.is_none() {
+                    self.first = Some(element);
+                }
 
-        None
-    }
+                ctx.tell(Action::Cancel);
+            }
 
-    fn pushed(
-        &mut self,
-        el: A,
-        ctx: &mut StreamContext<A, Option<A>, ()>,
-    ) -> Option<Action<Option<A>, ()>> {
-        if self.first.is_none() {
-            self.first = Some(el);
-        }
+            LogicEvent::Pulled => {
+                self.pulled = true;
+            }
 
-        Some(Action::Cancel)
-    }
+            LogicEvent::Stopped | LogicEvent::Cancelled => {
+                if self.pulled {
+                    self.pulled = false;
 
-    fn started(
-        &mut self,
-        ctx: &mut StreamContext<A, Option<A>, ()>,
-    ) -> Option<Action<Option<A>, ()>> {
-        Some(Action::Pull)
-    }
+                    ctx.tell(Action::Push(self.first.take()));
+                }
 
-    fn stopped(
-        &mut self,
-        ctx: &mut StreamContext<A, Option<A>, ()>,
-    ) -> Option<Action<Option<A>, ()>> {
-        if self.pulled {
-            self.pulled = false;
+                ctx.tell(Action::Complete(None));
+            }
 
-            // note that the action we're returning will be synchronously processed, followed
-            // later by this Complete, i.e. the Push is processed first.
+            LogicEvent::Started => {
+                ctx.tell(Action::Pull);
+            }
 
-            ctx.tell(Action::Complete(None));
-
-            Some(Action::Push(self.first.take()))
-        } else {
-            Some(Action::Complete(None))
+            LogicEvent::Forwarded(()) => {}
         }
     }
 }

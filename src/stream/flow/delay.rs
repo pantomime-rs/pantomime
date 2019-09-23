@@ -1,4 +1,4 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -6,78 +6,72 @@ pub enum DelayMsg<A> {
     Ready(A),
 }
 
-pub struct Delay {
+pub struct Delay<A> {
     delay: Duration,
     pushing: bool,
     stopped: bool,
+    phantom: PhantomData<A>,
 }
 
-impl Delay {
+impl<A> Delay<A> {
     pub fn new(delay: Duration) -> Self {
         Self {
             delay,
             pushing: false,
             stopped: false,
+            phantom: PhantomData,
         }
     }
 }
 
-impl<A> Logic<A, A, DelayMsg<A>> for Delay
+impl<A> Logic for Delay<A>
 where
     A: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "Delay"
-    }
+    type In = A;
+    type Out = A;
+    type Msg = DelayMsg<A>;
 
     fn buffer_size(&self) -> Option<usize> {
         Some(0) // @FIXME should this be based on the delay duration?
     }
 
-    fn pulled(
+    fn receive(
         &mut self,
-        ctx: &mut StreamContext<A, A, DelayMsg<A>>,
-    ) -> Option<Action<A, DelayMsg<A>>> {
-        Some(Action::Pull)
-    }
-
-    fn pushed(
-        &mut self,
-        el: A,
-        ctx: &mut StreamContext<A, A, DelayMsg<A>>,
-    ) -> Option<Action<A, DelayMsg<A>>> {
-        self.pushing = true;
-
-        ctx.schedule_delivery("ready", self.delay.clone(), DelayMsg::Ready(el));
-
-        None
-    }
-
-    fn stopped(
-        &mut self,
-        ctx: &mut StreamContext<A, A, DelayMsg<A>>,
-    ) -> Option<Action<A, DelayMsg<A>>> {
-        if self.pushing {
-            self.stopped = true;
-
-            None
-        } else {
-            Some(Action::Complete(None))
-        }
-    }
-
-    fn forwarded(
-        &mut self,
-        msg: DelayMsg<A>,
-        ctx: &mut StreamContext<A, A, DelayMsg<A>>,
-    ) -> Option<Action<A, DelayMsg<A>>> {
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
         match msg {
-            DelayMsg::Ready(el) => {
+            LogicEvent::Pulled => {
+                ctx.tell(Action::Pull);
+            }
+
+            LogicEvent::Pushed(element) => {
+                self.pushing = true;
+
+                ctx.schedule_delivery("ready", self.delay.clone(), DelayMsg::Ready(element));
+            }
+
+            LogicEvent::Started => {}
+
+            LogicEvent::Stopped => {
+                if self.pushing {
+                    self.stopped = true;
+                } else {
+                    ctx.tell(Action::Complete(None));
+                }
+            }
+
+            LogicEvent::Cancelled => {
+                ctx.tell(Action::Complete(None));
+            }
+
+            LogicEvent::Forwarded(DelayMsg::Ready(element)) => {
+                ctx.tell(Action::Push(element));
+
                 if self.stopped {
                     ctx.tell(Action::Complete(None));
                 }
-
-                Some(Action::Push(el))
             }
         }
     }

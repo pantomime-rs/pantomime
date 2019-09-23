@@ -36,7 +36,7 @@ where
     In: 'static + Send,
     Out: 'static + Send,
 {
-    pub fn new<Msg, L: Logic<In, Out, Msg>>(logic: L) -> Self
+    pub fn new<Msg, L: Logic<In = In, Out = Out, Msg = Msg>>(logic: L) -> Self
     where
         Msg: 'static + Send,
         L: 'static + Send,

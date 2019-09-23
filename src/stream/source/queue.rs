@@ -19,7 +19,8 @@ where
     Complete,
 }
 
-enum QueueLogicCtl<A>
+pub enum QueueLogicCtl<A>
+// @TODO shouldnt need pub
 where
     A: Send,
 {
@@ -190,10 +191,14 @@ where
     }
 }
 
-impl<A> Logic<(), A, QueueLogicCtl<A>> for Queue<A>
+impl<A> Logic for Queue<A>
 where
     A: 'static + Send,
 {
+    type In = ();
+    type Out = A;
+    type Msg = QueueLogicCtl<A>;
+
     fn buffer_size(&self) -> Option<usize> {
         Some(0)
     }
@@ -202,52 +207,23 @@ where
         "Queue"
     }
 
-    fn started(
+    fn receive(
         &mut self,
-        ctx: &mut StreamContext<(), A, QueueLogicCtl<A>>,
-    ) -> Option<Action<A, QueueLogicCtl<A>>> {
-        self.queue_actor_ref
-            .tell(QueueCtl::Initialize(ctx.actor_ref()));
-        None
-    }
-
-    fn pulled(
-        &mut self,
-        ctx: &mut StreamContext<(), A, QueueLogicCtl<A>>,
-    ) -> Option<Action<A, QueueLogicCtl<A>>> {
-        match self.buffer.pop_front() {
-            Some(element) => Some(Action::Push(element)),
-
-            None => {
-                self.pulled = true;
-
-                None
-            }
-        }
-    }
-
-    fn pushed(
-        &mut self,
-        el: (),
-        ctx: &mut StreamContext<(), A, QueueLogicCtl<A>>,
-    ) -> Option<Action<A, QueueLogicCtl<A>>> {
-        None
-    }
-
-    fn stopped(
-        &mut self,
-        ctx: &mut StreamContext<(), A, QueueLogicCtl<A>>,
-    ) -> Option<Action<A, QueueLogicCtl<A>>> {
-        None
-    }
-
-    fn forwarded(
-        &mut self,
-        msg: QueueLogicCtl<A>,
-        ctx: &mut StreamContext<(), A, QueueLogicCtl<A>>,
-    ) -> Option<Action<A, QueueLogicCtl<A>>> {
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
         match msg {
-            QueueLogicCtl::Push(element, reply_to) => {
+            LogicEvent::Pulled => match self.buffer.pop_front() {
+                Some(element) => {
+                    ctx.tell(Action::Push(element));
+                }
+
+                None => {
+                    self.pulled = true;
+                }
+            },
+
+            LogicEvent::Forwarded(QueueLogicCtl::Push(element, reply_to)) => {
                 let len = self.buffer.len();
 
                 if self.pulled {
@@ -255,7 +231,8 @@ where
 
                     self.pulled = false;
 
-                    Some(Action::Push(element))
+                    ctx.tell(Action::Push(element));
+                    reply_to.tell(QueuePushResult::Pushed);
                 } else if len == self.buffer.capacity() {
                     match self.overflow_strategy {
                         OverflowStrategy::DropOldest => {
@@ -263,26 +240,33 @@ where
 
                             self.buffer.pop_front();
                             self.buffer.push_back(element);
-
-                            None
                         }
 
                         OverflowStrategy::DropNewest => {
                             reply_to.tell(QueuePushResult::Dropped);
-
-                            None
                         }
                     }
                 } else {
                     reply_to.tell(QueuePushResult::Pushed);
 
                     self.buffer.push_back(element);
-
-                    None
                 }
             }
 
-            QueueLogicCtl::Complete => Some(Action::Complete(None)),
+            LogicEvent::Forwarded(QueueLogicCtl::Complete) => {
+                ctx.tell(Action::Complete(None));
+            }
+
+            LogicEvent::Cancelled => {
+                ctx.tell(Action::Complete(None));
+            }
+
+            LogicEvent::Started => {
+                self.queue_actor_ref
+                    .tell(QueueCtl::Initialize(ctx.actor_ref()));
+            }
+
+            LogicEvent::Pushed(()) | LogicEvent::Stopped => {}
         }
     }
 }

@@ -1,54 +1,63 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
-pub struct Ignore {
+pub struct Ignore<A>
+where
+    A: Send,
+{
     pulled: bool,
+    phantom: PhantomData<A>,
 }
 
-impl Ignore {
+impl<A> Ignore<A>
+where
+    A: Send,
+{
     pub fn new() -> Self {
-        Self { pulled: false }
+        Self {
+            pulled: false,
+            phantom: PhantomData,
+        }
     }
 }
 
-impl<A> Logic<A, (), ()> for Ignore
+impl<A> Logic for Ignore<A>
 where
     A: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "Ignore"
-    }
+    type In = A;
+    type Out = ();
+    type Msg = ();
 
-    fn pulled(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        self.pulled = true;
+    fn receive(
+        &mut self,
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pushed(_) => {
+                ctx.tell(Action::Pull);
+            }
 
-        None
-    }
+            LogicEvent::Pulled => {
+                self.pulled = true;
+            }
 
-    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        Some(Action::Pull)
-    }
+            LogicEvent::Stopped | LogicEvent::Cancelled => {
+                if self.pulled {
+                    self.pulled = false;
 
-    fn started(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        Some(Action::Pull)
-    }
+                    ctx.tell(Action::Push(()));
+                }
 
-    fn stopped(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        if self.pulled {
-            self.pulled = false;
+                ctx.tell(Action::Complete(None));
+            }
 
-            // note that the action we're returning will be synchronously processed, followed
-            // later by this Complete, i.e. the Push is processed first.
+            LogicEvent::Started => {
+                ctx.tell(Action::Pull);
+            }
 
-            ctx.tell(Action::Complete(None));
-
-            Some(Action::Push(()))
-        } else {
-            Some(Action::Complete(None))
+            LogicEvent::Forwarded(()) => {}
         }
-    }
-
-    fn forwarded(&mut self, msg: (), ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        None
     }
 }

@@ -1,4 +1,4 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
 pub struct Collect<A> {
     entries: Option<Vec<A>>,
@@ -14,62 +14,53 @@ impl<A> Collect<A> {
     }
 }
 
-impl<A> Logic<A, Vec<A>, ()> for Collect<A>
+impl<A> Logic for Collect<A>
 where
     A: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "Collect"
-    }
+    type In = A;
+    type Out = Vec<A>;
+    type Msg = ();
 
-    fn pulled(&mut self, ctx: &mut StreamContext<A, Vec<A>, ()>) -> Option<Action<Vec<A>, ()>> {
-        self.pulled = true;
-
-        None
-    }
-
-    fn pushed(
+    fn receive(
         &mut self,
-        el: A,
-        ctx: &mut StreamContext<A, Vec<A>, ()>,
-    ) -> Option<Action<Vec<A>, ()>> {
-        self.entries
-            .as_mut()
-            .expect("pantomime bug: Collect::entries is None")
-            .push(el);
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pushed(element) => {
+                self.entries
+                    .as_mut()
+                    .expect("pantomime bug: Collect::entries is None")
+                    .push(element);
 
-        Some(Action::Pull)
-    }
+                ctx.tell(Action::Pull);
+            }
 
-    fn started(&mut self, ctx: &mut StreamContext<A, Vec<A>, ()>) -> Option<Action<Vec<A>, ()>> {
-        Some(Action::Pull)
-    }
+            LogicEvent::Pulled => {
+                self.pulled = true;
+            }
 
-    fn stopped(&mut self, ctx: &mut StreamContext<A, Vec<A>, ()>) -> Option<Action<Vec<A>, ()>> {
-        if self.pulled {
-            self.pulled = false;
+            LogicEvent::Stopped | LogicEvent::Cancelled => {
+                if self.pulled {
+                    self.pulled = false;
 
-            let entries = self
-                .entries
-                .take()
-                .expect("pantomime bug: Collect::entries is None");
+                    let entries = self
+                        .entries
+                        .take()
+                        .expect("pantomime bug: Collect::entries is None");
 
-            // note that the action we're returning will be synchronously processed, followed
-            // later by this Complete, i.e. the Push is processed first.
+                    ctx.tell(Action::Push(entries));
+                }
 
-            ctx.tell(Action::Complete(None));
+                ctx.tell(Action::Complete(None));
+            }
 
-            Some(Action::Push(entries))
-        } else {
-            None
+            LogicEvent::Started => {
+                ctx.tell(Action::Pull);
+            }
+
+            LogicEvent::Forwarded(()) => {}
         }
-    }
-
-    fn forwarded(
-        &mut self,
-        msg: (),
-        ctx: &mut StreamContext<A, Vec<A>, ()>,
-    ) -> Option<Action<Vec<A>, ()>> {
-        None
     }
 }

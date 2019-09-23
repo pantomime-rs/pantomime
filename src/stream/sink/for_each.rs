@@ -1,21 +1,13 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
-pub struct ForEach<A, F>
-where
-    F: FnMut(A) -> (),
-    A: 'static + Send,
-{
+pub struct ForEach<A, F: FnMut(A) -> ()> {
     for_each_fn: F,
     pulled: bool,
     phantom: PhantomData<A>,
 }
 
-impl<A, F: FnMut(A) -> ()> ForEach<A, F>
-where
-    F: 'static + Send,
-    A: 'static + Send,
-{
+impl<A, F: FnMut(A) -> ()> ForEach<A, F> {
     pub fn new(for_each_fn: F) -> Self {
         Self {
             for_each_fn,
@@ -25,51 +17,46 @@ where
     }
 }
 
-impl<A, F> Logic<A, (), ()> for ForEach<A, F>
+impl<A, F: FnMut(A) -> ()> Logic for ForEach<A, F>
 where
-    F: FnMut(A) -> (),
+    F: 'static + Send,
     A: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "ForEach"
-    }
+    type In = A;
+    type Out = ();
+    type Msg = ();
 
-    fn pulled(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        self.pulled = true;
+    fn receive(
+        &mut self,
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pushed(element) => {
+                (self.for_each_fn)(element);
 
-        None
-    }
+                ctx.tell(Action::Pull);
+            }
 
-    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        (self.for_each_fn)(el);
+            LogicEvent::Pulled => {
+                self.pulled = true;
+            }
 
-        Some(Action::Pull)
-    }
+            LogicEvent::Stopped | LogicEvent::Cancelled => {
+                if self.pulled {
+                    self.pulled = false;
 
-    fn started(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        Some(Action::Pull)
-    }
+                    ctx.tell(Action::Push(()));
+                }
 
-    fn stopped(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        if self.pulled {
-            self.pulled = false;
+                ctx.tell(Action::Complete(None));
+            }
 
-            let actor_ref = ctx.actor_ref();
+            LogicEvent::Started => {
+                ctx.tell(Action::Pull);
+            }
 
-            actor_ref.tell(Action::Push(()));
-            actor_ref.tell(Action::Complete(None));
-
-            None
-        } else {
-            Some(Action::Complete(None))
+            LogicEvent::Forwarded(()) => {}
         }
-    }
-
-    fn cancelled(&mut self, ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        Some(Action::Complete(None))
-    }
-
-    fn forwarded(&mut self, msg: (), ctx: &mut StreamContext<A, (), ()>) -> Option<Action<(), ()>> {
-        None
     }
 }

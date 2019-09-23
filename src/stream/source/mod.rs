@@ -9,7 +9,6 @@ mod iterator;
 mod merge;
 mod queue;
 mod repeat;
-mod restart;
 
 pub use iterator::Iterator;
 pub use merge::Merge;
@@ -24,7 +23,7 @@ impl<A> Source<A>
 where
     A: 'static + Send,
 {
-    pub fn new<Msg, L: Logic<(), A, Msg>>(logic: L) -> Self
+    pub fn new<Msg, L: Logic<In = (), Out = A, Msg = Msg>>(logic: L) -> Self
     where
         Msg: 'static + Send,
         L: 'static + Send,

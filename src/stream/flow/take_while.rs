@@ -1,4 +1,4 @@
-use crate::stream::{Action, Logic, StreamContext};
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
 struct TakeWhile<A, F: FnMut(&A) -> bool>
@@ -7,7 +7,6 @@ where
     F: 'static + Send,
 {
     while_fn: F,
-    cancelled: bool,
     phantom: PhantomData<A>,
 }
 
@@ -19,34 +18,43 @@ where
     fn new(while_fn: F) -> Self {
         Self {
             while_fn,
-            cancelled: false,
             phantom: PhantomData,
         }
     }
 }
 
-impl<A, F: FnMut(&A) -> bool> Logic<A, A, ()> for TakeWhile<A, F>
+impl<A, F: FnMut(&A) -> bool> Logic for TakeWhile<A, F>
 where
     A: 'static + Send,
     F: 'static + Send,
 {
-    fn name(&self) -> &'static str {
-        "TakeWhile"
-    }
+    type In = A;
+    type Out = A;
+    type Msg = ();
 
-    fn pulled(&mut self, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
-        Some(Action::Pull)
-    }
+    fn receive(
+        &mut self,
+        msg: LogicEvent<Self::In, Self::Msg>,
+        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+    ) {
+        match msg {
+            LogicEvent::Pulled => {
+                ctx.tell(Action::Pull);
+            }
 
-    fn pushed(&mut self, el: A, ctx: &mut StreamContext<A, A, ()>) -> Option<Action<A, ()>> {
-        if self.cancelled {
-            None
-        } else if (self.while_fn)(&el) {
-            Some(Action::Push(el))
-        } else {
-            self.cancelled = true;
+            LogicEvent::Pushed(element) => {
+                ctx.tell(if (self.while_fn)(&element) {
+                    Action::Push(element)
+                } else {
+                    Action::Complete(None)
+                });
+            }
 
-            Some(Action::Complete(None))
+            LogicEvent::Stopped | LogicEvent::Cancelled => {
+                ctx.tell(Action::Complete(None));
+            }
+
+            LogicEvent::Started | LogicEvent::Forwarded(()) => {}
         }
     }
 }
