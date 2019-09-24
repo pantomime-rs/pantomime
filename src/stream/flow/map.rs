@@ -1,50 +1,29 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
-pub struct Map<A, B, F: FnMut(A) -> B>
-where
-    A: Send,
-    B: Send,
-{
-    map_fn: F,
-    phantom: PhantomData<(A, B)>,
+pub struct Map<F> {
+    map: F,
 }
 
-impl<A, B, F: FnMut(A) -> B> Map<A, B, F>
-where
-    A: Send,
-    B: Send,
-{
-    pub fn new(map_fn: F) -> Self {
-        Self {
-            map_fn,
-            phantom: PhantomData,
-        }
+impl<F> Map<F> {
+    pub fn new<A, B>(map: F) -> Self
+    where
+        F: FnMut(A) -> B,
+    {
+        Self { map }
     }
 }
 
-impl<A, B, F: FnMut(A) -> B> Logic for Map<A, B, F>
-where
-    F: 'static + Send,
-    A: 'static + Send,
-    B: 'static + Send,
-{
-    type In = A;
-    type Out = B;
-    type Msg = ();
+impl<A: Send, B: Send, F: FnMut(A) -> B + Send> Logic<A, B> for Map<F> {
+    type Ctl = ();
 
-    fn receive(
-        &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
-    ) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {
                 ctx.tell(Action::Pull);
             }
 
             LogicEvent::Pushed(element) => {
-                ctx.tell(Action::Push((self.map_fn)(element)));
+                ctx.tell(Action::Push((self.map)(element)));
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {

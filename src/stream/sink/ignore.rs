@@ -21,18 +21,16 @@ where
     }
 }
 
-impl<A> Logic for Ignore<A>
+impl<A> Logic<A, ()> for Ignore<A>
 where
-    A: 'static + Send,
+    A: Send,
 {
-    type In = A;
-    type Out = ();
-    type Msg = ();
+    type Ctl = ();
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<A, Self::Ctl>,
+        ctx: &mut StreamContext<A, (), Self::Ctl>,
     ) {
         match msg {
             LogicEvent::Pushed(_) => {

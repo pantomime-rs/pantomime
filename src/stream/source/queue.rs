@@ -78,10 +78,12 @@ where
     }
 }
 
-impl<A> Actor<QueueCtl<A>> for QueueActor<A>
+impl<A> Actor for QueueActor<A>
 where
     A: 'static + Send,
 {
+    type Msg = QueueCtl<A>;
+
     fn receive(&mut self, msg: QueueCtl<A>, ctx: &mut ActorContext<QueueCtl<A>>) {
         match msg {
             QueueCtl::Initialize(stage_ref) => {
@@ -191,13 +193,11 @@ where
     }
 }
 
-impl<A> Logic for Queue<A>
+impl<A> Logic<(), A> for Queue<A>
 where
     A: 'static + Send,
 {
-    type In = ();
-    type Out = A;
-    type Msg = QueueLogicCtl<A>;
+    type Ctl = QueueLogicCtl<A>;
 
     fn buffer_size(&self) -> Option<usize> {
         Some(0)
@@ -209,8 +209,8 @@ where
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<(), Self::Ctl>,
+        ctx: &mut StreamContext<(), A, Self::Ctl>,
     ) {
         match msg {
             LogicEvent::Pulled => match self.buffer.pop_front() {
@@ -301,7 +301,9 @@ fn test2() {
         }
     }
 
-    impl Actor<usize> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = usize;
+
         fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
             self.n += value;
 

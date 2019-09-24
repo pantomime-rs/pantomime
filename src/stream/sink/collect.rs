@@ -14,18 +14,16 @@ impl<A> Collect<A> {
     }
 }
 
-impl<A> Logic for Collect<A>
+impl<A> Logic<A, Vec<A>> for Collect<A>
 where
     A: 'static + Send,
 {
-    type In = A;
-    type Out = Vec<A>;
-    type Msg = ();
+    type Ctl = ();
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<A, Self::Ctl>,
+        ctx: &mut StreamContext<A, Vec<A>, Self::Ctl>,
     ) {
         match msg {
             LogicEvent::Pushed(element) => {

@@ -17,18 +17,16 @@ where
     }
 }
 
-impl<A> Logic for Repeat<A>
+impl<A> Logic<(), A> for Repeat<A>
 where
     A: 'static + Clone + Send,
 {
-    type In = ();
-    type Out = A;
-    type Msg = ();
+    type Ctl = ();
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<(), Self::Ctl>,
+        ctx: &mut StreamContext<(), A, Self::Ctl>,
     ) {
         match msg {
             LogicEvent::Pulled => {

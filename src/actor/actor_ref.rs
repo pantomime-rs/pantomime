@@ -85,10 +85,12 @@ pub enum Signal {
     Resumed,
 }
 
-pub trait Actor<Msg>: Send
+pub trait Actor: Send
 where
-    Msg: Send,
+    Self::Msg: Send,
 {
+    type Msg;
+
     fn config_dispatcher(&self, ctx: &ActorSystemContext) -> Option<Dispatcher> {
         {
             let _ = ctx;
@@ -97,7 +99,7 @@ where
         None
     }
 
-    fn config_mailbox(&self, ctx: &ActorSystemContext) -> Option<Mailbox<Envelope<Msg>>> {
+    fn config_mailbox(&self, ctx: &ActorSystemContext) -> Option<Mailbox<Envelope<Self::Msg>>> {
         {
             let _ = ctx;
         }
@@ -116,7 +118,7 @@ where
     fn handle_failure(
         &mut self,
         reason: FailureReason,
-        ctx: &mut ActorContext<Msg>,
+        ctx: &mut ActorContext<Self::Msg>,
     ) -> FailureAction {
         {
             let _ = ctx;
@@ -125,7 +127,7 @@ where
         FailureAction::Fail(reason)
     }
 
-    fn receive_signal(&mut self, sig: Signal, ctx: &mut ActorContext<Msg>) {
+    fn receive_signal(&mut self, sig: Signal, ctx: &mut ActorContext<Self::Msg>) {
         {
             let _ = sig;
         }
@@ -134,7 +136,7 @@ where
         }
     }
 
-    fn receive(&mut self, msg: Msg, context: &mut ActorContext<Msg>);
+    fn receive(&mut self, msg: Self::Msg, context: &mut ActorContext<Self::Msg>);
 }
 
 pub(in crate::actor) enum Delivery<Msg> {
@@ -198,10 +200,9 @@ impl<'a> ActorSpawnContext<'a> {
         &self.system_context
     }
 
-    fn do_spawn<AMsg, A: Actor<AMsg>>(&mut self, actor: A) -> ActorRef<AMsg>
+    fn do_spawn<A: Actor>(&mut self, actor: A) -> ActorRef<A::Msg>
     where
         A: 'static + Send,
-        AMsg: 'static + Send,
     {
         ///////////////////////////////////////////////////////////////////////////////////////////////
         // NOTE: this is quite similiar to ActorSystemContext::spawn, and changes should be mirrored //
@@ -289,23 +290,21 @@ impl<'a> ActorSpawnContext<'a> {
     }
 }
 
-impl<'a, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorSpawnContext<'a>
+impl<'a, A: Actor> Spawnable<A, ActorRef<A::Msg>> for ActorSpawnContext<'a>
 where
-    AMsg: 'static + Send,
     A: 'static + Send,
 {
-    fn perform_spawn(&mut self, actor: A) -> ActorRef<AMsg> {
+    fn perform_spawn(&mut self, actor: A) -> ActorRef<A::Msg> {
         self.do_spawn(actor)
     }
 }
 
-impl<Msg, AMsg, A: Actor<AMsg>> Spawnable<A, ActorRef<AMsg>> for ActorContext<Msg>
+impl<Msg, A: Actor> Spawnable<A, ActorRef<A::Msg>> for ActorContext<Msg>
 where
     Msg: 'static + Send,
-    AMsg: 'static + Send,
     A: 'static + Send,
 {
-    fn perform_spawn(&mut self, actor: A) -> ActorRef<AMsg> {
+    fn perform_spawn(&mut self, actor: A) -> ActorRef<A::Msg> {
         self.spawn_context().spawn(actor)
     }
 }
@@ -820,7 +819,7 @@ pub(in crate::actor) struct SpawnedActor<Msg>
 where
     Msg: Send,
 {
-    pub(in crate::actor) actor: Box<dyn Actor<Msg>>,
+    pub(in crate::actor) actor: Box<dyn Actor<Msg = Msg>>,
     pub(in crate::actor) context: ActorContext<Msg>,
     pub(in crate::actor) dispatcher: Dispatcher,
     pub(in crate::actor) execution_state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>,

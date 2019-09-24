@@ -26,10 +26,10 @@ where
     A: 'static + Send,
     B: 'static + Send,
 {
-    pub fn new<Msg, L: Logic<In = A, Out = B, Msg = Msg>>(logic: L) -> Self
+    pub fn new<L: Logic<A, B>>(logic: L) -> Self
     where
-        Msg: 'static + Send,
         L: 'static + Send,
+        L::Ctl: 'static + Send,
     {
         Self {
             logic: Box::new(LogicContainer {

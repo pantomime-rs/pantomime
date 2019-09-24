@@ -67,13 +67,11 @@ where
     }
 }
 
-impl<A> Logic for Merge<A>
+impl<A> Logic<(), A> for Merge<A>
 where
     A: 'static + Send,
 {
-    type In = ();
-    type Out = A;
-    type Msg = MergeMsg<A>;
+    type Ctl = MergeMsg<A>;
 
     fn buffer_size(&self) -> Option<usize> {
         Some(0)
@@ -81,8 +79,8 @@ where
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<(), Self::Ctl>,
+        ctx: &mut StreamContext<(), A, Self::Ctl>,
     ) {
         match msg {
             LogicEvent::Pulled => match self.buffer.pop_front() {

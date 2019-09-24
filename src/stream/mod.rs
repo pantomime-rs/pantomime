@@ -1,6 +1,7 @@
 use crate::actor::{Actor, ActorContext, ActorRef, FailureReason};
 use crate::stream::internal::{InternalStreamCtl, RunnableStream, Stage, StageMsg};
 use crossbeam::atomic::AtomicCell;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,13 +56,12 @@ pub enum LogicPortEvent<A> {
 /// performance or other considerations makes it necessary. Be sure to
 /// look at the numerous stages provided out of the box before
 /// continuing.
-pub trait Logic
+pub trait Logic<In: Send, Out: Send>
 where
     Self: Send + Sized,
+    Self::Ctl: Send,
 {
-    type In: Send;
-    type Out: Send;
-    type Msg: Send;
+    type Ctl;
 
     fn name(&self) -> &'static str {
         "todo"
@@ -76,64 +76,60 @@ where
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<In, Self::Ctl>,
+        ctx: &mut StreamContext<In, Out, Self::Ctl>,
     );
 }
 
-pub struct StreamContext<'a, A, B, Msg, L: Logic<In = A, Out = B, Msg = Msg>>
+pub struct StreamContext<'a, In, Out, Ctl>
 where
-    A: 'static + Send,
-    B: 'static + Send,
-    Msg: 'static + Send,
-    L: 'static + Send,
+    In: 'static + Send,
+    Out: 'static + Send,
+    Ctl: 'static + Send,
 {
-    // @TODO this needs to take a mut ref to Stage as well for perf reasons
-    ctx: &'a mut ActorContext<StageMsg<A, B, Msg>>,
-    p: PhantomData<L>,
+    ctx: &'a mut ActorContext<StageMsg<In, Out, Ctl>>,
+    actions: &'a mut VecDeque<Action<Out, Ctl>>,
 }
 
-impl<'a, A, B, Msg, L: Logic<In = A, Out = B, Msg = Msg>> StreamContext<'a, A, B, Msg, L>
+impl<'a, In, Out, Ctl> StreamContext<'a, In, Out, Ctl>
 where
-    A: 'static + Send,
-    B: 'static + Send,
-    Msg: 'static + Send,
-    L: 'static + Send,
+    In: 'static + Send,
+    Out: 'static + Send,
+    Ctl: 'static + Send,
 {
     #[inline(always)]
-    pub(in crate::stream) fn new(ctx: &'a mut ActorContext<StageMsg<A, B, Msg>>) -> Self {
-        StreamContext {
-            ctx,
-            p: PhantomData,
-        }
+    pub(in crate::stream) fn new(
+        ctx: &'a mut ActorContext<StageMsg<In, Out, Ctl>>,
+        actions: &'a mut VecDeque<Action<Out, Ctl>>,
+    ) -> Self {
+        StreamContext { ctx, actions }
     }
 
-    pub fn actor_ref(&self) -> ActorRef<Action<B, Msg>> {
+    pub fn actor_ref(&self) -> ActorRef<Action<Out, Ctl>> {
         // @FIXME i'd like this to return a reference for API symmetry
 
         self.ctx
             .actor_ref()
-            .convert(|action: Action<B, Msg>| StageMsg::Action(action))
+            .convert(|action: Action<Out, Ctl>| StageMsg::Action(action))
     }
 
-    fn tell(&mut self, action: Action<B, Msg>) {
+    fn tell(&mut self, action: Action<Out, Ctl>) {
         self.ctx.actor_ref().tell(StageMsg::Action(action));
     }
 
-    fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Msg) {
+    fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Ctl) {
         self.ctx
             .schedule_delivery(name, timeout, StageMsg::Action(Action::Forward(msg)));
     }
 
-    fn spawn<AMsg, Ax: Actor<AMsg>>(&mut self, actor: Ax) -> ActorRef<AMsg>
+    fn spawn<Ax: Actor>(&mut self, actor: Ax) -> ActorRef<Ax::Msg>
     where
-        AMsg: 'static + Send,
         Ax: 'static + Send,
     {
         self.ctx.spawn(actor)
     }
 
-    fn spawn_stage<Y, Z, C: FnMut(Y) -> Msg>(&mut self, flow: Flow<Y, Z>, convert: C) -> usize {
+    fn spawn_stage<Y, Z, C: FnMut(Y) -> Ctl>(&mut self, flow: Flow<Y, Z>, convert: C) -> usize {
         0
     }
 }

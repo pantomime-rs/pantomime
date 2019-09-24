@@ -15,18 +15,16 @@ impl<A> First<A> {
     }
 }
 
-impl<A> Logic for First<A>
+impl<A> Logic<A, Option<A>> for First<A>
 where
     A: 'static + Send,
 {
-    type In = A;
-    type Out = Option<A>;
-    type Msg = ();
+    type Ctl = ();
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<A, Self::Ctl>,
+        ctx: &mut StreamContext<A, Option<A>, Self::Ctl>,
     ) {
         match msg {
             LogicEvent::Pushed(element) => {

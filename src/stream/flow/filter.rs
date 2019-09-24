@@ -1,42 +1,22 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
-pub struct Filter<A, F: FnMut(&A) -> bool>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
+pub struct Filter<F> {
     filter: F,
-    phantom: PhantomData<A>,
 }
 
-impl<A, F: FnMut(&A) -> bool> Filter<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    pub fn new(filter: F) -> Self {
-        Self {
-            filter,
-            phantom: PhantomData,
-        }
+impl<F> Filter<F> {
+    pub fn new<A>(filter: F) -> Self
+    where
+        F: FnMut(&A) -> bool,
+    {
+        Self { filter }
     }
 }
 
-impl<A, F: FnMut(&A) -> bool> Logic for Filter<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    type In = A;
-    type Out = A;
-    type Msg = ();
+impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for Filter<F> {
+    type Ctl = ();
 
-    fn receive(
-        &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
-    ) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {
                 ctx.tell(Action::Pull);

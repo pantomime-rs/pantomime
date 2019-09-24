@@ -17,19 +17,17 @@ where
     }
 }
 
-impl<A, I: std::iter::Iterator<Item = A>> Logic for Iterator<A, I>
+impl<A, I: std::iter::Iterator<Item = A>> Logic<(), A> for Iterator<A, I>
 where
     A: 'static + Send,
     I: 'static + Send,
 {
-    type In = ();
-    type Out = A;
-    type Msg = ();
+    type Ctl = ();
 
     fn receive(
         &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
+        msg: LogicEvent<(), Self::Ctl>,
+        ctx: &mut StreamContext<(), A, Self::Ctl>,
     ) {
         match msg {
             LogicEvent::Pulled => match self.iterator.next() {

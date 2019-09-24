@@ -26,7 +26,9 @@ fn test1() {
         }
     }
 
-    impl Actor<()> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = ();
+
         fn receive(&mut self, _: (), ctx: &mut ActorContext<()>) {
             self.n += 1;
 
@@ -77,7 +79,9 @@ fn test2() {
         }
     }
 
-    impl Actor<usize> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = usize;
+
         fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
             self.n += value;
 
@@ -132,7 +136,9 @@ fn test3() {
         }
     }
 
-    impl Actor<usize> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = usize;
+
         fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
             self.n += value;
 
@@ -190,7 +196,9 @@ fn test4() {
         }
     }
 
-    impl Actor<usize> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = usize;
+
         fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
             self.n += value;
 

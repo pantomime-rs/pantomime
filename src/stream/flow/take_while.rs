@@ -1,42 +1,22 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
-struct TakeWhile<A, F: FnMut(&A) -> bool>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
+struct TakeWhile<F> {
     while_fn: F,
-    phantom: PhantomData<A>,
 }
 
-impl<A, F: FnMut(&A) -> bool> TakeWhile<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    fn new(while_fn: F) -> Self {
-        Self {
-            while_fn,
-            phantom: PhantomData,
-        }
+impl<F> TakeWhile<F> {
+    fn new<A>(while_fn: F) -> Self
+    where
+        F: FnMut(&A) -> bool,
+    {
+        Self { while_fn }
     }
 }
 
-impl<A, F: FnMut(&A) -> bool> Logic for TakeWhile<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    type In = A;
-    type Out = A;
-    type Msg = ();
+impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
+    type Ctl = ();
 
-    fn receive(
-        &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
-    ) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {
                 ctx.tell(Action::Pull);

@@ -87,10 +87,9 @@ impl ActorSystemContext {
         }
     }
 
-    pub(crate) fn spawn<M, A: Actor<M>>(&self, actor: A) -> ActorRef<M>
+    pub(crate) fn spawn<A: Actor>(&self, actor: A) -> ActorRef<A::Msg>
     where
         A: 'static + Send,
-        M: 'static + Send,
     {
         /////////////////////////////////////////////////////////////////////////////////////////
         // NOTE: this is quite similiar to ActorContext::spawn, and changes should be mirrored //
@@ -242,9 +241,9 @@ pub struct ActiveActorSystem {
 }
 
 impl ActiveActorSystem {
-    pub fn spawn<M: 'static + Send, A: 'static + Send>(&mut self, actor: A) -> ActorRef<M>
+    pub fn spawn<A: Actor>(&mut self, actor: A) -> ActorRef<A::Msg>
     where
-        A: Actor<M>,
+        A: 'static,
     {
         self.context.spawn(actor)
     }
@@ -433,9 +432,8 @@ pub(in crate::actor) enum ReaperMsg {
     WatchPosixSignals(SystemActorRef),
 }
 
-struct ReaperMonitor<M, A: Actor<M>>
+struct ReaperMonitor<A: Actor>
 where
-    M: 'static + Send,
     A: 'static + Send,
 {
     actor: Option<A>,
@@ -444,13 +442,10 @@ where
 
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     posix_signals_watchers: HashMap<usize, SystemActorRef>,
-
-    phantom: PhantomData<M>,
 }
 
-impl<M, A: Actor<M>> ReaperMonitor<M, A>
+impl<A: Actor> ReaperMonitor<A>
 where
-    M: 'static + Send,
     A: 'static + Send,
 {
     fn new(actor: A, failed: &Arc<AtomicBool>) -> Self {
@@ -461,17 +456,16 @@ where
 
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             posix_signals_watchers: HashMap::new(),
-
-            phantom: PhantomData,
         }
     }
 }
 
-impl<M, A: Actor<M>> Actor<ReaperMsg> for ReaperMonitor<M, A>
+impl<A: Actor> Actor for ReaperMonitor<A>
 where
-    M: 'static + Send,
     A: 'static + Send,
 {
+    type Msg = ReaperMsg;
+
     fn receive(&mut self, msg: ReaperMsg, ctx: &mut ActorContext<ReaperMsg>) {
         match msg {
             ReaperMsg::Stop => {
@@ -577,9 +571,9 @@ impl ActorSystem {
     /// A suggested pattern is to spawn and watch all of your top level actors
     /// with the reaper, and react to any termination signals of those actors
     /// via the `receive_signal` method.
-    pub fn spawn<M: 'static + Send, A: 'static + Send>(mut self, actor: A) -> Result<(), Error>
+    pub fn spawn<A: 'static + Send>(mut self, actor: A) -> Result<(), Error>
     where
-        A: Actor<M>,
+        A: Actor,
     {
         INITIALIZE_ONCE.call_once(|| {
             if let Some(log_err) = Self::setup_logger().err() {

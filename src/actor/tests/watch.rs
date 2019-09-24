@@ -5,7 +5,9 @@ struct MyActor {
     fail: bool,
 }
 
-impl Actor<()> for MyActor {
+impl Actor for MyActor {
+    type Msg = ();
+
     fn receive(&mut self, _: (), ctx: &mut ActorContext<()>) {
         if self.fail {
             ctx.fail(io::Error::new(io::ErrorKind::Other, "failed"));
@@ -36,7 +38,9 @@ fn basic_test() {
         state: ReaperState,
     }
 
-    impl Actor<ReaperMsg> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = ReaperMsg;
+
         fn receive(&mut self, msg: ReaperMsg, ctx: &mut ActorContext<ReaperMsg>) {
             match self.state {
                 ReaperState::One => match msg {
