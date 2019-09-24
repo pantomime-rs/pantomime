@@ -1,31 +1,17 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
-pub struct Identity<A> {
-    phantom: PhantomData<A>,
-}
+pub struct Identity;
 
-impl<A> Identity<A> {
+impl Identity {
     pub fn new() -> Self {
-        Self {
-            phantom: PhantomData,
-        }
+        Self
     }
 }
 
-impl<A> Logic for Identity<A>
-where
-    A: 'static + Send,
-{
-    type In = A;
-    type Out = A;
-    type Msg = ();
+impl<A: Send> Logic<A, A> for Identity {
+    type Ctl = ();
 
-    fn receive(
-        &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
-    ) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {
                 ctx.tell(Action::Pull);

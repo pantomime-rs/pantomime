@@ -1,51 +1,32 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
-pub struct Scan<A, B, F: FnMut(B, A) -> B>
-where
-    A: Send,
-    B: Clone + Send,
-{
-    scan_fn: F,
-    phantom: PhantomData<(A, B)>,
+pub struct Scan<B, F> {
+    scan: F,
     sent: bool,
     last: Option<B>,
 }
 
-impl<A, B, F: FnMut(B, A) -> B> Scan<A, B, F>
-where
-    A: Send,
-    B: Clone + Send,
-{
-    pub fn new(zero: B, scan_fn: F) -> Self {
+impl<B, F> Scan<B, F> {
+    pub fn new<A>(zero: B, scan: F) -> Self
+    where
+        F: FnMut(B, A) -> B,
+    {
         Self {
-            scan_fn,
-            phantom: PhantomData,
+            scan,
             sent: false,
             last: Some(zero),
         }
     }
 }
 
-impl<A, B, F: FnMut(B, A) -> B> Logic for Scan<A, B, F>
-where
-    A: 'static + Send,
-    B: 'static + Clone + Send,
-    F: 'static + Send,
-{
-    type In = A;
-    type Out = B;
-    type Msg = ();
+impl<A: Send, B: Clone + Send, F: FnMut(B, A) -> B + Send> Logic<A, B> for Scan<B, F> {
+    type Ctl = ();
 
-    fn receive(
-        &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
-    ) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) {
         match msg {
             LogicEvent::Pushed(element) => {
                 let last = self.last.take().expect("pantomime bug: Scan::last is None");
-                let next = (self.scan_fn)(last, element);
+                let next = (self.scan)(last, element);
 
                 ctx.tell(Action::Push(next.clone()));
 

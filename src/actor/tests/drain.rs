@@ -10,7 +10,9 @@ struct MyActor {
     count: usize,
 }
 
-impl Actor<usize> for MyActor {
+impl Actor for MyActor {
+    type Msg = usize;
+
     fn receive(&mut self, msg: usize, _context: &mut ActorContext<usize>) {
         if self.id != 0 {
             self.actor_ref.tell(msg);
@@ -59,7 +61,9 @@ impl Actor<usize> for MyActor {
 fn test() {
     struct TestReaper;
 
-    impl Actor<()> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = ();
+
         fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {

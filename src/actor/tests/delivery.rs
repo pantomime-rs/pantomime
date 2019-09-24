@@ -14,7 +14,9 @@ fn basic_test() {
         num: usize,
     };
 
-    impl Actor<usize> for MyTestActor {
+    impl Actor for MyTestActor {
+        type Msg = usize;
+
         fn receive(&mut self, msg: usize, ctx: &mut ActorContext<usize>) {
             match self.state {
                 State::One => {

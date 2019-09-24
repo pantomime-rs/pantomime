@@ -23,10 +23,10 @@ impl<A> Source<A>
 where
     A: 'static + Send,
 {
-    pub fn new<Msg, L: Logic<In = (), Out = A, Msg = Msg>>(logic: L) -> Self
+    pub fn new<L: Logic<(), A>>(logic: L) -> Self
     where
-        Msg: 'static + Send,
         L: 'static + Send,
+        L::Ctl: Send,
     {
         Self {
             producers: vec![Box::new(SourceLike {

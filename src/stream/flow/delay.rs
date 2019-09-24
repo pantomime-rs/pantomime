@@ -1,46 +1,34 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 use std::time::Duration;
 
 pub enum DelayMsg<A> {
     Ready(A),
 }
 
-pub struct Delay<A> {
+pub struct Delay {
     delay: Duration,
     pushing: bool,
     stopped: bool,
-    phantom: PhantomData<A>,
 }
 
-impl<A> Delay<A> {
+impl Delay {
     pub fn new(delay: Duration) -> Self {
         Self {
             delay,
             pushing: false,
             stopped: false,
-            phantom: PhantomData,
         }
     }
 }
 
-impl<A> Logic for Delay<A>
-where
-    A: 'static + Send,
-{
-    type In = A;
-    type Out = A;
-    type Msg = DelayMsg<A>;
+impl<A: Send> Logic<A, A> for Delay {
+    type Ctl = DelayMsg<A>;
 
     fn buffer_size(&self) -> Option<usize> {
         Some(0) // @FIXME should this be based on the delay duration?
     }
 
-    fn receive(
-        &mut self,
-        msg: LogicEvent<Self::In, Self::Msg>,
-        ctx: &mut StreamContext<Self::In, Self::Out, Self::Msg, Self>,
-    ) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {
                 ctx.tell(Action::Pull);
