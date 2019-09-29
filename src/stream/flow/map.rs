@@ -16,6 +16,10 @@ impl<F> Map<F> {
 impl<A: Send, B: Send, F: FnMut(A) -> B + Send> Logic<A, B> for Map<F> {
     type Ctl = ();
 
+    fn name(&self) -> &'static str {
+        "Map"
+    }
+
     fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {

@@ -174,7 +174,7 @@ where
     pulled: bool,
 }
 
-enum OverflowStrategy {
+pub enum OverflowStrategy {
     DropNewest,
     DropOldest,
 }
@@ -334,7 +334,7 @@ fn test2() {
                     let (stream_ref, result) = ctx.spawn(
                         queue_src
                             .map(|n| n * 2)
-                            .via(Flow::new(Delay::new(Duration::from_millis(50))))
+                            .via(Flow::from_logic(Delay::new(Duration::from_millis(50))))
                             .to(Sink::last()),
                     );
 

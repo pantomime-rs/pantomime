@@ -20,6 +20,10 @@ where
 {
     type Ctl = ();
 
+    fn name(&self) -> &'static str {
+        "Collect"
+    }
+
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,

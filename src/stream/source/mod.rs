@@ -7,11 +7,12 @@ use std::marker::PhantomData;
 
 mod iterator;
 mod merge;
+mod merge2;
 mod queue;
 mod repeat;
 
 pub use iterator::Iterator;
-pub use merge::Merge;
+//pub use merge::Merge;
 pub use queue::SourceQueue;
 pub use repeat::Repeat;
 
@@ -67,11 +68,24 @@ where
         }
     }
 
+    pub fn to_fused<Out>(self, mut sink: Sink<A, Out>) -> Stream<Out>
+    where
+        Out: 'static + Send,
+    {
+        sink.fused = true;
+        self.to(sink)
+    }
+
+    // A NOTE FOR MAINTAINERS
+    //
+    // ALL METHODS BELOW SHOULD ALSO EXIST
+    // ON Flow
+
     pub fn filter<F: FnMut(&A) -> bool>(self, filter: F) -> Source<A>
     where
         F: 'static + Send,
     {
-        self.via(Flow::new(flow::Filter::new(filter)))
+        self.via(Flow::from_logic(flow::Filter::new(filter)))
     }
 
     pub fn map<B, F: FnMut(A) -> B>(self, map_fn: F) -> Source<B>
@@ -79,7 +93,7 @@ where
         B: 'static + Send,
         F: 'static + Send,
     {
-        self.via(Flow::new(flow::Map::new(map_fn)))
+        self.via(Flow::from_logic(flow::Map::new(map_fn)))
     }
 
     pub fn merge(self, source: Source<A>) -> Self {
@@ -104,12 +118,26 @@ where
         }
     }
 
+    /// Fuse the provided flow into this source.
+    ///
+    /// If this is a composite source, only the
+    /// last stage will be fused with the provided
+    /// source.
+    pub fn via_fused<B>(self, mut flow: Flow<A, B>) -> Source<B>
+    where
+        B: 'static + Send,
+    {
+        flow.fused = true;
+        self.via(flow)
+    }
+
     pub(in crate::stream) fn producer(mut self) -> Box<Producer<(), A> + Send> {
         if self.producers.len() > 1 {
-            Box::new(SourceLike {
+            unimplemented!()
+            /*Box::new(SourceLike {
                 logic: Merge::new(self.producers),
                 phantom: PhantomData,
-            })
+            })*/
         } else {
             self.producers
                 .pop()

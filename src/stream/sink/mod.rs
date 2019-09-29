@@ -1,6 +1,4 @@
-use crate::stream::internal::{
-    InternalStreamCtl, LogicContainer, LogicContainerFacade, ProtectedStreamCtl,
-};
+use crate::stream::internal::{InternalStreamCtl, LogicContainer, LogicContainerFacade};
 use crate::stream::Logic;
 use std::marker::PhantomData;
 
@@ -27,8 +25,9 @@ pub struct Sink<A, Out>
 where
     Out: 'static + Send,
 {
-    pub(in crate::stream) logic: Box<LogicContainerFacade<A, Out, InternalStreamCtl<Out>> + Send>,
-    phantom: PhantomData<Out>,
+    pub(in crate::stream) logic: Box<LogicContainerFacade<A, Out> + Send>,
+    pub(in crate::stream) fused: bool,
+    pub(in crate::stream) phantom: PhantomData<Out>,
 }
 
 impl<In, Out> Sink<In, Out>
@@ -46,6 +45,7 @@ where
                 logic,
                 phantom: PhantomData,
             }),
+            fused: false,
             phantom: PhantomData,
         }
     }

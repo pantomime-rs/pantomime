@@ -16,6 +16,10 @@ impl<F> Filter<F> {
 impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for Filter<F> {
     type Ctl = ();
 
+    fn name(&self) -> &'static str {
+        "Filter"
+    }
+
     fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {

@@ -11,17 +11,16 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-pub(in crate::stream) trait LogicContainerFacade<A, B, Ctl>
+pub(in crate::stream) trait LogicContainerFacade<A, B>
 where
     A: 'static + Send,
     B: 'static + Send,
-    Ctl: 'static + Send,
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<B>>,
+        downstream: Downstream<B>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<A>>;
+    ) -> Downstream<A>;
 }
 
 pub(in crate::stream) struct LogicContainer<L, Msg> {
@@ -34,7 +33,7 @@ pub(in crate::stream) struct FlowWithFlow<A, B, C> {
     pub(in crate::stream) two: Flow<B, C>,
 }
 
-impl<A, B, C> LogicContainerFacade<A, C, ProtectedStreamCtl> for FlowWithFlow<A, B, C>
+impl<A, B, C> LogicContainerFacade<A, C> for FlowWithFlow<A, B, C>
 where
     A: 'static + Send,
     B: 'static + Send,
@@ -42,42 +41,44 @@ where
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<C>>,
+        downstream: Downstream<C>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<A>> {
-        let two = self.two.logic.spawn(downstream, context);
-        let one = self.one.logic.spawn(two, context);
+    ) -> Downstream<A> {
+        let downstream = self.two.logic.spawn(downstream, context);
 
-        one
+        self.one.logic.spawn(downstream, context)
     }
 }
 
-/*
-impl<A, B, C> Producer<A, C> for ProducerWithFlow<A, B, C>
+pub(in crate::stream) struct FlowWithSink<A, B, Out>
 where
     A: 'static + Send,
     B: 'static + Send,
-    C: 'static + Send,
+    Out: 'static + Send {
+    pub(in crate::stream) flow: Flow<A, B>,
+    pub(in crate::stream) sink: Sink<B, Out>,
+}
+
+impl<A, B, Out> LogicContainerFacade<A, Out> for FlowWithSink<A, B, Out>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    Out: 'static + Send
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<C>>,
+        downstream: Downstream<Out>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<A>> {
-        let flow_ref = self.flow.logic.spawn(downstream, context);
+    ) -> Downstream<A> {
+        if self.sink.fused {
+            unimplemented!()
+        } else {
+            let sink = self.sink.logic.spawn(downstream, context);
 
-        let upstream = self.producer.spawn(flow_ref.clone(), context);
-
-        // @TODO double conversion here..
-        flow_ref.tell(DownstreamStageMsg::SetUpstream(
-            upstream.convert(upstream_stage_msg_to_downstream_stage_msg),
-        ));
-
-        upstream
+            self.flow.logic.spawn(sink, context)
+        }
     }
 }
-
-*/
 
 pub(in crate::stream) enum UpstreamStageMsg {
     Cancel,
@@ -90,7 +91,7 @@ where
 {
     Produce(A),
     Complete(Option<FailureReason>),
-    SetUpstream(ActorRef<UpstreamStageMsg>),
+    SetUpstream(Upstream),
     Converted(UpstreamStageMsg),
 }
 
@@ -100,7 +101,7 @@ where
     B: 'static + Send,
     Msg: 'static + Send,
 {
-    SetUpstream(ActorRef<UpstreamStageMsg>),
+    SetUpstream(Upstream),
     Pull(u64),
     Cancel,
     Stopped(Option<FailureReason>),
@@ -168,7 +169,7 @@ where
     logic_actions: VecDeque<Action<B, Msg>>,
     buffer: VecDeque<A>,
     phantom: PhantomData<(A, B, Msg)>,
-    downstream: ActorRef<DownstreamStageMsg<B>>,
+    downstream: Downstream<B>,
     state: StageState<A, B, Msg>,
     pulled: bool,
     upstream_stopped: bool,
@@ -184,7 +185,12 @@ where
     Msg: 'static + Send,
 {
     Waiting(Option<VecDeque<StageMsg<A, B, Msg>>>),
-    Running(ActorRef<UpstreamStageMsg>),
+    Running(Upstream),
+}
+
+pub(in crate::stream) enum Upstream {
+    Spawned(ActorRef<UpstreamStageMsg>),
+    Fused(Box<dyn Actor<Msg = UpstreamStageMsg> + Send>)
 }
 
 impl<A, B, Msg, L: Logic<A, B, Ctl = Msg>> Stage<A, B, Msg, L>
@@ -212,9 +218,17 @@ where
         );
 
         if available >= capacity / 2 {
-            if let StageState::Running(ref upstream) = self.state {
-                upstream.tell(UpstreamStageMsg::Pull(available));
-                self.upstream_demand += available;
+            match self.state {
+                StageState::Running(Upstream::Spawned(ref upstream)) => {
+                    upstream.tell(UpstreamStageMsg::Pull(available));
+                    self.upstream_demand += available;
+                }
+
+                StageState::Running(Upstream::Fused(ref upstream)) => {
+                    unimplemented!();
+                }
+
+                StageState::Waiting(_) => {}
             }
         }
     }
@@ -227,7 +241,8 @@ where
         self.logic
             .receive(event, &mut StreamContext::new(ctx, &mut self.logic_actions));
 
-        // @TODO stack overflow possible?
+        // @TODO stack overflow possible when we implement fusion -- should bound
+        //       this and fall back to telling ourselves after some amount
 
         while let Some(event) = self.logic_actions.pop_front() {
             self.receive_action(event, ctx);
@@ -278,11 +293,19 @@ where
                 if self.downstream_demand == 0 {
                     // @TODO must fail - logic has violated the rules
                 } else {
-                    self.downstream.tell(DownstreamStageMsg::Produce(el));
-                    self.downstream_demand -= 1;
+                    match self.downstream {
+                        Downstream::Spawned(ref downstream) => {
+                            downstream.tell(DownstreamStageMsg::Produce(el));
+                            self.downstream_demand -= 1;
 
-                    if self.downstream_demand > 0 {
-                        self.receive_logic_event(LogicEvent::Pulled, ctx);
+                            if self.downstream_demand > 0 {
+                                self.receive_logic_event(LogicEvent::Pulled, ctx);
+                            }
+                        }
+
+                        Downstream::Fused(ref downstream) => {
+                            unimplemented!();
+                        }
                     }
                 }
             }
@@ -294,18 +317,36 @@ where
 
             Action::Cancel => {
                 if !self.upstream_stopped {
-                    if let StageState::Running(ref upstream) = self.state {
-                        upstream.tell(UpstreamStageMsg::Cancel);
+                    match self.state {
+                        StageState::Running(Upstream::Spawned(ref upstream)) => {
+                            upstream.tell(UpstreamStageMsg::Cancel);
+                        }
+
+                        StageState::Running(Upstream::Fused(ref upstream)) => {
+                            unimplemented!();
+                        }
+
+                        StageState::Waiting(_) => {
+                            unimplemented!();
+                        }
                     }
                 }
             }
 
             Action::Complete(reason) => {
-                self.downstream.tell(DownstreamStageMsg::Complete(reason));
+                match self.downstream {
+                    Downstream::Spawned(ref downstream) => {
+                        downstream.tell(DownstreamStageMsg::Complete(reason));
 
-                self.midstream_stopped = true;
+                        self.midstream_stopped = true;
 
-                ctx.stop();
+                        ctx.stop();
+                    }
+
+                    Downstream::Fused(ref fused) => {
+                        unimplemented!();
+                    }
+                }
             }
         }
     }
@@ -319,6 +360,23 @@ where
     Msg: 'static + Send,
 {
     type Msg = StageMsg<A, B, Msg>;
+
+    fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<StageMsg<A, B, Msg>>) {
+        if let Signal::Started = signal {
+            match self.downstream {
+                Downstream::Spawned(ref downstream) => {
+                    println!("telling upstream");
+                    downstream.tell(DownstreamStageMsg::SetUpstream(
+                        Upstream::Spawned(ctx.actor_ref().convert(upstream_stage_msg_to_stage_msg)),
+                    ));
+                }
+
+                Downstream::Fused(ref downstream) => {
+                    unimplemented!();
+                }
+            }
+        }
+    }
 
     fn receive(&mut self, msg: StageMsg<A, B, Msg>, ctx: &mut ActorContext<StageMsg<A, B, Msg>>) {
         if self.midstream_stopped {
@@ -370,7 +428,19 @@ where
                         // downstream has cancelled us
 
                         if !self.upstream_stopped {
-                            upstream.tell(UpstreamStageMsg::Cancel);
+                            match self.state {
+                                StageState::Running(Upstream::Spawned(ref upstream)) => {
+                                    upstream.tell(UpstreamStageMsg::Cancel);
+                                }
+
+                                StageState::Running(Upstream::Fused(ref upstream)) => {
+                                    unimplemented!();
+                                }
+
+                                StageState::Waiting(_) => {
+                                    unimplemented!();
+                                }
+                            }
                         }
 
                         self.receive_logic_event(LogicEvent::Cancelled, ctx);
@@ -447,45 +517,44 @@ where
     }
 }
 
-impl<A, B, Ctl, Msg, L> LogicContainerFacade<A, B, Ctl> for LogicContainer<L, Msg>
+impl<A, B, Msg, L> LogicContainerFacade<A, B> for LogicContainer<L, Msg>
 where
     L: 'static + Logic<A, B, Ctl = Msg> + Send,
     A: 'static + Send,
     B: 'static + Send,
-    Ctl: 'static + Send,
     Msg: 'static + Send,
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<B>>,
+        downstream: Downstream<B>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<A>> {
-        let buffer_size = self.logic.buffer_size().unwrap_or_else(|| {
-            context
-                .system_context()
-                .config()
-                .default_streams_buffer_size
-        });
+    ) -> Downstream<A> {
+        if /*self.fused */ false {
+            unimplemented!()
+        } else {
+                let buffer_size = self.logic.buffer_size().unwrap_or_else(|| {
+                    context
+                        .system_context()
+                        .config()
+                        .default_streams_buffer_size
+                });
 
-        let upstream = context.spawn(Stage {
-            logic: self.logic,
-            logic_actions: VecDeque::with_capacity(2),
-            buffer: VecDeque::with_capacity(buffer_size),
-            phantom: PhantomData,
-            downstream: downstream.clone(),
-            state: StageState::Waiting(None),
-            pulled: false,
-            upstream_stopped: false,
-            midstream_stopped: false,
-            downstream_demand: 0,
-            upstream_demand: 0,
-        });
+                let upstream = context.spawn(Stage {
+                    logic: self.logic,
+                    logic_actions: VecDeque::with_capacity(2),
+                    buffer: VecDeque::with_capacity(buffer_size),
+                    phantom: PhantomData,
+                    downstream,
+                    state: StageState::Waiting(None),
+                    pulled: false,
+                    upstream_stopped: false,
+                    midstream_stopped: false,
+                    downstream_demand: 0,
+                    upstream_demand: 0,
+                });
 
-        downstream.tell(DownstreamStageMsg::SetUpstream(
-            upstream.convert(upstream_stage_msg_to_stage_msg),
-        ));
-
-        upstream.convert(downstream_stage_msg_to_stage_msg)
+                Downstream::Spawned(upstream.convert(downstream_stage_msg_to_stage_msg))
+        }
     }
 }
 
@@ -500,11 +569,6 @@ where
     SetDownstream(ActorRef<DownstreamStageMsg<()>>),
 }
 
-pub(in crate::stream) enum ProtectedStreamCtl {
-    Stop,
-    Fail,
-}
-
 fn stream_ctl_to_internal_stream_ctl<Out>(ctl: StreamCtl) -> InternalStreamCtl<Out>
 where
     Out: 'static + Send,
@@ -512,18 +576,6 @@ where
     match ctl {
         StreamCtl::Stop => InternalStreamCtl::Stop,
         StreamCtl::Fail => InternalStreamCtl::Fail,
-    }
-}
-
-fn protected_stream_ctl_to_internal_stream_ctl<Out>(
-    ctl: ProtectedStreamCtl,
-) -> InternalStreamCtl<Out>
-where
-    Out: 'static + Send,
-{
-    match ctl {
-        ProtectedStreamCtl::Stop => InternalStreamCtl::Stop,
-        ProtectedStreamCtl::Fail => InternalStreamCtl::Fail,
     }
 }
 
@@ -556,20 +608,29 @@ where
         let actor_ref_for_source = context
             .actor_ref()
             .convert(upstream_stage_msg_to_internal_stream_ctl);
+
         let mut context_for_upstream = context.spawn_context();
 
-        let upstream_ref = self.producer.spawn(
+        let upstream = self.producer.spawn(
             self.sink
                 .logic
-                .spawn(actor_ref_for_sink, &mut context_for_upstream),
+                .spawn(Downstream::Spawned(actor_ref_for_sink), &mut context_for_upstream),
             &mut context_for_upstream,
         );
 
-        upstream_ref.tell(DownstreamStageMsg::SetUpstream(actor_ref_for_source));
+        match upstream {
+            Downstream::Spawned(upstream) => {
+                upstream.tell(DownstreamStageMsg::SetUpstream(Upstream::Spawned(actor_ref_for_source)));
 
-        context
-            .actor_ref()
-            .tell(InternalStreamCtl::SetDownstream(upstream_ref));
+                context.actor_ref()
+                       .tell(InternalStreamCtl::SetDownstream(upstream));
+            }
+
+            Downstream::Fused(_) => {
+                unimplemented!();
+            }
+        }
+
     }
 }
 
@@ -580,9 +641,17 @@ where
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<Out>>,
+        downstream: Downstream<Out>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<In>>;
+    ) -> Downstream<In>;
+}
+
+pub(in crate::stream) trait FusedStage<A> {
+}
+
+pub(in crate::stream) enum Downstream<A> where A: 'static + Send {
+    Spawned(ActorRef<DownstreamStageMsg<A>>),
+    Fused(Box<dyn Actor<Msg = DownstreamStageMsg<A>> + Send>)
 }
 
 pub(in crate::stream) struct SourceLike<A, M, L>
@@ -603,9 +672,9 @@ where
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<A>>,
+        downstream: Downstream<A>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<()>> {
+    ) -> Downstream<()> {
         let buffer_size = self.logic.buffer_size().unwrap_or_else(|| {
             context
                 .system_context()
@@ -613,27 +682,40 @@ where
                 .default_streams_buffer_size
         });
 
-        let upstream = context.spawn(Stage {
+        let stage = Stage {
             logic: self.logic,
             logic_actions: VecDeque::with_capacity(2),
             buffer: VecDeque::with_capacity(buffer_size),
             phantom: PhantomData,
-            downstream: downstream.clone(),
+            downstream,
             state: StageState::Waiting(None),
             pulled: false,
             upstream_stopped: false,
             midstream_stopped: false,
             downstream_demand: 0,
             upstream_demand: 0,
-        });
+        };
 
-        downstream.tell(DownstreamStageMsg::SetUpstream(
-            upstream.convert(upstream_stage_msg_to_stage_msg),
-        ));
+        let upstream = context.spawn(stage);
 
-        upstream.convert(downstream_stage_msg_to_stage_msg)
+
+        Downstream::Spawned(upstream.convert(downstream_stage_msg_to_stage_msg))
     }
 }
+
+struct FusedFlow<A, B> where B: 'static + Send {
+    flow: Flow<A, B>,
+    downstream: Downstream<B>
+}
+
+impl<A, B> FusedStage<A> for FusedFlow<A, B> where B: 'static + Send {}
+
+struct DoubleFusedFlow<A, B> where B: 'static + Send {
+    flow: Flow<A, B>,
+    downstream: Downstream<B>
+}
+
+impl<A, B> FusedStage<A> for DoubleFusedFlow<A, B> where B: 'static + Send {}
 
 pub struct ProducerWithFlow<A, B, C> {
     pub(in crate::stream) producer: Box<Producer<A, B> + Send>,
@@ -648,19 +730,12 @@ where
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<C>>,
+        downstream: Downstream<C>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<A>> {
-        let flow_ref = self.flow.logic.spawn(downstream, context);
+    ) -> Downstream<A> {
+        let flow = self.flow.logic.spawn(downstream, context);
 
-        let upstream = self.producer.spawn(flow_ref.clone(), context);
-
-        // @TODO double conversion here..
-        flow_ref.tell(DownstreamStageMsg::SetUpstream(
-            upstream.convert(upstream_stage_msg_to_downstream_stage_msg),
-        ));
-
-        upstream
+        self.producer.spawn(flow, context)
     }
 }
 
@@ -670,17 +745,10 @@ where
 {
     fn spawn(
         self: Box<Self>,
-        downstream: ActorRef<DownstreamStageMsg<A>>,
+        downstream: Downstream<A>,
         context: &mut ActorSpawnContext,
-    ) -> ActorRef<DownstreamStageMsg<()>> {
-        let upstream = self.producer().spawn(downstream.clone(), context);
-
-        // @TODO double conversion here..
-        downstream.tell(DownstreamStageMsg::SetUpstream(
-            upstream.convert(upstream_stage_msg_to_downstream_stage_msg),
-        ));
-
-        upstream
+    ) -> Downstream<()>{
+        self.producer().spawn(downstream, context)
     }
 }
 
@@ -776,8 +844,16 @@ where
             InternalStreamCtl::Fail => {}
 
             InternalStreamCtl::FromSink(DownstreamStageMsg::SetUpstream(upstream)) => {
-                println!("pulling 1 from the sink");
-                upstream.tell(UpstreamStageMsg::Pull(1));
+                match upstream {
+                    Upstream::Spawned(upstream) => {
+                        println!("pulling 1 from the sink");
+                        upstream.tell(UpstreamStageMsg::Pull(1));
+                    }
+
+                    Upstream::Fused(upstream) => {
+                        unimplemented!()
+                    }
+                }
             }
 
             InternalStreamCtl::FromSink(DownstreamStageMsg::Produce(value)) => {

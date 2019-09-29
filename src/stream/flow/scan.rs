@@ -22,6 +22,10 @@ impl<B, F> Scan<B, F> {
 impl<A: Send, B: Clone + Send, F: FnMut(B, A) -> B + Send> Logic<A, B> for Scan<B, F> {
     type Ctl = ();
 
+    fn name(&self) -> &'static str {
+        "Scan"
+    }
+
     fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) {
         match msg {
             LogicEvent::Pushed(element) => {
