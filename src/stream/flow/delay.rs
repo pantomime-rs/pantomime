@@ -24,6 +24,10 @@ impl Delay {
 impl<A: Send> Logic<A, A> for Delay {
     type Ctl = DelayMsg<A>;
 
+    fn name(&self) -> &'static str {
+        "Delay"
+    }
+
     fn buffer_size(&self) -> Option<usize> {
         Some(0) // @FIXME should this be based on the delay duration?
     }

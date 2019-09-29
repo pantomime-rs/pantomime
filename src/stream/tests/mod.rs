@@ -46,8 +46,8 @@ fn test1() {
 
                     let (stream_ref, result) = ctx.spawn(
                         Source::iterator(1..=20)
-                            .via(Flow::new(Delay::new(Duration::from_millis(50))))
-                            .via(Flow::new(Delay::new(Duration::from_millis(500))))
+                            .via(Flow::from_logic(Delay::new(Duration::from_millis(50))))
+                            .via(Flow::from_logic(Delay::new(Duration::from_millis(500))))
                             .to(Sink::for_each(|n| println!("got {}", n))),
                     );
 
@@ -104,7 +104,7 @@ fn test2() {
 
                     let (stream_ref, result) = ctx.spawn(
                         Source::iterator(1..=100_000_000)
-                            .via(Flow::new(Delay::new(Duration::from_millis(50))))
+                            .via(Flow::from_logic(Delay::new(Duration::from_millis(50))))
                             .to(Sink::first()),
                     );
 
@@ -165,7 +165,7 @@ fn test3() {
 
                     let (_, result) = ctx.spawn(
                         Source::iterator(1..=3)
-                            .via(Flow::scan(0, |last, next| last + next))
+                            .via(Flow::new().scan(0, |last, next| last + next))
                             .to(Sink::last()),
                     );
 
@@ -223,12 +223,23 @@ fn test4() {
                     let b = Source::iterator(11..=20);
                     let c = Source::iterator(21..=30);
 
+                    Source::iterator(1..=99999)
+                        .via_fused(Flow::new().map(|n| n * 2).filter(|n| n % 5 == 0))
+                        .to_fused(Sink::last());
+
+                    Source::iterator(1..=999999)
+                        .map(|n| n * 1)
+                        .filter(|n| n % 2 == 0 || n % 3 == 0)
+                        .via_fused(Flow::new().map(|n| n * 2).filter(|n| n % 5 == 0));
+
+                    let sink =
+                        Flow::from_logic(Delay::new(Duration::from_millis(50))).to(Sink::last());
+
                     let (_, result) = ctx.spawn(
                         a.merge(b)
                             .merge(c)
-                            .via(Flow::scan(0, |last, next| last + next))
-                            .via(Flow::new(Delay::new(Duration::from_millis(50))))
-                            .to(Sink::last()),
+                            .via(Flow::new().scan(0, |last, next| last + next))
+                            .to_fused(sink),
                     );
 
                     ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());

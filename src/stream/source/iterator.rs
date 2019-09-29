@@ -24,6 +24,10 @@ where
 {
     type Ctl = ();
 
+    fn name(&self) -> &'static str {
+        "Iterator"
+    }
+
     fn receive(
         &mut self,
         msg: LogicEvent<(), Self::Ctl>,

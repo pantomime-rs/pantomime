@@ -2,7 +2,6 @@ use crate::actor::{Actor, ActorContext, ActorRef, FailureReason};
 use crate::stream::internal::{InternalStreamCtl, RunnableStream, Stage, StageMsg};
 use crossbeam::atomic::AtomicCell;
 use std::collections::VecDeque;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +24,13 @@ pub enum Action<A, Msg> {
     Pull,
     Push(A),
     Forward(Msg),
+}
+
+pub enum PortAction<A> {
+    Cancel,
+    Complete(Option<FailureReason>),
+    Pull,
+    Push(A),
 }
 
 pub enum LogicEvent<A, Msg> {
@@ -63,9 +69,7 @@ where
 {
     type Ctl;
 
-    fn name(&self) -> &'static str {
-        "todo"
-    }
+    fn name(&self) -> &'static str;
 
     /// Defines the buffer size for the stage that runs this logic. Elements
     /// are buffered to amortize the cost of passing elements over asynchronous
@@ -105,7 +109,7 @@ where
         StreamContext { ctx, actions }
     }
 
-    pub fn actor_ref(&self) -> ActorRef<Action<Out, Ctl>> {
+    fn actor_ref(&self) -> ActorRef<Action<Out, Ctl>> {
         // @FIXME i'd like this to return a reference for API symmetry
 
         self.ctx
@@ -114,7 +118,11 @@ where
     }
 
     fn tell(&mut self, action: Action<Out, Ctl>) {
-        self.ctx.actor_ref().tell(StageMsg::Action(action));
+        self.actions.push_back(action); // @TODO measure this vs messaging instead
+    }
+
+    fn tell_port<Y>(&mut self, handle: &PortRef<Y>, action: PortAction<Y>) {
+        unimplemented!();
     }
 
     fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Ctl) {
@@ -122,16 +130,32 @@ where
             .schedule_delivery(name, timeout, StageMsg::Action(Action::Forward(msg)));
     }
 
-    fn spawn<Ax: Actor>(&mut self, actor: Ax) -> ActorRef<Ax::Msg>
-    where
-        Ax: 'static + Send,
-    {
-        self.ctx.spawn(actor)
+    /// Spawns a port, which is a flow whose upstream and downstream are both
+    /// this logic.
+    ///
+    /// An id and handle are returned, and these are used to control the spawned
+    /// port.
+    ///
+    /// Port ids are always assigned in a monotonic fashion starting from 0.
+    fn spawn_port<Y, Z, C: FnMut(LogicPortEvent<Y>) -> Ctl>(
+        &mut self,
+        flow: Flow<Y, Z>,
+        convert: C,
+    ) -> PortRef<Y> {
+        unimplemented!()
     }
+}
 
-    fn spawn_stage<Y, Z, C: FnMut(Y) -> Ctl>(&mut self, flow: Flow<Y, Z>, convert: C) -> usize {
+struct PortRef<T> {
+    t: T,
+}
+
+impl<T> PortRef<T> {
+    fn id(&self) -> usize {
         0
     }
+
+    fn tell(&mut self, action: PortAction<T>) {}
 }
 
 enum StreamCtl {
@@ -145,15 +169,6 @@ where
 {
     controller_ref: ActorRef<InternalStreamCtl<Out>>,
     state: Arc<AtomicCell<Option<Out>>>,
-}
-
-impl<Out> StreamComplete<Out>
-where
-    Out: 'static + Send,
-{
-    fn pipe_to(self, actor_ref: &ActorRef<Out>) {
-        let actor_ref = actor_ref.clone();
-    }
 }
 
 pub struct Stream<Out> {

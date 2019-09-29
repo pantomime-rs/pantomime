@@ -11,6 +11,10 @@ impl Identity {
 impl<A: Send> Logic<A, A> for Identity {
     type Ctl = ();
 
+    fn name(&self) -> &'static str {
+        "Identity"
+    }
+
     fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
         match msg {
             LogicEvent::Pulled => {

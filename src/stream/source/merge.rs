@@ -1,5 +1,6 @@
+/*
 use crate::actor::ActorRef;
-use crate::stream::internal::{DownstreamStageMsg, Producer, UpstreamStageMsg};
+use crate::stream::internal::{Downstream, DownstreamStageMsg, Producer, UpstreamStageMsg};
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -72,6 +73,10 @@ where
     A: 'static + Send,
 {
     type Ctl = MergeMsg<A>;
+
+    fn name(&self) -> &'static str {
+        "Merge"
+    }
 
     fn buffer_size(&self) -> Option<usize> {
         Some(0)
@@ -192,7 +197,7 @@ where
                     });
                     let mut spawn_ctx = ctx.ctx.spawn_context();
 
-                    let actor_ref = p.spawn(downstream, &mut spawn_ctx);
+                    let actor_ref = p.spawn(Downstream::Spawned(downstream), &mut spawn_ctx);
 
                     actor_ref.tell(DownstreamStageMsg::SetUpstream(ctx.actor_ref().convert(
                         move |msg| {
@@ -215,4 +220,4 @@ where
             LogicEvent::Pushed(()) | LogicEvent::Stopped => {}
         }
     }
-}
+}*/
