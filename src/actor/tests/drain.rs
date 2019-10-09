@@ -76,7 +76,7 @@ fn test() {
                     count: 0,
                 });
 
-                assert_eq!(probe.receive(Duration::from_secs(10)), LIMIT * TIMES);
+                assert_eq!(probe.receive(Duration::from_secs(60)), LIMIT * TIMES);
 
                 ctx.actor_ref().stop();
             }
