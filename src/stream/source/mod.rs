@@ -1,4 +1,4 @@
-use crate::stream::internal::{Producer, ProducerWithFlow, ProducerWithSink, SourceLike};
+use crate::stream::internal::{LogicContainerFacade, SourceLike, UnionLogic};
 use crate::stream::sink::Sink;
 use crate::stream::{flow, flow::Flow};
 use crate::stream::{Logic, Stream};
@@ -13,11 +13,11 @@ mod repeat;
 
 pub use iterator::Iterator;
 //pub use merge::Merge;
-pub use queue::SourceQueue;
+//pub use queue::SourceQueue;
 pub use repeat::Repeat;
 
 pub struct Source<A> {
-    pub(in crate::stream) producers: Vec<Box<Producer<(), A> + Send>>,
+    pub(in crate::stream) producers: Vec<Box<LogicContainerFacade<(), A> + Send>>,
 }
 
 impl<A> Source<A>
@@ -32,6 +32,7 @@ where
         Self {
             producers: vec![Box::new(SourceLike {
                 logic,
+                fused: false,
                 phantom: PhantomData,
             })],
         }
@@ -44,9 +45,9 @@ where
         Self::new(Iterator::new(iterator))
     }
 
-    pub fn queue(capacity: usize) -> SourceQueue<A> {
-        SourceQueue::new(capacity)
-    }
+    //pub fn queue(capacity: usize) -> SourceQueue<A> {
+    //    SourceQueue::new(capacity)
+    //}
 
     pub fn repeat(element: A) -> Self
     where
@@ -60,20 +61,22 @@ where
         Out: 'static + Send,
     {
         Stream {
-            runnable_stream: Box::new(ProducerWithSink {
-                producer: self.producer(),
-                sink,
-                phantom: PhantomData,
+            runnable_stream: Box::new(UnionLogic {
+                upstream: self.producer(),
+                downstream: sink.logic,
             }),
         }
     }
 
-    pub fn to_fused<Out>(self, mut sink: Sink<A, Out>) -> Stream<Out>
-    where
-        Out: 'static + Send,
-    {
-        sink.fused = true;
-        self.to(sink)
+    pub fn fuse(mut self) -> Self {
+        let mut producers = Vec::with_capacity(self.producers.len());
+
+        for p in self.producers.into_iter() {
+            producers.push(p.fuse());
+        }
+
+        self.producers = producers;
+        self
     }
 
     // A NOTE FOR MAINTAINERS
@@ -111,27 +114,14 @@ where
         B: 'static + Send,
     {
         Source {
-            producers: vec![Box::new(ProducerWithFlow {
-                producer: self.producer(),
-                flow,
+            producers: vec![Box::new(UnionLogic {
+                upstream: self.producer(),
+                downstream: flow.logic,
             })],
         }
     }
 
-    /// Fuse the provided flow into this source.
-    ///
-    /// If this is a composite source, only the
-    /// last stage will be fused with the provided
-    /// source.
-    pub fn via_fused<B>(self, mut flow: Flow<A, B>) -> Source<B>
-    where
-        B: 'static + Send,
-    {
-        flow.fused = true;
-        self.via(flow)
-    }
-
-    pub(in crate::stream) fn producer(mut self) -> Box<Producer<(), A> + Send> {
+    pub(in crate::stream) fn producer(mut self) -> Box<LogicContainerFacade<(), A> + Send> {
         if self.producers.len() > 1 {
             unimplemented!()
             /*Box::new(SourceLike {

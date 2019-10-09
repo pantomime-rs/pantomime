@@ -469,24 +469,32 @@ where
     fn receive(&mut self, msg: ReaperMsg, ctx: &mut ActorContext<ReaperMsg>) {
         match msg {
             ReaperMsg::Stop => {
+                println!("ReaperMsg::Stop");
                 ctx.stop();
             }
 
             ReaperMsg::ActorStopped(actor_id, StopReason::Failed) => {
+                println!("ReaperMsg::ActorStopped (failed)");
                 #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
                 self.posix_signals_watchers.remove(&actor_id);
 
                 if actor_id == self.reaper_id {
                     ctx.fail(Error::new(ErrorKind::Other, "error"));
+                } else {
+                    println!("ids didnt match");
                 }
+
             }
 
             ReaperMsg::ActorStopped(actor_id, StopReason::Stopped) => {
+                println!("ReaperMsg::ActorStopped (stopped)");
                 #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
                 self.posix_signals_watchers.remove(&actor_id);
 
                 if actor_id == self.reaper_id {
                     ctx.stop();
+                } else {
+                    println!("ids didnt match");
                 }
             }
 
@@ -526,7 +534,10 @@ where
 
                 let failed = self.failed.clone();
 
+                //std::thread::sleep(std::time::Duration::from_millis(10));
+
                 ctx.watch(&actor_ref, move |reason| {
+                    println!("reaper watch executed");
                     // this will often (e.g. when system is stopped) be dropped,
                     // so we set failed here
 
@@ -539,6 +550,7 @@ where
             }
 
             Signal::Stopped(_) => {
+                println!("reaper is done!");
                 ctx.system_context().done();
             }
 

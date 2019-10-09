@@ -32,6 +32,7 @@ fn basic_test() {
         Two,
         Three,
         Four,
+        Five,
     }
 
     struct TestReaper {
@@ -99,13 +100,22 @@ fn basic_test() {
 
                 ReaperState::Four => match msg {
                     ReaperMsg::Stopped => {
-                        ctx.stop();
+                        self.state = ReaperState::Five;
+
+                        let actor_ref = ctx.spawn(MyActor { fail: false });
+
+                        ctx.watch(&actor_ref, |_| panic!("failure to convert"));
+
+                        actor_ref.tell(());
                     }
 
                     _ => {
                         panic!("unexpected msg in Four");
                     }
                 },
+
+                ReaperState::Five => panic!("unexpected msg in Five")
+
             }
         }
 
@@ -127,6 +137,16 @@ fn basic_test() {
 
                 _ => {}
             }
+        }
+
+        fn handle_failure(
+            &mut self,
+            reason: FailureReason,
+            ctx: &mut ActorContext<Self::Msg>,
+        ) -> FailureAction {
+            ctx.stop();
+
+            FailureAction::Resume
         }
     }
 

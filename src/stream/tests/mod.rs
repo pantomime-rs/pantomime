@@ -142,34 +142,47 @@ fn test3() {
         fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
             self.n += value;
 
-            if self.n == 6 {
+               println!("       N IS  {}", self.n);
+            if self.n == 6 || self.n == 1 {
                 // 0 + 1 -> 1
                 // 1 + 2 -> 3
                 // 3 + 3 -> 6
 
+                println!("stopping!");
                 ctx.stop();
-            }
+           } else {
+           }
         }
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<usize>) {
             match signal {
                 Signal::Started => {
-                    {
-                        let actor_ref = ctx.actor_ref().clone();
+                    if true {
+                        {
+                            let actor_ref = ctx.actor_ref().clone();
 
-                        ctx.schedule_thunk(Duration::from_secs(10), move || {
-                            actor_ref
-                                .fail(FailureError::new(Error::new(ErrorKind::Other, "failed")))
-                        });
+                            ctx.schedule_thunk(Duration::from_secs(3), move || {
+                                actor_ref
+                                    .fail(FailureError::new(Error::new(ErrorKind::Other, "failed")))
+                            });
+                        }
+
+                        let (_, result) = ctx.spawn(
+                            Source::iterator(1..=1)
+                                .via(Flow::new().scan(0, |last, next| last + next).fuse())
+                                .to(Sink::last().fuse()),
+                        );
+
+                        ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());
                     }
 
-                    let (_, result) = ctx.spawn(
-                        Source::iterator(1..=3)
-                            .via(Flow::new().scan(0, |last, next| last + next))
-                            .to(Sink::last()),
-                    );
+                    if false {
+                        ctx.actor_ref().tell(6);
+                    }
+                }
 
-                    ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());
+                Signal::Stopped(_) => {
+                    println!("test reaper has stopped");
                 }
 
                 _ => {}
@@ -223,15 +236,6 @@ fn test4() {
                     let b = Source::iterator(11..=20);
                     let c = Source::iterator(21..=30);
 
-                    Source::iterator(1..=99999)
-                        .via_fused(Flow::new().map(|n| n * 2).filter(|n| n % 5 == 0))
-                        .to_fused(Sink::last());
-
-                    Source::iterator(1..=999999)
-                        .map(|n| n * 1)
-                        .filter(|n| n % 2 == 0 || n % 3 == 0)
-                        .via_fused(Flow::new().map(|n| n * 2).filter(|n| n % 5 == 0));
-
                     let sink =
                         Flow::from_logic(Delay::new(Duration::from_millis(50))).to(Sink::last());
 
@@ -239,7 +243,7 @@ fn test4() {
                         a.merge(b)
                             .merge(c)
                             .via(Flow::new().scan(0, |last, next| last + next))
-                            .to_fused(sink),
+                            .to(sink),
                     );
 
                     ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());

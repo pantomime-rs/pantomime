@@ -39,6 +39,7 @@ where
 
             LogicEvent::Pulled => {
                 self.pulled = true;
+                ctx.tell(Action::Pull);
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {
@@ -46,14 +47,14 @@ where
                     self.pulled = false;
 
                     ctx.tell(Action::Push(self.last.take()));
+                } else {
+                    println!("    SINK NOT PULLED");
                 }
 
                 ctx.tell(Action::Complete(None));
             }
 
-            LogicEvent::Started => {
-                ctx.tell(Action::Pull);
-            }
+            LogicEvent::Started => {}
 
             LogicEvent::Forwarded(()) => {}
         }

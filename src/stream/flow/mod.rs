@@ -1,4 +1,4 @@
-use crate::stream::internal::{FlowWithFlow, FlowWithSink, LogicContainer, LogicContainerFacade};
+use crate::stream::internal::{IndividualLogic, LogicContainerFacade, UnionLogic};
 use crate::stream::{Logic, Sink, Source};
 use std::any::Any;
 use std::cell::RefCell;
@@ -18,9 +18,8 @@ pub use self::map::Map;
 pub use self::scan::Scan;
 
 pub struct Flow<A, B> {
-    pub(in crate::stream) logic: Box<LogicContainerFacade<A, B> + Send>,
-    pub(in crate::stream) empty: bool,
-    pub(in crate::stream) fused: bool,
+    pub(in crate::stream) logic: Box<dyn LogicContainerFacade<A, B> + Send>,
+    pub(in crate::stream) empty: bool
 }
 
 impl<A, B> Flow<A, B>
@@ -34,27 +33,31 @@ where
         L::Ctl: 'static + Send,
     {
         Self {
-            logic: Box::new(LogicContainer {
+            logic: Box::new(IndividualLogic {
                 logic,
-                phantom: PhantomData,
+                fused: false
             }),
-            empty: false,
-            fused: false,
+            empty: false
+        }
+    }
+
+    /// Fuse this flow, meaning this flow and all of its stages
+    /// will be executed by upstream, i.e. in the same actor.
+    ///
+    /// This can often by much more performant for stages that
+    /// are computationally light weight -- those where the
+    /// message passing overhead outweighs the actual work.
+    pub fn fuse(self) -> Self {
+        Self {
+            logic: self.logic.fuse(),
+            empty: self.empty
         }
     }
 
     pub fn to<Out: Send>(self, sink: Sink<B, Out>) -> Sink<A, Out> {
-        let fused = sink.fused;
-
         Sink {
-            logic: Box::new(FlowWithSink { flow: self, sink }),
-            fused,
-            phantom: PhantomData,
+            logic: Box::new(UnionLogic { upstream: self.logic, downstream: sink.logic }),
         }
-    }
-
-    pub fn to_fused<Out: Send>(self, mut sink: Sink<B, Out>) -> Sink<A, Out> {
-        self.to_fused(sink)
     }
 
     pub fn via<C>(self, flow: Flow<B, C>) -> Flow<A, C>
@@ -73,23 +76,13 @@ where
             cast(self).expect("pantomime bug: stream::flow::cast failure")
         } else {
             Flow {
-                logic: Box::new(FlowWithFlow {
-                    one: self,
-                    two: flow,
+                logic: Box::new(UnionLogic {
+                    upstream: self.logic,
+                    downstream: flow.logic,
                 }),
-                empty: false,
-                fused: false,
+                empty: false
             }
         }
-    }
-
-    pub fn via_fused<C>(self, mut flow: Flow<B, C>) -> Flow<A, C>
-    where
-        C: 'static + Send,
-    {
-        flow.fused = true;
-
-        self.via(flow)
     }
 
     pub fn scan<C, F: FnMut(C, B) -> C>(self, zero: C, scan_fn: F) -> Flow<A, C>

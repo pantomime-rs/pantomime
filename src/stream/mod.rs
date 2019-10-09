@@ -1,5 +1,5 @@
 use crate::actor::{Actor, ActorContext, ActorRef, FailureReason};
-use crate::stream::internal::{InternalStreamCtl, RunnableStream, Stage, StageMsg};
+use crate::stream::internal::{InternalStreamCtl, RunnableStream, Stage, StageContext, StageMsg};
 use crossbeam::atomic::AtomicCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -85,37 +85,22 @@ where
     );
 }
 
-pub struct StreamContext<'a, In, Out, Ctl>
+pub struct StreamContext<'a, 'b, 'c, In, Out, Ctl>
 where
     In: 'static + Send,
     Out: 'static + Send,
     Ctl: 'static + Send,
 {
-    ctx: &'a mut ActorContext<StageMsg<In, Out, Ctl>>,
-    actions: &'a mut VecDeque<Action<Out, Ctl>>,
+    ctx: &'a mut StageContext<'c, StageMsg<In, Out, Ctl>>,
+    actions: &'b mut VecDeque<Action<Out, Ctl>>,
 }
 
-impl<'a, In, Out, Ctl> StreamContext<'a, In, Out, Ctl>
+impl<'a, 'b, 'c, In, Out, Ctl> StreamContext<'a, 'b, 'c, In, Out, Ctl>
 where
     In: 'static + Send,
     Out: 'static + Send,
     Ctl: 'static + Send,
 {
-    #[inline(always)]
-    pub(in crate::stream) fn new(
-        ctx: &'a mut ActorContext<StageMsg<In, Out, Ctl>>,
-        actions: &'a mut VecDeque<Action<Out, Ctl>>,
-    ) -> Self {
-        StreamContext { ctx, actions }
-    }
-
-    fn actor_ref(&self) -> ActorRef<Action<Out, Ctl>> {
-        // @FIXME i'd like this to return a reference for API symmetry
-
-        self.ctx
-            .actor_ref()
-            .convert(|action: Action<Out, Ctl>| StageMsg::Action(action))
-    }
 
     fn tell(&mut self, action: Action<Out, Ctl>) {
         self.actions.push_back(action); // @TODO measure this vs messaging instead

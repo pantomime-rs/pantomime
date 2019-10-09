@@ -1,5 +1,5 @@
 use crate::actor::ActorRef;
-use crate::stream::internal::{DownstreamStageMsg, Producer, UpstreamStageMsg};
+use crate::stream::internal::{DownstreamStageMsg, UpstreamStageMsg};
 use crate::stream::{
     Action, Flow, Logic, LogicEvent, LogicPortEvent, PortAction, PortRef, Source, StreamContext,
 };
