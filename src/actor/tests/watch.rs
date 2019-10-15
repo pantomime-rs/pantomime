@@ -144,6 +144,7 @@ fn basic_test() {
             reason: FailureReason,
             ctx: &mut ActorContext<Self::Msg>,
         ) -> FailureAction {
+
             ctx.stop();
 
             FailureAction::Resume

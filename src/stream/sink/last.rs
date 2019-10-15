@@ -48,7 +48,6 @@ where
 
                     ctx.tell(Action::Push(self.last.take()));
                 } else {
-                    println!("    SINK NOT PULLED");
                 }
 
                 ctx.tell(Action::Complete(None));

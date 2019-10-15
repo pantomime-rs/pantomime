@@ -42,24 +42,20 @@ where
             }
 
             LogicEvent::Pulled => {
+                ctx.tell(Action::Pull);
+
                 self.pulled = true;
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {
                 if self.pulled {
-                    self.pulled = false;
-
                     ctx.tell(Action::Push(()));
                 }
 
                 ctx.tell(Action::Complete(None));
             }
 
-            LogicEvent::Started => {
-                ctx.tell(Action::Pull);
-            }
-
-            LogicEvent::Forwarded(()) => {}
+            LogicEvent::Started | LogicEvent::Forwarded(()) => {}
         }
     }
 }

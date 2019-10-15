@@ -404,7 +404,6 @@ where
     /// failure to be delivered.
     pub fn stop(&mut self) {
         self.pending_stop = Some(None);
-        println!("set pending_stop");
     }
 
     /// Schedules the periodic delivery of a message to this
@@ -594,7 +593,6 @@ where
     {
         let actor_id = actor_ref.id();
         let new = !self.watching.contains_key(&actor_id);
-        println!("inserted a watch");
 
         self.watching
             .entry(actor_id)
@@ -603,10 +601,7 @@ where
 
 
         if new {
-            println!("telling actor to watch");
             actor_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
-        } else {
-            println!("not new, wont register");
         }
     }
 
@@ -852,14 +847,12 @@ where
 {
     fn check_pending_stop(&mut self) {
         if let Some(failed) = self.context.pending_stop.take() {
-            println!("got stop");
             match self.context.state {
                 SpawnedActorState::Stopped
                 | SpawnedActorState::Failed(_)
                 | SpawnedActorState::Stopping(_) => {}
 
                 _ => {
-                    println!("now WaitingForStop");
                     self.context.state = SpawnedActorState::WaitingForStop;
                     self.context.actor_ref.tell_system(SystemMsg::Stop(failed));
                 }
@@ -887,11 +880,8 @@ where
     }
 
     fn receive_system(&mut self, msg: SystemMsg) {
-        println!("receive_system");
-
         match (&self.context.state, msg) {
             (SpawnedActorState::WaitingForStop, SystemMsg::Stop(Some(reason))) => {
-                println!("waiting for stop and got stop failed");
                 match self.actor.handle_failure(reason, &mut self.context) {
                     FailureAction::Resume => {
                         self.check_pending_stop();
@@ -929,28 +919,23 @@ where
             }
 
             (SpawnedActorState::WaitingForStop, SystemMsg::Stop(None)) => {
-                println!("{} waiting for stop and got stop not failed", self.context.actor_ref.id());
                 self.stash.clear();
 
                 if self.context.children.is_empty() {
-                    println!("{} children stopped, so now were stopped", self.context.actor_ref.id());
                     self.transition(SpawnedActorState::Stopped);
 
                 } else {
-                    println!("{} children not stopped, so now were Stopping", self.context.actor_ref.id());
                     self.transition(SpawnedActorState::Stopping(None));
 
                     for (_child_id, actor_ref) in self.context.children.iter() {
                         // @TODO think about whether children should be failed
 
-                        println!("{} telling {} to stop", self.context.actor_ref.id(), _child_id);
                         actor_ref.stop();
                     }
                 }
             }
 
             (SpawnedActorState::Active, SystemMsg::Stop(maybe_reason)) => {
-                println!("active, got stop");
                 if self.context.children.is_empty() {
                     let next_state = match maybe_reason {
                         Some(reason) => SpawnedActorState::Failed(reason),
@@ -970,11 +955,9 @@ where
             }
 
             (SpawnedActorState::Stopping(_), SystemMsg::ChildStopped(id)) => {
-                println!("stopping, child {} stopped", id);
                 self.context.children.remove(&id);
 
                 if self.context.children.is_empty() {
-                    println!("{} children empty, totally stopping", self.context.actor_ref.id());
 
                     let mut state = SpawnedActorState::Stopped;
 
@@ -996,40 +979,29 @@ where
                     }
 
 
-                } else {
-                    println!("non empty, not stopping yet");
                 }
             }
 
             (SpawnedActorState::Failed(_), SystemMsg::Watch(watcher)) => {
-                println!("failed, got watch");
                 watcher.tell_system(SystemMsg::ActorStopped(self.context.actor_ref().id(), StopReason::Failed));
             }
 
             (SpawnedActorState::Stopped, SystemMsg::Watch(watcher)) => {
-                println!("in stopped, got watch");
                 watcher.tell_system(SystemMsg::ActorStopped(
                     self.context.actor_ref().id(),
                     StopReason::Stopped,
                 ));
             }
 
-            (SpawnedActorState::Failed(_), _) => {
-                println!("failed, got other");
-            }
+            (SpawnedActorState::Failed(_), _) => {}
 
-            (SpawnedActorState::Stopped, _) => {
-                println!("stopped, got other");
-            }
+            (SpawnedActorState::Stopped, _) => {}
 
             (_, SystemMsg::Watch(watcher)) => {
-                println!("pushing a watcher");
-
                 self.watchers.push(watcher);
             }
 
             (_, SystemMsg::SendDelivery(name, id)) => {
-                println!("send delivery");
                 match self.context.deliveries.get_mut(&name) {
                     Some(Delivery::Single(i, _)) if *i == id => {
                         if let Some(Delivery::Single(_, msg)) =
@@ -1058,8 +1030,6 @@ where
             }
 
             (_, SystemMsg::ActorStopped(actor_id, reason)) => {
-                println!("any, actor stopped");
-
                 if let Some(mut msgs) = self.context.watching.remove(&actor_id) {
                     for msg in msgs.drain(..) {
                         match reason {
@@ -1076,7 +1046,6 @@ where
             }
 
             (_, SystemMsg::Signaled(signal)) => {
-                println!("any, got signal");
                 self.actor.receive_signal(signal, &mut self.context);
                 self.check_pending_stop();
             }
@@ -1103,7 +1072,6 @@ where
             }
 
             (SpawnedActorState::Stopping(None), SystemMsg::Stop(Some(_))) => {
-                println!("stopping, got a fail");
                 // @TODO do something with reason?
                 // We've failed while we were stopping, which means that a signal
                 // handler panicked. We still consider ourselves stopped, to do
@@ -1111,13 +1079,11 @@ where
             }
 
             (_, SystemMsg::Stop { .. }) => {
-                println!("in any, got Stop");
                 // @TODO think about what it means to have received this
                 // if we're currently Stopped (ie not Failed)
             }
 
             (_, SystemMsg::ChildStopped(child_id)) => {
-                println!("in any, got ChildStopped");
                 self.context.children.remove(&child_id);
 
                 // @TODO log this? shouldnt happen
@@ -1163,8 +1129,6 @@ where
                     }
 
                     Some(Envelope::SystemMsg(SystemMsg::Watch(watcher))) => {
-                        println!("drain() got a watch");
-
                         watcher.tell_system(
                             SystemMsg::ActorStopped(
                                 actor_id,
@@ -1243,7 +1207,6 @@ where
 
                 // @TODO if the conversion function panics, is this right?
                 if thread::panicking() {
-                    println!("                 PANICKING");
                     if let SpawnedActorState::Stopping(_) = this.context.state {
                     } else {
                         this.context.state = SpawnedActorState::WaitingForStop;
@@ -1346,7 +1309,6 @@ where
 
                     _ => {
                         let actor_id = this.context.actor_ref.id();
-                        println!("{} HEREEEEEEEEEEEEEEEEEE", actor_id);
                         let execution_state = this.execution_state.clone();
 
                         let cont = match this
@@ -1365,14 +1327,12 @@ where
                             SpawnedActorExecutionState::Messaged => true,
 
                             SpawnedActorExecutionState::Stopped(mailbox) => {
-                                println!("stopped!");
                                 Self::drain(actor_id, execution_state.clone(), mailbox, false);
 
                                 false
                             }
 
                             SpawnedActorExecutionState::Failed(mailbox) => {
-                                println!("failed!");
                                 Self::drain(actor_id, execution_state.clone(), mailbox, false);
 
                                 false
@@ -1420,10 +1380,6 @@ where
                 self.parent_ref
                     .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
 
-                println!("told parent");
-
-                println!("transitioning to Stopped");
-
                 self.context.state = SpawnedActorState::Stopped;
 
                 self.actor
@@ -1431,10 +1387,7 @@ where
 
                 self.context.pending_stop = None;
 
-                println!("# watchers: {}", self.watchers.len());
-
                 for watcher in self.watchers.drain(..) {
-                    println!("telling a watcher");
                     watcher.tell_system(SystemMsg::ActorStopped(
                         self.context.actor_ref().id(),
                         StopReason::Stopped,
@@ -1446,14 +1399,10 @@ where
                 self.parent_ref
                     .tell_system(SystemMsg::ChildStopped(self.context.actor_ref().id()));
 
-                println!("told parent");
-
                 let mut state =
                     SpawnedActorState::Failed(FailureReason::Errored(FailureError::empty()));
 
                 mem::swap(&mut state, &mut next);
-
-                println!("transitioning to failed");
 
                 self.context.state = next;
 
@@ -1549,28 +1498,22 @@ where
     Msg: 'static + Send,
 {
     fn messaged(&self) {
-        println!("messaged()");
         match self.state.swap(SpawnedActorExecutionState::Messaged) {
             SpawnedActorExecutionState::Idle(actor) => {
-                println!("will execute");
                 actor.dispatcher.clone().execute(|| actor.run())
             }
 
             SpawnedActorExecutionState::Running => {
-                println!("already running");
             }
 
             SpawnedActorExecutionState::Messaged => {
-                println!("already messaged");
             }
 
             SpawnedActorExecutionState::Stopped(mailbox) => {
-                println!("messaged(), Stopped");
                 self.drain(mailbox, false);
             }
 
             SpawnedActorExecutionState::Failed(mailbox) => {
-                println!("messaged(), Failed");
                 self.drain(mailbox, true);
             }
         }
@@ -1591,8 +1534,6 @@ where
                     }
 
                     Some(Envelope::SystemMsg(SystemMsg::Watch(watcher))) => {
-                        println!("drain() got a watch");
-
                         watcher.tell_system(
                             SystemMsg::ActorStopped(
                                 self.id,

@@ -76,4 +76,8 @@ where
     {
         Sink::new(ForEach::new(for_each_fn))
     }
+
+    pub fn ignore() -> Self {
+        Sink::new(Ignore::new())
+    }
 }

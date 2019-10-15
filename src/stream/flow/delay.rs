@@ -7,16 +7,20 @@ pub enum DelayMsg<A> {
 
 pub struct Delay {
     delay: Duration,
-    pushing: bool,
-    stopped: bool,
+    state: State
+}
+
+enum State {
+    Waiting,
+    Pushing,
+    Stopping
 }
 
 impl Delay {
     pub fn new(delay: Duration) -> Self {
         Self {
             delay,
-            pushing: false,
-            stopped: false,
+            state: State::Waiting
         }
     }
 }
@@ -39,18 +43,24 @@ impl<A: Send> Logic<A, A> for Delay {
             }
 
             LogicEvent::Pushed(element) => {
-                self.pushing = true;
-
                 ctx.schedule_delivery("ready", self.delay.clone(), DelayMsg::Ready(element));
+
+                self.state = State::Pushing;
             }
 
             LogicEvent::Started => {}
 
             LogicEvent::Stopped => {
-                if self.pushing {
-                    self.stopped = true;
-                } else {
-                    ctx.tell(Action::Complete(None));
+                match self.state {
+                    State::Pushing => {
+                        self.state = State::Stopping;
+                    }
+
+                    State::Waiting => {
+                        ctx.tell(Action::Complete(None));
+                    }
+
+                    State::Stopping => {}
                 }
             }
 
@@ -61,9 +71,11 @@ impl<A: Send> Logic<A, A> for Delay {
             LogicEvent::Forwarded(DelayMsg::Ready(element)) => {
                 ctx.tell(Action::Push(element));
 
-                if self.stopped {
+                if let State::Stopping = self.state {
                     ctx.tell(Action::Complete(None));
                 }
+
+                self.state = State::Waiting;
             }
         }
     }

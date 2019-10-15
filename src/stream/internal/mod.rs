@@ -89,7 +89,7 @@ where
     Action(Action<B, Msg>),
     ForwardAny(Box<dyn Any + Send>),
     Forward(DownstreamStageMsg<B>),
-    ForwardUp(DownstreamStageMsg<A>)
+    ProcessLogicActions
 }
 
 fn downstream_stage_msg_to_stage_msg<A, B, Msg>(msg: DownstreamStageMsg<A>) -> StageMsg<A, B, Msg>
@@ -161,14 +161,15 @@ pub(in crate::stream) enum Upstream {
 }
 
 enum InnerStageContext<'a, Msg> where Msg: 'static + Send  {
-    Spawned(&'a mut ActorContext<Msg>),
-    Special(&'a mut SpecialContext<Msg>)
+    Spawned(&'a mut ActorContext<Msg>, &'a mut usize),
+    Special(&'a mut SpecialContext<Msg>, &'a mut usize)
 }
 
 enum SpecialContextAction<Msg> {
     CancelDelivery(String),
     Stop,
-    ScheduleDelivery(String, Duration, Msg)
+    ScheduleDelivery(String, Duration, Msg),
+    TellUpstream(UpstreamStageMsg),
 }
 
 struct SpecialContext<Msg> where Msg: 'static + Send {
@@ -201,57 +202,134 @@ pub(in crate::stream) struct StageContext<'a, Msg> where Msg: 'static + Send {
 }
 
 impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
-    pub fn actor_ref(&self) -> ActorRef<Msg> {
+    pub(in crate::stream) fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Msg) {
         match self.inner {
-            InnerStageContext::Spawned(ref context) => {
-                context.actor_ref().clone()
-            }
-
-            InnerStageContext::Special(ref context) => {
-                context.actor_ref.clone()
-            }
-        }
-    }
-
-    pub fn cancel_delivery<S: AsRef<str>>(&mut self, name: S) {
-        match self.inner {
-            InnerStageContext::Spawned(ref mut context) => {
-                context.cancel_delivery(name);
-            }
-
-            InnerStageContext::Special(ref mut context) => {
-                context.actions.push_back(SpecialContextAction::CancelDelivery(name.as_ref().to_string()));
-            }
-        }
-    }
-
-    pub fn fused(&self) -> bool {
-        match self.inner {
-            InnerStageContext::Spawned(_) => false,
-            InnerStageContext::Special(_) => true,
-        }
-    }
-
-    pub fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Msg) {
-        match self.inner {
-            InnerStageContext::Spawned(ref mut context) => {
+            InnerStageContext::Spawned(ref mut context, _) => {
                 context.schedule_delivery(name, timeout, msg);
             }
 
-            InnerStageContext::Special(ref mut context) => {
+            InnerStageContext::Special(ref mut context, _) => {
                 context.actions.push_back(SpecialContextAction::ScheduleDelivery(name.as_ref().to_string(), timeout, msg));
             }
         }
     }
 
-    pub fn stop(&mut self) {
+    fn actor_ref(&self) -> ActorRef<Msg> {
         match self.inner {
-            InnerStageContext::Spawned(ref mut context) => {
+            InnerStageContext::Spawned(ref context, _) => {
+                context.actor_ref().clone()
+            }
+
+            InnerStageContext::Special(ref context, _) => {
+                context.actor_ref.clone()
+            }
+        }
+    }
+
+    fn cancel_delivery<S: AsRef<str>>(&mut self, name: S) {
+        match self.inner {
+            InnerStageContext::Spawned(ref mut context, _) => {
+                context.cancel_delivery(name);
+            }
+
+            InnerStageContext::Special(ref mut context, _) => {
+                context.actions.push_back(SpecialContextAction::CancelDelivery(name.as_ref().to_string()));
+            }
+        }
+    }
+
+    fn fused(&self) -> bool {
+        match self.inner {
+            InnerStageContext::Spawned(_, _) => false,
+            InnerStageContext::Special(_, _) => true,
+        }
+    }
+
+    fn fused_push(&mut self) -> bool {
+        match self.inner {
+            InnerStageContext::Spawned(_, ref mut size) => {
+                **size += 1;
+                **size < 10 // @TODO cfg
+            }
+
+            InnerStageContext::Special(_, ref mut size) => {
+                **size += 1;
+                **size < 10 // @TODO cfg
+            }
+        }
+    }
+
+    fn fused_level(&mut self) -> &mut usize {
+        match self.inner {
+            InnerStageContext::Spawned(_, ref mut level) => level,
+            InnerStageContext::Special(_, ref mut level) => level
+        }
+    }
+
+    fn fused_pop(&mut self) {
+        match self.inner {
+            InnerStageContext::Spawned(_, ref mut size) => {
+                **size -= 1;
+            }
+
+            InnerStageContext::Special(_, ref mut size) => {
+                **size -= 1;
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        match self.inner {
+            InnerStageContext::Spawned(ref mut context, _) => {
                 context.stop();
             }
 
-            InnerStageContext::Special(ref mut context) => {
+            InnerStageContext::Special(ref mut context, _) => {
                 context.actions.push_back(SpecialContextAction::Stop);
+            }
+        }
+    }
+
+    fn tell(&mut self, msg: Msg) {
+        match self.inner {
+            InnerStageContext::Spawned(ref context, _) => {
+                context.actor_ref().tell(msg);
+            }
+
+            InnerStageContext::Special(ref context, _) => {
+                context.actor_ref.tell(msg);
+            }
+        }
+    }
+
+    fn tell_upstream<A: Send, B: Send, M: Send>(&mut self, state: &mut StageState<A, B, M>, msg: UpstreamStageMsg) {
+        match self.inner {
+            InnerStageContext::Spawned(_, _) => {
+                match state {
+                    StageState::Running(Upstream::Spawned(ref upstream)) => {
+                        upstream.tell(msg);
+                    }
+
+                    StageState::Running(Upstream::Fused(ref upstream)) => {
+                        upstream.tell(msg);
+                    }
+
+                    StageState::Waiting(Some(ref mut stash)) => {
+                        stash.push_back(upstream_stage_msg_to_stage_msg(msg));
+                    }
+
+                    StageState::Waiting(None) => {
+                        let mut stash = VecDeque::new();
+
+                        stash.push_back(upstream_stage_msg_to_stage_msg(msg));
+
+                        *state = StageState::Waiting(Some(stash));
+                    }
+                }
+            }
+
+            InnerStageContext::Special(ref mut context, _) => {
+                context.actions.push_back(SpecialContextAction::TellUpstream(msg));
             }
         }
     }
@@ -269,91 +347,100 @@ where
             return;
         }
 
-        let capacity = self.buffer.capacity() as u64;
-        let available = capacity - self.upstream_demand;
-
-        println!(
-            "c={}, capacity={}, available={}, len={}, updemand={}",
-            self.buffer.capacity(),
-            capacity,
-            available,
-            self.buffer.len(),
-            self.upstream_demand
-        );
-
-        if available >= capacity / 2 {
-            match self.state {
-                StageState::Running(Upstream::Spawned(ref upstream)) => {
-                    upstream.tell(UpstreamStageMsg::Pull(available));
-                    self.upstream_demand += available;
+        match ctx.fused() {
+            true => {
+                if self.pulled && self.upstream_demand == 0 {
+                    ctx.tell_upstream(&mut self.state, UpstreamStageMsg::Pull(1));
+                    self.upstream_demand += 1;
                 }
+            }
 
-                StageState::Running(Upstream::Fused(ref mut upstream)) => {
-                    upstream.tell(UpstreamStageMsg::Pull(available));
-                    self.upstream_demand += available;
+            false => {
+                /*println!(
+                    "{} c={}, capacity={}, available={}, len={}, updemand={} pulled={}",
+                    self.logic.name(),
+                    self.buffer.capacity(),
+                    capacity,
+                    available,
+                    self.buffer.len(),
+                    self.upstream_demand,
+                    self.pulled
+                );*/
+                let capacity = self.buffer.capacity() as u64;
+                let available = capacity - self.upstream_demand;
+
+                if available >= capacity / 2 {
+                    ctx.tell_upstream(&mut self.state, UpstreamStageMsg::Pull(1));
+                    self.upstream_demand += 1;
                 }
-
-                StageState::Waiting(_) => {}
             }
         }
     }
 
     fn process_downstream_ctx(&mut self, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
-        println!("process downstream ctx");
-        let downstream_ctx = self.downstream_context.as_mut().expect("TODO");
+        loop {
+            let downstream_ctx = self.downstream_context.as_mut().expect("TODO");
 
-        while let Some(action) = downstream_ctx.actions.pop_front() {
-            match action {
-                SpecialContextAction::Stop => {
+            match downstream_ctx.actions.pop_front() {
+                Some(SpecialContextAction::Stop) => {
                     ctx.stop();
                 }
 
-                SpecialContextAction::ScheduleDelivery(name, duration, msg) => {
+                Some(SpecialContextAction::ScheduleDelivery(name, duration, msg)) => {
                     ctx.schedule_delivery(name, duration, StageMsg::Forward(msg));
                 }
 
-                SpecialContextAction::CancelDelivery(name) => {
+                Some(SpecialContextAction::CancelDelivery(name)) => {
                     ctx.cancel_delivery(name);
+                }
+
+                Some(SpecialContextAction::TellUpstream(msg)) => {
+                    self.receive_message(upstream_stage_msg_to_stage_msg(msg), ctx);
+                }
+
+                None => {
+                    break;
                 }
             }
         }
     }
 
     fn process_midstream_ctx(&mut self, ctx: &mut StageContext<DownstreamStageMsg<A>>) {
-        println!("{} process midstream", self.logic.name());
-        let mut midstream_context = self.midstream_context.take().expect("TODO");
+        loop {
+            let next = self.midstream_context.as_mut().expect("TODO").actions.pop_front();
+            //let mut midstream_context = self.midstream_context.as_mut().expect("TODO");
 
-        while let Some(action) = midstream_context.actions.pop_front() {
-            match action {
-                SpecialContextAction::Stop => {
+            match next {
+                Some(SpecialContextAction::Stop) => {
                     ctx.stop();
                 }
 
-                SpecialContextAction::ScheduleDelivery(name, duration, msg) => {
+                Some(SpecialContextAction::ScheduleDelivery(name, duration, msg)) => {
                     ctx.schedule_delivery(name, duration, DownstreamStageMsg::ForwardAny(Box::new(msg)));
                 }
 
-                SpecialContextAction::CancelDelivery(name) => {
+                Some(SpecialContextAction::CancelDelivery(name)) => {
                     ctx.cancel_delivery(name);
+                }
+
+                Some(SpecialContextAction::TellUpstream(msg)) => {
+                    ctx.tell_upstream(&mut self.state, msg);
+                }
+
+                None => {
+                    break;
                 }
             }
         }
-
-        self.midstream_context = Some(midstream_context);
     }
 
     fn receive_signal_started(&mut self, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
         match self.downstream {
             Downstream::Spawned(ref downstream) => {
-                println!("telling upstream");
-                downstream.tell(DownstreamStageMsg::SetUpstream(
-                    Upstream::Spawned(ctx.actor_ref().convert(upstream_stage_msg_to_stage_msg)),
-                ));
+                downstream.tell(DownstreamStageMsg::SetUpstream( Upstream::Spawned(ctx.actor_ref().convert(upstream_stage_msg_to_stage_msg)),));
             }
 
             Downstream::Fused(ref mut downstream) => {
-                println!("{} fused started", self.logic.name());
-
                 let actor_ref = ctx.actor_ref().convert(upstream_stage_msg_to_stage_msg);
 
                 let mut special_context = SpecialContext {
@@ -363,13 +450,12 @@ where
 
                 let mut downstream_ctx = StageContext {
                     inner: InnerStageContext::Special(
-                        &mut special_context
+                        &mut special_context,
+                        ctx.fused_level()
                     )
                 };
 
                 downstream.receive_signal_started(&mut downstream_ctx);
-
-                println!("{}'s downstream will receive us", self.logic.name());
 
                 downstream.receive_message(
                     DownstreamStageMsg::SetUpstream(Upstream::Fused(actor_ref)),
@@ -385,18 +471,17 @@ where
 
     fn receive_message(&mut self, msg: StageMsg<A, B, Msg>, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
         match self.state {
-            StageState::Running(ref upstream) => {
+            StageState::Running(_) => {
                 match msg {
-                    StageMsg::ForwardUp(downstream_stage_msg) => {
-                        println!("{} ForwardUp", self.logic.name());
-                        self.receive_message(downstream_stage_msg_to_stage_msg(downstream_stage_msg), ctx);
+                    StageMsg::ProcessLogicActions => {
+                        self.process_actions(ctx);
                     }
 
                     StageMsg::ForwardAny(msg) => {
-                        println!("{} ForwardAny", self.logic.name());
+                        //println!("{} StageMsg::ForwardAny", self.logic.name());
                         match msg.downcast() {
                             Ok(msg) => {
-                                println!("it worked!");
+                                //println!("{} downcast success", self.logic.name());
                                 self.receive_message(*msg, ctx);
                             }
 
@@ -407,12 +492,10 @@ where
                     }
 
                     StageMsg::Pull(demand) => {
-                        println!("{} StageMsg::Pull({})", self.logic.name(), demand);
+                        //println!("{} StageMsg::Pull({})", self.logic.name(), demand);
                         // our downstream has requested more elements
 
                         self.downstream_demand += demand;
-
-                        //println!("pull! downstream demand is now {}", self.downstream_demand);
 
                         if self.downstream_demand > 0 {
                             self.receive_logic_event(LogicEvent::Pulled, ctx);
@@ -420,34 +503,33 @@ where
                     }
 
                     StageMsg::Consume(el) => {
-                        println!("{} StageMsg::Consume", self.logic.name());
-
+                        //println!("{} StageMsg::Consume", self.logic.name());
                         // our upstream has produced this element
 
-                        if !self.upstream_stopped {
-                            if self.pulled {
-                                self.upstream_demand -= 1;
-                                self.pulled = false;
+                        if self.pulled {
+                            self.upstream_demand -= 1;
+                            self.pulled = false;
 
-                                // @TODO assert buffer is empty
+                            assert!(self.buffer.is_empty());
 
-                                self.receive_logic_event(LogicEvent::Pushed(el), ctx);
+                            // @TODO assert buffer is empty
 
-                                // @TODO this was commented out
-                                self.check_upstream_demand(ctx);
-                            } else {
-                                self.buffer.push_back(el);
-                            }
+                            self.receive_logic_event(LogicEvent::Pushed(el), ctx);
+
+                            // @TODO this was commented out
+                            self.check_upstream_demand(ctx);
+                        } else {
+                            self.buffer.push_back(el);
                         }
                     }
 
                     StageMsg::Action(action) => {
-                        println!("{} Action", self.logic.name());
+                        //println!("{} StageMsg::Action", self.logic.name());
                         self.receive_action(action, ctx);
                     }
 
                     StageMsg::Forward(msg) => {
-                        println!("{} Forward", self.logic.name());
+                        //println!("{} StageMsg::Forward", self.logic.name());
                         match self.downstream {
                             Downstream::Spawned(ref downstream) => {
                                 panic!("TODO");
@@ -459,7 +541,7 @@ where
                                 downstream.receive_message(
                                     msg,
                                     &mut StageContext {
-                                        inner: InnerStageContext::Special(downstream_ctx)
+                                        inner: InnerStageContext::Special(downstream_ctx, ctx.fused_level())
                                     }
                                 );
 
@@ -469,32 +551,20 @@ where
                     }
 
                     StageMsg::Cancel => {
+                        //println!("{} StageMsg::Cancel", self.logic.name());
                         // downstream has cancelled us
 
                         if !self.upstream_stopped {
-                            match self.state {
-                                StageState::Running(Upstream::Spawned(ref upstream)) => {
-                                    upstream.tell(UpstreamStageMsg::Cancel);
-                                }
-
-                                StageState::Running(Upstream::Fused(ref mut upstream)) => {
-                                    upstream.tell(UpstreamStageMsg::Cancel);
-                                }
-
-                                StageState::Waiting(_) => {
-                                    // @TODO think about this condition
-                                    unimplemented!();
-                                }
-                            }
+                            ctx.tell_upstream(&mut self.state, UpstreamStageMsg::Cancel);
                         }
 
                         self.receive_logic_event(LogicEvent::Cancelled, ctx);
                     }
 
                     StageMsg::Stopped(reason) => {
+                        //println!("{} StageMsg::Stopped", self.logic.name());
                         // upstream has stopped, need to drain buffers and be done
 
-                        println!("{} UPSTREAM HAS STOPPED", self.logic.name());
                         self.upstream_stopped = true;
 
                         if self.buffer.is_empty() {
@@ -503,7 +573,6 @@ where
                     }
 
                     StageMsg::SetUpstream(_) => {
-                        println!("{} SetUpstream (shouldnt be possible)", self.logic.name());
                         // this shouldn't be possible
                     }
                 }
@@ -512,67 +581,44 @@ where
             StageState::Waiting(ref stash) if stash.is_none() => {
                 match msg {
                     StageMsg::SetUpstream(upstream) => {
-                        println!("{} SetUpstream (no stash)", self.logic.name());
                         self.state = StageState::Running(upstream);
-
                         self.receive_logic_event(LogicEvent::Started, ctx);
-
                         self.check_upstream_demand(ctx);
                     }
 
-                    StageMsg::ForwardUp(downstream_stage_msg) => {
-                        println!("{} ForwardUp", self.logic.name());
-                        self.receive_message(downstream_stage_msg_to_stage_msg(downstream_stage_msg), ctx);
-                    }
-
                     other => {
-                        println!("{} will stash", self.logic.name());
-                        // this is rare, but it can happen depending upon
-                        // timing, i.e. the stage can receive messages from
-                        // upstream or downstream before it has received
-                        // the ActorRef for upstream
-
                         let mut stash = VecDeque::new();
 
                         stash.push_back(other);
 
                         self.state = StageState::Waiting(Some(stash));
-                        println!("{} now stashed", self.logic.name());
                     }
                 }
             }
 
             StageState::Waiting(ref mut stash) => match msg {
                 StageMsg::SetUpstream(upstream) => {
-                    println!("{} SetUpstream", self.logic.name());
                     let mut stash = stash
                         .take()
                         .expect("pantomime bug: Option::take failed despite being Some");
 
                     self.state = StageState::Running(upstream);
-
                     self.receive_logic_event(LogicEvent::Started, ctx);
-
                     self.check_upstream_demand(ctx);
 
                     while let Some(msg) = stash.pop_front() {
-                        println!("{} unstashing", self.logic.name());
                         self.receive_message(msg, ctx);
                     }
                 }
 
-                StageMsg::ForwardUp(downstream_stage_msg) => {
-                    println!("{} ForwardUp", self.logic.name());
-                    self.receive_message(downstream_stage_msg_to_stage_msg(downstream_stage_msg), ctx);
-                }
-
                 other => {
-                    println!("{} stashing", self.logic.name());
                     let mut stash = stash
                         .take()
                         .expect("pantomime bug: Option::take failed despite being Some");
 
                     stash.push_back(other);
+
+                    self.state = StageState::Waiting(Some(stash));
                 }
             },
         }
@@ -593,11 +639,26 @@ where
                 .receive(event, &mut ctx);
         }
 
-        // @TODO stack overflow possible when we implement fusion -- should bound
-        //       this and fall back to telling ourselves after some amount
+        self.process_actions(ctx);
+    }
 
-        while let Some(event) = self.logic_actions.pop_front() {
-            self.receive_action(event, ctx);
+    fn process_actions(&mut self, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
+        loop {
+            if ctx.fused_push() {
+                if let Some(event) = self.logic_actions.pop_front() {
+                    self.receive_action(event, ctx);
+
+                    ctx.fused_pop();
+                } else {
+                    ctx.fused_pop();
+
+                    return;
+                }
+            } else {
+                ctx.tell(StageMsg::ProcessLogicActions);
+
+                return;
+            }
         }
     }
 
@@ -608,15 +669,11 @@ where
     ) {
         match action {
             Action::Pull => {
-                println!("{} Action::Pull", self.logic.name());
-
                 if self.pulled {
-                    //println!("already pulled, this is a bug");
                     // @TODO must fail as this is a bug
                 } else {
                     match self.buffer.pop_front() {
                         Some(el) => {
-                            println!("{} some!", self.logic.name());
                             self.upstream_demand -= 1;
                             self.check_upstream_demand(ctx);
 
@@ -624,44 +681,48 @@ where
                         }
 
                         None if self.upstream_stopped => {
-                            println!("{}   sending LogicEvent::Stopped", self.logic.name());
+                            // @TODO only send this once!
                             self.receive_logic_event(LogicEvent::Stopped, ctx);
                         }
 
                         None => {
-                            println!("{} none!", self.logic.name());
                             self.pulled = true;
+
+                            if ctx.fused() {
+                                self.check_upstream_demand(ctx);
+                            }
                         }
                     }
                 }
             }
 
             Action::Push(el) => {
-                println!("{} Action::Push", self.logic.name());
-
                 if self.downstream_demand == 0 {
                     // @TODO must fail - logic has violated the rules
                 } else {
                     match self.downstream {
                         Downstream::Spawned(ref downstream) => {
                             downstream.tell(DownstreamStageMsg::Produce(el));
+
+                            self.downstream_demand -= 1;
                         }
 
                         Downstream::Fused(ref mut downstream) => {
-                            let mut downstream_ctx = self.downstream_context.as_mut().unwrap();
+                            let downstream_ctx = self.downstream_context.as_mut().unwrap();
 
                             downstream.receive_message(
                                 DownstreamStageMsg::Produce(el),
                                 &mut StageContext {
-                                    inner: InnerStageContext::Special(downstream_ctx)
+                                    inner: InnerStageContext::Special(downstream_ctx, ctx.fused_level())
                                 }
                             );
+
+                            self.downstream_demand -= 1;
 
                             self.process_downstream_ctx(ctx);
                         }
                     }
 
-                    self.downstream_demand -= 1;
 
                     if self.downstream_demand > 0 {
                         self.receive_logic_event(LogicEvent::Pulled, ctx);
@@ -670,32 +731,18 @@ where
             }
 
             Action::Forward(msg) => {
-                println!("{} Action::Forward", self.logic.name());
                 self.receive_logic_event(LogicEvent::Forwarded(msg), ctx);
             }
 
             Action::Cancel => {
                 if !self.upstream_stopped {
-                    match self.state {
-                        StageState::Running(Upstream::Spawned(ref upstream)) => {
-                            upstream.tell(UpstreamStageMsg::Cancel);
-                        }
-
-                        StageState::Running(Upstream::Fused(ref mut upstream)) => {
-                            upstream.tell(UpstreamStageMsg::Cancel);
-                        }
-
-                        StageState::Waiting(_) => {
-                            unimplemented!();
-                        }
-                    }
+                    ctx.tell_upstream(&mut self.state, UpstreamStageMsg::Cancel);
                 }
             }
 
             Action::Complete(reason) => {
                 match self.downstream {
                     Downstream::Spawned(ref downstream) => {
-                        println!("{} telling downstream were done", self.logic.name());
                         downstream.tell(DownstreamStageMsg::Complete(reason));
 
                         ctx.stop();
@@ -707,7 +754,7 @@ where
                         downstream.receive_message(
                             DownstreamStageMsg::Complete(reason),
                             &mut StageContext {
-                                inner: InnerStageContext::Special(downstream_ctx)
+                                inner: InnerStageContext::Special(downstream_ctx, ctx.fused_level())
                             }
                         );
 
@@ -730,12 +777,14 @@ where
     Msg: 'static + Send,
 {
     fn stage_receive_signal_started(&mut self, ctx: &mut StageContext<DownstreamStageMsg<A>>) {
-        println!("{} receive_signal_started", self.logic.name());
         if ctx.fused() {
             self.midstream_context = Some(
                 SpecialContext {
                     actions: VecDeque::new(),
-                    actor_ref: ctx.actor_ref().convert(|msg| DownstreamStageMsg::ForwardAny(Box::new(msg)))
+                    actor_ref: ctx.actor_ref().convert(|msg| {
+                        ////println!("converted");
+                        DownstreamStageMsg::ForwardAny(Box::new(msg))
+                    })
                 }
             );
         }
@@ -744,7 +793,7 @@ where
 
         self.receive_signal_started(
             &mut StageContext {
-                inner: InnerStageContext::Special(&mut midstream_context)
+                inner: InnerStageContext::Special(&mut midstream_context, ctx.fused_level())
             }
         );
 
@@ -754,17 +803,21 @@ where
     }
 
     fn stage_receive_message(&mut self, msg: DownstreamStageMsg<A>, ctx: &mut StageContext<DownstreamStageMsg<A>>) {
-        println!("{} receive_message", self.logic.name());
         let mut midstream_context = self.midstream_context.take().expect("TODO");
 
         self.receive_message(
-            StageMsg::ForwardUp(msg),
+            downstream_stage_msg_to_stage_msg(msg),
             &mut StageContext {
-                inner: InnerStageContext::Special(&mut midstream_context)
+                inner: InnerStageContext::Special(&mut midstream_context, ctx.fused_level())
             }
         );
 
         self.midstream_context = Some(midstream_context);
+
+        /*
+        if rand::random() && rand::random() && rand::random() && rand::random() && rand::random() && rand::random() && rand::random() {
+            panic!();
+        }*/
 
         self.process_midstream_ctx(ctx);
     }
@@ -796,20 +849,24 @@ where
     type Msg = StageMsg<A, B, Msg>;
 
     fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<StageMsg<A, B, Msg>>) {
+        let mut fused_level = 0;
+
         if let Signal::Started = signal {
             self.receive_signal_started(
                 &mut StageContext {
-                    inner: InnerStageContext::Spawned(ctx)
+                    inner: InnerStageContext::Spawned(ctx, &mut fused_level)
                 }
             );
         }
     }
 
     fn receive(&mut self, msg: StageMsg<A, B, Msg>, ctx: &mut ActorContext<StageMsg<A, B, Msg>>) {
+        let mut fused_level = 0;
+
         self.receive_message(
             msg,
             &mut StageContext {
-                inner: InnerStageContext::Spawned(ctx)
+                inner: InnerStageContext::Spawned(ctx, &mut fused_level)
             }
         );
     }
@@ -889,7 +946,8 @@ where
     Fail,
     FromSink(DownstreamStageMsg<Out>),
     FromSource(UpstreamStageMsg),
-    SetDownstream(ActorRef<DownstreamStageMsg<()>>),
+    FromSourceAsDownstream(DownstreamStageMsg<()>),
+    SetDownstream(Downstream<()>),
 }
 
 fn stream_ctl_to_internal_stream_ctl<Out>(ctl: StreamCtl) -> InternalStreamCtl<Out>
@@ -906,6 +964,8 @@ pub(in crate::stream) trait RunnableStream<Out>
 where
     Out: Send,
 {
+    fn fuse(self: Box<Self>) -> Box<RunnableStream<Out> + 'static + Send>;
+
     fn run(self: Box<Self>, context: &mut ActorContext<InternalStreamCtl<Out>>);
 }
 
@@ -914,6 +974,12 @@ where
     A: 'static + Send,
     Out: 'static + Send,
 {
+    fn fuse(mut self: Box<Self>) -> Box<RunnableStream<Out> + 'static + Send> {
+        self.upstream = self.upstream.fuse();
+        self.downstream = self.downstream.fuse();
+        self
+    }
+
     fn run(self: Box<Self>, context: &mut ActorContext<InternalStreamCtl<Out>>) {
         let actor_ref_for_sink = context
             .actor_ref()
@@ -927,17 +993,7 @@ where
             &mut context_for_upstream,
         );
 
-        match stream {
-            Downstream::Spawned(stream) => {
-                context.actor_ref()
-                       .tell(InternalStreamCtl::SetDownstream(stream));
-            }
-
-            Downstream::Fused(stream) => {
-                unimplemented!();
-            }
-        }
-
+        context.actor_ref().tell(InternalStreamCtl::SetDownstream(stream));
     }
 }
 
@@ -1035,6 +1091,7 @@ where
             state: state.clone(),
             produced: false,
             stream_stopped: false,
+            downstream: None,
         });
 
         (
@@ -1080,6 +1137,39 @@ where
     state: Arc<AtomicCell<Option<Out>>>,
     produced: bool,
     stream_stopped: bool,
+    downstream: Option<(StageRef<DownstreamStageMsg<()>>, SpecialContext<DownstreamStageMsg<()>>)>,
+}
+
+impl<Out> StreamController<Out>
+where Out: Send {
+    fn process_downstream_ctx(&mut self, ctx: &mut ActorContext<InternalStreamCtl<Out>>) {
+        loop {
+            let (_, downstream_ctx) = self.downstream.as_mut().expect("TODO");
+
+            match downstream_ctx.actions.pop_front() {
+                Some(SpecialContextAction::Stop) => {
+                    // @TODO think about this
+                    //ctx.stop();
+                }
+
+                Some(SpecialContextAction::ScheduleDelivery(name, duration, msg)) => {
+                    ctx.schedule_delivery(name, duration, InternalStreamCtl::FromSourceAsDownstream(msg));
+                }
+
+                Some(SpecialContextAction::CancelDelivery(name)) => {
+                    ctx.cancel_delivery(name);
+                }
+
+                Some(SpecialContextAction::TellUpstream(msg)) => {
+                    drop(msg); // there is no upstream
+                }
+
+                None => {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl<Out> Actor for StreamController<Out>
@@ -1115,12 +1205,10 @@ where
             InternalStreamCtl::FromSink(DownstreamStageMsg::SetUpstream(upstream)) => {
                 match upstream {
                     Upstream::Spawned(upstream) => {
-                        println!("pulling 1 from the sink");
                         upstream.tell(UpstreamStageMsg::Pull(1));
                     }
 
-                    Upstream::Fused(mut upstream) => {
-                        println!("pulling 1 from the fused sink");
+                    Upstream::Fused(upstream) => {
                         upstream.tell(UpstreamStageMsg::Pull(1));
                     }
                 }
@@ -1130,15 +1218,9 @@ where
                 let _ = self.state.swap(Some(value));
 
                 self.produced = true;
-
-                println!("sink got final value");
             }
 
             InternalStreamCtl::FromSink(DownstreamStageMsg::Complete(reason)) => {
-                println!("sink completed");
-
-                // @TODO there's a race, ive seen this fail
-
                 assert!(self.produced, "pantomime bug: sink did not produce a value");
 
                 ctx.stop();
@@ -1158,15 +1240,59 @@ where
                     .actor_ref()
                     .convert(upstream_stage_msg_to_internal_stream_ctl);
 
-                downstream.tell(DownstreamStageMsg::SetUpstream(Upstream::Spawned(actor_ref_for_source)));
+                match downstream {
+                    Downstream::Spawned(downstream) => {
+                        downstream.tell(DownstreamStageMsg::SetUpstream(Upstream::Spawned(actor_ref_for_source)));
 
-                println!("telling downstream (which is the source) we're done");
+                        downstream.tell(DownstreamStageMsg::Complete(None));
+                    }
 
-                downstream.tell(DownstreamStageMsg::Complete(None));
+                    Downstream::Fused(mut downstream) => {
+                        let actor_ref = ctx.actor_ref().convert(InternalStreamCtl::FromSource);
+                        let other_actor_ref = ctx.actor_ref().convert(InternalStreamCtl::FromSourceAsDownstream);
+
+                        let mut fused_level = 0;
+
+                        let mut special_context = SpecialContext {
+                            actions: VecDeque::new(),
+                            actor_ref: other_actor_ref
+                        };
+
+                        let mut downstream_ctx = StageContext {
+                            inner: InnerStageContext::Special(
+                                &mut special_context,
+                                &mut fused_level
+                            )
+                        };
+
+                        downstream.receive_signal_started(&mut downstream_ctx);
+
+                        downstream.receive_message(
+                            DownstreamStageMsg::SetUpstream(Upstream::Fused(actor_ref)),
+                            &mut downstream_ctx
+                        );
+
+                        self.downstream = Some((downstream, special_context));
+
+                        self.process_downstream_ctx(ctx);
+
+                        let (downstream, special_context) = self.downstream.as_mut().expect("TODO");
+
+                        let mut fused_level =  0;
+
+                        let mut downstream_ctx = StageContext {
+                            inner: InnerStageContext::Special(special_context, &mut fused_level)
+                        };
+
+                        downstream.receive_message(DownstreamStageMsg::Complete(None), &mut downstream_ctx);
+
+                        self.process_downstream_ctx(ctx);
+                    }
+                }
+
             }
 
             InternalStreamCtl::FromSource(UpstreamStageMsg::Pull(value)) => {
-                println!("source pulled {}", value);
                 // nothing to do, we already sent a completed
             }
 
@@ -1174,8 +1300,29 @@ where
                 // nothing to do, we already sent a completed
             }
 
+            InternalStreamCtl::FromSourceAsDownstream(msg) => {
+                match self.downstream {
+                    Some((ref mut downstream, ref mut downstream_ctx)) => {
+                        let mut fused_level = 0;
+                        let mut downstream_ctx = StageContext {
+                            inner: InnerStageContext::Special(downstream_ctx, &mut fused_level)
+                        };
+
+                        downstream.receive_message(
+                            msg,
+                            &mut downstream_ctx
+                        );
+
+                        self.process_downstream_ctx(ctx);
+                    }
+
+                    _ => panic!("TODO")
+                }
+
+
+            }
+
             InternalStreamCtl::FromSink(_) => {
-                println!("sink got unexpected value");
             }
         }
     }

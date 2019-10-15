@@ -143,7 +143,7 @@ fn test3() {
             self.n += value;
 
                println!("       N IS  {}", self.n);
-            if self.n == 6 || self.n == 1 {
+            if self.n == 6 || self.n == 1 || true {
                 // 0 + 1 -> 1
                 // 1 + 2 -> 3
                 // 3 + 3 -> 6
@@ -161,19 +161,36 @@ fn test3() {
                         {
                             let actor_ref = ctx.actor_ref().clone();
 
-                            ctx.schedule_thunk(Duration::from_secs(3), move || {
+                            ctx.schedule_thunk(Duration::from_secs(100), move || {
                                 actor_ref
                                     .fail(FailureError::new(Error::new(ErrorKind::Other, "failed")))
                             });
                         }
 
                         let (_, result) = ctx.spawn(
-                            Source::iterator(1..=1)
-                                .via(Flow::new().scan(0, |last, next| last + next).fuse())
-                                .to(Sink::last().fuse()),
+                            Source::iterator(1..=10_000_000)
+                                /*.map(|n| {
+                                    //println!("one: {}", n);
+
+                                    n * 2
+                                })
+                                //.via(Flow::from_logic(Delay::new(Duration::from_millis(1))))
+                                .map(|n| {
+                                    //println!("two: {}", n);
+
+                                    n * 3
+                                })
+                                //.via(Flow::from_logic(Delay::new(Duration::from_millis(10))))
+                                .map(|n| {
+                                    //println!("three: {}", n);
+
+                                    n * 4
+                                })*/
+                                .to(Sink::last())
+                                .fuse()
                         );
 
-                        ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());
+                        ctx.watch(result, |value| value.unwrap_or_default());
                     }
 
                     if false {

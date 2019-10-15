@@ -164,6 +164,12 @@ impl<Out> Stream<Out>
 where
     Out: 'static + Send,
 {
+    pub fn fuse(self) -> Self {
+        Self {
+            runnable_stream: self.runnable_stream.fuse()
+        }
+    }
+
     pub(in crate::stream) fn run(self, context: &mut ActorContext<InternalStreamCtl<Out>>) {
         self.runnable_stream.run(context)
     }
