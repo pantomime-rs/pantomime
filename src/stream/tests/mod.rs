@@ -169,23 +169,19 @@ fn test3() {
 
                         let (_, result) = ctx.spawn(
                             Source::iterator(1..=10_000_000)
-                                /*.map(|n| {
-                                    //println!("one: {}", n);
+                                /*.via(Flow::from_logic(Delay::new(Duration::from_millis(1))))
+                                .map(|n| {
+                                    println!("one: {}", n);
 
                                     n * 2
                                 })
-                                //.via(Flow::from_logic(Delay::new(Duration::from_millis(1))))
+                                .via(Flow::from_logic(Delay::new(Duration::from_millis(1))))
                                 .map(|n| {
-                                    //println!("two: {}", n);
+                                    println!("two: {}", n);
 
-                                    n * 3
+                                    n * 2
                                 })
-                                //.via(Flow::from_logic(Delay::new(Duration::from_millis(10))))
-                                .map(|n| {
-                                    //println!("three: {}", n);
-
-                                    n * 4
-                                })*/
+                                .via(Flow::from_logic(Delay::new(Duration::from_millis(1))))*/
                                 .to(Sink::last())
                                 .fuse()
                         );

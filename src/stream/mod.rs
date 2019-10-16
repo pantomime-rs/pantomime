@@ -1,7 +1,9 @@
-use crate::actor::{Actor, ActorContext, ActorRef, FailureReason};
-use crate::stream::internal::{InternalStreamCtl, RunnableStream, Stage, StageContext, StageMsg};
+use crate::actor::{Actor, ActorContext, ActorRef, ActorSpawnContext, FailureReason};
+use crate::stream::internal::{Downstream, DownstreamStageMsg, InternalStreamCtl, RunnableStream, Stage, StageContext, StageMsg, StageRef};
 use crossbeam::atomic::AtomicCell;
+use std::any::Any;
 use std::collections::VecDeque;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +47,7 @@ pub enum LogicEvent<A, Msg> {
 pub enum LogicPortEvent<A> {
     Pulled(usize),
     Pushed(usize, A),
+    Forwarded(usize, Box<dyn Any + Send>),
     Started(usize),
     Stopped(usize),
     Cancelled(usize),
@@ -106,8 +109,8 @@ where
         self.actions.push_back(action); // @TODO measure this vs messaging instead
     }
 
-    fn tell_port<Y>(&mut self, handle: &PortRef<Y>, action: PortAction<Y>) {
-        unimplemented!();
+    fn tell_port<Y>(&mut self, handle: &mut PortRef<In, Out, Ctl, Y>, action: PortAction<Y>) where Y: Send {
+        handle.tell(action, self);
     }
 
     fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Ctl) {
@@ -126,21 +129,127 @@ where
         &mut self,
         flow: Flow<Y, Z>,
         convert: C,
-    ) -> PortRef<Y> {
-        unimplemented!()
+    ) -> PortRef<In, Out, Ctl, Y> where Y: Send {
+
+        PortRef {
+            port: unimplemented!()
+        }
     }
 }
 
-struct PortRef<T> {
-    t: T,
+trait SpawnedPort<In, Out, Ctl, A> where A: 'static + Send, In: 'static + Send, Out: 'static + Send, Ctl: 'static + Send {
+    fn tell(&mut self, action: PortAction<A>, ctx: &mut StreamContext<In, Out, Ctl>);
 }
 
-impl<T> PortRef<T> {
+struct SpawnedPortImpl<UpIn, UpOut, UpCtl, In, Out, Ctl, L: Logic<In, Out, Ctl = Ctl>, C: FnMut(LogicPortEvent<Out>) -> UpCtl> where UpIn: 'static + Send, UpOut: 'static + Send, UpCtl: 'static + Send, In: 'static + Send, Out: 'static + Send, L: 'static + Send, C: 'static + Send, Ctl: 'static + Send {
+    id: usize,
+
+    logic: L,
+    convert: C,
+    phantom: PhantomData<(UpCtl, Out, Ctl, UpIn, UpOut, In)>,
+    midstream_context: internal::SpecialContext<StageMsg<In, Out, Ctl>>,
+    actions: VecDeque<Action<Out, Ctl>>
+}
+
+impl<UpIn, UpOut, UpCtl, In, Out, Ctl, L: Logic<In, Out, Ctl = Ctl>, C: FnMut(LogicPortEvent<Out>) -> UpCtl> SpawnedPortImpl<UpIn, UpOut, UpCtl, In, Out, Ctl, L, C> where UpIn: 'static + Send, UpOut: 'static + Send, UpCtl: 'static + Send, In: 'static + Send, Out: 'static + Send, L: 'static + Send, C: 'static + Send, Ctl: 'static + Send {
+
+    fn process_actions(&mut self, fused_level: &mut usize, ctx: &mut StreamContext<UpIn, UpOut, UpCtl>) {
+        loop {
+            let action = self.actions.pop_front();
+
+            let mut stage_context = StageContext {
+                inner: internal::InnerStageContext::Special(&mut self.midstream_context, fused_level)
+            };
+
+            let mut context = StreamContext {
+                ctx: &mut stage_context,
+                actions: &mut self.actions
+            };
+
+            match action {
+                Some(Action::Pull) => {
+                    ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Pulled(self.id))));
+                }
+
+                Some(Action::Push(el)) => {
+                    ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Pushed(self.id, el))));
+                }
+
+                Some(Action::Cancel) => {
+                    ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Cancelled(self.id))));
+                }
+
+                Some(Action::Forward(msg)) => {
+                    ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Forwarded(self.id, Box::new(msg)))));
+
+                    // @TODO what about below instead? avoids box
+                    //self.logic.receive(LogicEvent::Forwarded(msg), &mut context);
+                }
+
+                Some(Action::Complete(reason)) => {
+                    // @TODO reason
+                    ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Stopped(self.id))));
+                }
+
+                None => {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+impl<UpIn, UpCtl, UpOut, In, Out, Ctl, L: Logic<In, Out, Ctl = Ctl>, C: FnMut(LogicPortEvent<Out>) -> UpCtl> SpawnedPort<UpIn, UpOut, UpCtl, In> for SpawnedPortImpl<UpIn, UpOut, UpCtl, In, Out, Ctl, L, C> where In: 'static + Send, Out: 'static + Send, Ctl: 'static + Send, L: 'static + Send, UpCtl: 'static + Send, UpIn: 'static + Send, UpOut: 'static + Send, C: 'static + Send {
+    fn tell(&mut self, action: PortAction<In>, ctx: &mut StreamContext<UpIn, UpOut, UpCtl>) {
+        let mut fused_level = 0; // @TODO
+
+        let mut stage_context = StageContext {
+            inner: internal::InnerStageContext::Special(&mut self.midstream_context, &mut fused_level)
+        };
+
+        let mut context = StreamContext {
+            ctx: &mut stage_context,
+            actions: &mut self.actions
+        };
+
+        match action {
+            PortAction::Pull => {
+                self.logic.receive(LogicEvent::Pulled, &mut context);
+            }
+
+            PortAction::Push(el) => {
+                self.logic.receive(LogicEvent::Pushed(el), &mut context);
+            }
+
+            PortAction::Cancel => {
+                self.logic.receive(LogicEvent::Cancelled, &mut context);
+            }
+
+            PortAction::Complete(reason) => {
+                self.logic.receive(LogicEvent::Stopped, &mut context);
+            }
+        }
+
+        fused_level += 1;
+
+        self.process_actions(&mut fused_level, ctx);
+
+        fused_level -= 1;
+    }
+}
+
+struct PortRef<In, Out, Ctl, A> where A: 'static + Send, In: 'static + Send, Out: 'static + Send, Ctl: 'static + Send {
+    port: Box<dyn SpawnedPort<In, Out, Ctl, A> + Send>
+}
+
+impl<In, Out, Ctl, PortIn> PortRef<In, Out, Ctl, PortIn> where In: Send, Out: Send, Ctl: Send, PortIn: Send {
     fn id(&self) -> usize {
         0
     }
 
-    fn tell(&mut self, action: PortAction<T>) {}
+    fn tell(&mut self, action: PortAction<PortIn>, ctx: &mut StreamContext<In, Out, Ctl>) {
+        self.port.tell(action, ctx);
+    }
 }
 
 enum StreamCtl {

@@ -160,7 +160,7 @@ pub(in crate::stream) enum Upstream {
     Fused(ActorRef<UpstreamStageMsg>)
 }
 
-enum InnerStageContext<'a, Msg> where Msg: 'static + Send  {
+pub(in crate::stream) enum InnerStageContext<'a, Msg> where Msg: 'static + Send  {
     Spawned(&'a mut ActorContext<Msg>, &'a mut usize),
     Special(&'a mut SpecialContext<Msg>, &'a mut usize)
 }
@@ -172,33 +172,13 @@ enum SpecialContextAction<Msg> {
     TellUpstream(UpstreamStageMsg),
 }
 
-struct SpecialContext<Msg> where Msg: 'static + Send {
+pub(in crate::stream) struct SpecialContext<Msg> where Msg: 'static + Send {
     actions: VecDeque<SpecialContextAction<Msg>>,
     actor_ref: ActorRef<Msg>
 }
 
-// HERE'S THE IDEA
-//
-// assume we're a fused "chain" of stages within an actor
-//
-// downstream is invoked synchronously from upstream, and
-// can give it a context that stores the signals and then
-// are processed when the method returns
-//
-// the challenge becomes what to do when downstream requests
-// an actor ref, or schedules delivery of some messages
-//
-// for this, we need to introduce a StageMsg variant for
-// invoking / messaging something downstream
-//
-// this is a recursive forward - as each further downstream
-// stage's message gets wrapped in a Forward. eventually it
-// gets to where it needs to go.
-//
-//
-
 pub(in crate::stream) struct StageContext<'a, Msg> where Msg: 'static + Send {
-    inner: InnerStageContext<'a, Msg>
+    pub(in crate::stream) inner: InnerStageContext<'a, Msg>
 }
 
 impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
@@ -247,12 +227,12 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn fused_push(&mut self) -> bool {
         match self.inner {
-            InnerStageContext::Spawned(_, ref mut size) => {
+            InnerStageContext::Special(_, ref mut size) => {
                 **size += 1;
                 **size < 10 // @TODO cfg
             }
 
-            InnerStageContext::Special(_, ref mut size) => {
+            InnerStageContext::Spawned(_, ref mut size) => {
                 **size += 1;
                 **size < 10 // @TODO cfg
             }
@@ -261,22 +241,23 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn fused_level(&mut self) -> &mut usize {
         match self.inner {
+            InnerStageContext::Special(_, ref mut level) => level,
             InnerStageContext::Spawned(_, ref mut level) => level,
-            InnerStageContext::Special(_, ref mut level) => level
         }
     }
 
     fn fused_pop(&mut self) {
         match self.inner {
-            InnerStageContext::Spawned(_, ref mut size) => {
+            InnerStageContext::Special(_, ref mut size) => {
                 **size -= 1;
             }
 
-            InnerStageContext::Special(_, ref mut size) => {
+            InnerStageContext::Spawned(_, ref mut size) => {
                 **size -= 1;
             }
         }
     }
+
 
     fn stop(&mut self) {
         match self.inner {
@@ -297,6 +278,7 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
             }
 
             InnerStageContext::Special(ref context, _) => {
+                //context.actions.push_back(SpecialContextAction::TellUpstream(msg));
                 context.actor_ref.tell(msg);
             }
         }
@@ -645,6 +627,7 @@ where
     fn process_actions(&mut self, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
         loop {
             if ctx.fused_push() {
+                //println!("here!");
                 if let Some(event) = self.logic_actions.pop_front() {
                     self.receive_action(event, ctx);
 
@@ -778,11 +761,25 @@ where
 {
     fn stage_receive_signal_started(&mut self, ctx: &mut StageContext<DownstreamStageMsg<A>>) {
         if ctx.fused() {
+            let mut i = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             self.midstream_context = Some(
                 SpecialContext {
                     actions: VecDeque::new(),
-                    actor_ref: ctx.actor_ref().convert(|msg| {
-                        ////println!("converted");
+                    actor_ref: ctx.actor_ref().convert(move |msg| {
+                        match msg {
+                            StageMsg::ProcessLogicActions => {
+                                //println!("yep its a process");
+                            }
+
+                            _ => {}
+                        }
+                        let v = i.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                        //println!("forward: {}", v);
+
+                        //if v == 1789986 {
+                        //    panic!();
+                        //}
                         DownstreamStageMsg::ForwardAny(Box::new(msg))
                     })
                 }

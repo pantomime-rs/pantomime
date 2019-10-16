@@ -10,7 +10,7 @@ where
     A: 'static + Send,
 {
     flows: Option<Vec<Flow<A, A>>>,
-    handles: Vec<PortRef<A>>,
+    handles: Vec<PortRef<A, A, MergeMsg<A>, A>>,
     buffer: VecDeque<(Option<usize>, A)>,
     pulled: bool,
 }
@@ -36,7 +36,7 @@ where
         match msg {
             LogicEvent::Pulled => match self.buffer.pop_front() {
                 Some((Some(id), element)) => {
-                    ctx.tell_port(&self.handles[id], PortAction::Pull);
+                    ctx.tell_port(&mut self.handles[id], PortAction::Pull);
                     ctx.tell(Action::Push(element));
                 }
 
@@ -67,7 +67,7 @@ where
             ))) => {
                 if self.pulled {
                     ctx.tell(Action::Push(element));
-                    ctx.tell_port(&self.handles[id], PortAction::Pull);
+                    ctx.tell_port(&mut self.handles[id], PortAction::Pull);
 
                     self.pulled = false;
                 } else {
@@ -89,7 +89,7 @@ where
             }
 
             LogicEvent::Forwarded(MergeMsg::LogicPortEvent(LogicPortEvent::Started(id))) => {
-                ctx.tell_port(&self.handles[id], PortAction::Pull);
+                ctx.tell_port(&mut self.handles[id], PortAction::Pull);
             }
 
             LogicEvent::Forwarded(MergeMsg::LogicPortEvent(LogicPortEvent::Pulled(id))) => {
@@ -102,15 +102,19 @@ where
                 // @TODO track completed ports (eager?)
             }
 
+            LogicEvent::Forwarded(MergeMsg::LogicPortEvent(LogicPortEvent::Forwarded(id, any))) => {
+                unimplemented!();
+            }
+
             LogicEvent::Forwarded(MergeMsg::LogicPortEvent(LogicPortEvent::Cancelled(id))) => {
-                ctx.tell_port(&self.handles[id], PortAction::Complete(None));
+                ctx.tell_port(&mut self.handles[id], PortAction::Complete(None));
             }
 
             LogicEvent::Cancelled => {
                 // @TODO track already completed ports
 
-                for handle in self.handles.iter() {
-                    ctx.tell_port(handle, PortAction::Complete(None));
+                for mut handle in self.handles.iter_mut() {
+                    ctx.tell_port(&mut handle, PortAction::Complete(None));
                 }
 
                 ctx.tell(Action::Complete(None));
