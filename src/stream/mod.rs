@@ -1,5 +1,6 @@
 use crate::actor::{Actor, ActorContext, ActorRef, ActorSpawnContext, FailureReason};
 use crate::stream::internal::{Downstream, DownstreamStageMsg, InternalStreamCtl, RunnableStream, Stage, StageContext, StageMsg, StageRef};
+use crate::util::CuteRingBuffer;
 use crossbeam::atomic::AtomicCell;
 use std::any::Any;
 use std::collections::VecDeque;
@@ -95,7 +96,7 @@ where
     Ctl: 'static + Send,
 {
     ctx: &'a mut StageContext<'c, StageMsg<In, Out, Ctl>>,
-    actions: &'b mut VecDeque<Action<Out, Ctl>>,
+    stash: &'b mut CuteRingBuffer<StageMsg<In, Out, Ctl>>,
 }
 
 impl<'a, 'b, 'c, In, Out, Ctl> StreamContext<'a, 'b, 'c, In, Out, Ctl>
@@ -104,9 +105,8 @@ where
     Out: 'static + Send,
     Ctl: 'static + Send,
 {
-
     fn tell(&mut self, action: Action<Out, Ctl>) {
-        self.actions.push_back(action); // @TODO measure this vs messaging instead
+        self.stash.push(StageMsg::Action(action));
     }
 
     fn tell_port<Y>(&mut self, handle: &mut PortRef<In, Out, Ctl, Y>, action: PortAction<Y>) where Y: Send {
@@ -158,12 +158,12 @@ impl<UpIn, UpOut, UpCtl, In, Out, Ctl, L: Logic<In, Out, Ctl = Ctl>, C: FnMut(Lo
             let action = self.actions.pop_front();
 
             let mut stage_context = StageContext {
-                inner: internal::InnerStageContext::Special(&mut self.midstream_context, fused_level)
+                inner: internal::InnerStageContext::Special(&mut self.midstream_context)
             };
 
             let mut context = StreamContext {
                 ctx: &mut stage_context,
-                actions: &mut self.actions
+                stash: unimplemented!()
             };
 
             match action {
@@ -204,12 +204,12 @@ impl<UpIn, UpCtl, UpOut, In, Out, Ctl, L: Logic<In, Out, Ctl = Ctl>, C: FnMut(Lo
         let mut fused_level = 0; // @TODO
 
         let mut stage_context = StageContext {
-            inner: internal::InnerStageContext::Special(&mut self.midstream_context, &mut fused_level)
+            inner: internal::InnerStageContext::Special(&mut self.midstream_context)
         };
 
         let mut context = StreamContext {
             ctx: &mut stage_context,
-            actions: &mut self.actions
+            stash: unimplemented!()
         };
 
         match action {

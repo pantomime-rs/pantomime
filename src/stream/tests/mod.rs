@@ -128,11 +128,12 @@ fn test3() {
 
     struct TestReaper {
         n: usize,
+        started: std::time::Instant
     }
 
     impl TestReaper {
         fn new() -> Self {
-            Self { n: 0 }
+            Self { n: 0, started: std::time::Instant::now() }
         }
     }
 
@@ -148,7 +149,7 @@ fn test3() {
                 // 1 + 2 -> 3
                 // 3 + 3 -> 6
 
-                println!("stopping!");
+                println!("stopping! (took {:?})", self.started.elapsed());
                 ctx.stop();
            } else {
            }
@@ -182,11 +183,11 @@ fn test3() {
                                     n * 2
                                 })
                                 .via(Flow::from_logic(Delay::new(Duration::from_millis(1))))*/
-                                .to(Sink::last())
+                                .to(Sink::ignore())
                                 .fuse()
                         );
 
-                        ctx.watch(result, |value| value.unwrap_or_default());
+                        ctx.watch(result, |value| 0);
                     }
 
                     if false {

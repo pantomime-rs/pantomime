@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 
 mod delay;
 mod filter;
+mod fused;
 mod identity;
 mod map;
 mod scan;
