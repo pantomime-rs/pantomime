@@ -15,21 +15,23 @@ impl<A: Send> Logic<A, A> for Identity {
         "Identity"
     }
 
-    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => {
-                ctx.tell(Action::Pull);
+               Action::Pull
             }
 
             LogicEvent::Pushed(element) => {
-                ctx.tell(Action::Push(element));
+                Action::Push(element)
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {
-                ctx.tell(Action::Complete(None));
+                Action::Complete(None)
             }
 
-            LogicEvent::Started | LogicEvent::Forwarded(()) => {}
+            LogicEvent::Started | LogicEvent::Forwarded(()) => {
+                Action::None
+            }
         }
     }
 }

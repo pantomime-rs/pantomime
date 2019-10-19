@@ -26,7 +26,9 @@ pub enum Action<A, Msg> {
     Complete(Option<FailureReason>),
     Pull,
     Push(A),
+    PushAndComplete(A, Option<FailureReason>),
     Forward(Msg),
+    None,
 }
 
 pub enum PortAction<A> {
@@ -57,7 +59,7 @@ pub enum LogicPortEvent<A> {
 /// All stages are backed by a particular `Logic` that defines
 /// the behavior of the stage.
 ///
-/// To preserve the execution gurantees, logic implementations must
+/// To preserve the execution guarantees, logic implementations must
 /// follow these rules:
 ///
 /// * Only push a (single) value after being pulled.
@@ -82,11 +84,12 @@ where
         None
     }
 
+    #[must_use]
     fn receive(
         &mut self,
         msg: LogicEvent<In, Self::Ctl>,
         ctx: &mut StreamContext<In, Out, Self::Ctl>,
-    );
+    ) -> Action<Out, Self::Ctl>;
 }
 
 pub struct StreamContext<'a, 'b, 'c, In, Out, Ctl>
@@ -96,7 +99,7 @@ where
     Ctl: 'static + Send,
 {
     ctx: &'a mut StageContext<'c, StageMsg<In, Out, Ctl>>,
-    stash: &'b mut CuteRingBuffer<StageMsg<In, Out, Ctl>>,
+    stash: &'b mut VecDeque<StageMsg<In, Out, Ctl>>,
 }
 
 impl<'a, 'b, 'c, In, Out, Ctl> StreamContext<'a, 'b, 'c, In, Out, Ctl>
@@ -106,7 +109,7 @@ where
     Ctl: 'static + Send,
 {
     fn tell(&mut self, action: Action<Out, Ctl>) {
-        self.stash.push(StageMsg::Action(action));
+        self.stash.push_back(StageMsg::Action(action));
     }
 
     fn tell_port<Y>(&mut self, handle: &mut PortRef<In, Out, Ctl, Y>, action: PortAction<Y>) where Y: Send {
@@ -173,6 +176,17 @@ impl<UpIn, UpOut, UpCtl, In, Out, Ctl, L: Logic<In, Out, Ctl = Ctl>, C: FnMut(Lo
 
                 Some(Action::Push(el)) => {
                     ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Pushed(self.id, el))));
+                }
+
+                Some(Action::PushAndComplete(el, reason)) => {
+                    ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Pushed(self.id, el))));
+
+                    // @TODO reason
+                    ctx.tell(Action::Forward((self.convert)(LogicPortEvent::Stopped(self.id))));
+                }
+
+                Some(Action::None) => {
+
                 }
 
                 Some(Action::Cancel) => {

@@ -26,19 +26,19 @@ impl<A: Send, B: Clone + Send, F: FnMut(B, A) -> B + Send> Logic<A, B> for Scan<
         "Scan"
     }
 
-    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) -> Action<B, Self::Ctl> {
         match msg {
             LogicEvent::Pushed(element) => {
                 let last = self.last.take().expect("pantomime bug: Scan::last is None");
                 let next = (self.scan)(last, element);
 
-                ctx.tell(Action::Push(next.clone()));
+                self.last = Some(next.clone());
 
-                self.last = Some(next);
+                Action::Push(next)
             }
 
             LogicEvent::Pulled if self.sent => {
-                ctx.tell(Action::Pull);
+               Action::Pull
             }
 
             LogicEvent::Pulled => {
@@ -50,14 +50,16 @@ impl<A: Send, B: Clone + Send, F: FnMut(B, A) -> B + Send> Logic<A, B> for Scan<
                     .expect("pantomime bug: Scan::last is None")
                     .clone();
 
-                ctx.tell(Action::Push(last))
+                Action::Push(last)
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {
-                ctx.tell(Action::Complete(None));
+                Action::Complete(None)
             }
 
-            LogicEvent::Started | LogicEvent::Forwarded(()) => {}
+            LogicEvent::Started | LogicEvent::Forwarded(()) => {
+                Action::None
+            }
         }
     }
 }

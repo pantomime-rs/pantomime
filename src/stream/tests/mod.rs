@@ -103,7 +103,7 @@ fn test2() {
                     }
 
                     let (stream_ref, result) = ctx.spawn(
-                        Source::iterator(1..=100_000_000)
+                        Source::iterator(1..100_000_000)
                             .via(Flow::from_logic(Delay::new(Duration::from_millis(50))))
                             .to(Sink::first()),
                     );
@@ -170,6 +170,28 @@ fn test3() {
 
                         let (_, result) = ctx.spawn(
                             Source::iterator(1..=10_000_000)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                .map(|n| n)
+                                //.map(|n| n)
+                                //.map(|n| n)
+                                //.map(|n| n)
                                 /*.via(Flow::from_logic(Delay::new(Duration::from_millis(1))))
                                 .map(|n| {
                                     println!("one: {}", n);
@@ -183,7 +205,7 @@ fn test3() {
                                     n * 2
                                 })
                                 .via(Flow::from_logic(Delay::new(Duration::from_millis(1))))*/
-                                .to(Sink::ignore())
+                                .to(Sink::last())
                                 .fuse()
                         );
 

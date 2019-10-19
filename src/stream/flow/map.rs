@@ -20,21 +20,23 @@ impl<A: Send, B: Send, F: FnMut(A) -> B + Send> Logic<A, B> for Map<F> {
         "Map"
     }
 
-    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, B, Self::Ctl>) -> Action<B, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => {
-                ctx.tell(Action::Pull);
+                Action::Pull
             }
 
             LogicEvent::Pushed(element) => {
-                ctx.tell(Action::Push((self.map)(element)));
+                Action::Push((self.map)(element))
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {
-                ctx.tell(Action::Complete(None));
+               Action::Complete(None)
             }
 
-            LogicEvent::Started | LogicEvent::Forwarded(()) => {}
+            LogicEvent::Started | LogicEvent::Forwarded(()) => {
+                Action::None
+            }
         }
     }
 }

@@ -32,7 +32,7 @@ where
         "Merge"
     }
 
-    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => match self.buffer.pop_front() {
                 Some((Some(id), element)) => {
@@ -124,5 +124,8 @@ where
                 // @TODO track completions / completed ports
             }
         }
+
+        // @TODO
+        Action::None
     }
 }

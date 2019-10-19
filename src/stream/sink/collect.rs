@@ -28,7 +28,7 @@ where
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
         ctx: &mut StreamContext<A, Vec<A>, Self::Ctl>,
-    ) {
+    ) -> Action<Vec<A>, Self::Ctl> {
         match msg {
             LogicEvent::Pushed(element) => {
                 self.entries
@@ -36,11 +36,13 @@ where
                     .expect("pantomime bug: Collect::entries is None")
                     .push(element);
 
-                ctx.tell(Action::Pull);
+                Action::Pull
             }
 
             LogicEvent::Pulled => {
                 self.pulled = true;
+
+                Action::None
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {
@@ -52,17 +54,19 @@ where
                         .take()
                         .expect("pantomime bug: Collect::entries is None");
 
-                    ctx.tell(Action::Push(entries));
+                    Action::PushAndComplete(entries, None)
+                } else {
+                    Action::Complete(None)
                 }
-
-                ctx.tell(Action::Complete(None));
             }
 
             LogicEvent::Started => {
-                ctx.tell(Action::Pull);
+                Action::Pull
             }
 
-            LogicEvent::Forwarded(()) => {}
+            LogicEvent::Forwarded(()) => {
+                Action::None
+            }
         }
     }
 }

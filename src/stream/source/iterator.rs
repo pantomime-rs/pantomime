@@ -32,26 +32,28 @@ where
         &mut self,
         msg: LogicEvent<(), Self::Ctl>,
         ctx: &mut StreamContext<(), A, Self::Ctl>,
-    ) {
+    ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => match self.iterator.next() {
                 Some(element) => {
-                    ctx.tell(Action::Push(element));
+                    Action::Push(element)
                 }
 
                 None => {
-                    ctx.tell(Action::Complete(None));
+                    Action::Complete(None)
                 }
             },
 
             LogicEvent::Cancelled => {
-                ctx.tell(Action::Complete(None));
+                Action::Complete(None)
             }
 
             LogicEvent::Pushed(())
             | LogicEvent::Stopped
             | LogicEvent::Started
-            | LogicEvent::Forwarded(()) => {}
+            | LogicEvent::Forwarded(()) => {
+                Action::None
+            }
         }
     }
 }

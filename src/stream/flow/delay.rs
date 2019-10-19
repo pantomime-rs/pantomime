@@ -36,46 +36,54 @@ impl<A: Send> Logic<A, A> for Delay {
         Some(0) // @FIXME should this be based on the delay duration?
     }
 
-    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) {
+    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => {
-                ctx.tell(Action::Pull);
+                Action::Pull
             }
 
             LogicEvent::Pushed(element) => {
                 ctx.schedule_delivery("ready", self.delay.clone(), DelayMsg::Ready(element));
 
                 self.state = State::Pushing;
+
+                Action::None
             }
 
-            LogicEvent::Started => {}
+            LogicEvent::Started => {
+                Action::None
+            }
 
             LogicEvent::Stopped => {
                 match self.state {
                     State::Pushing => {
                         self.state = State::Stopping;
+
+                        Action::None
                     }
 
                     State::Waiting => {
-                        ctx.tell(Action::Complete(None));
+                        Action::Complete(None)
                     }
 
-                    State::Stopping => {}
+                    State::Stopping => {
+                        Action::None
+                    }
                 }
             }
 
             LogicEvent::Cancelled => {
-                ctx.tell(Action::Complete(None));
+                Action::Complete(None)
             }
 
             LogicEvent::Forwarded(DelayMsg::Ready(element)) => {
-                ctx.tell(Action::Push(element));
+                self.state = State::Waiting;
 
                 if let State::Stopping = self.state {
-                    ctx.tell(Action::Complete(None));
+                    Action::PushAndComplete(element, None)
+                } else {
+                    Action::Push(element)
                 }
-
-                self.state = State::Waiting;
             }
         }
     }

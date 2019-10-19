@@ -21,18 +21,22 @@ impl<A: Sized> CuteRingBuffer<A> {
         }
     }
 
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    #[inline(always)]
     pub fn is_full(&self) -> bool {
         self.len == CUTE_RING_BUFFER_SIZE
     }
 
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    #[inline(always)]
     pub fn pop(&mut self) -> A {
         //assert!(self.len > 0, "cannot pop from empty buffer");
 
@@ -43,6 +47,7 @@ impl<A: Sized> CuteRingBuffer<A> {
         self.data[front].take().unwrap()
     }
 
+    #[inline(always)]
     pub fn push(&mut self, el: A) {
         //assert!(self.len < CUTE_RING_BUFFER_SIZE, "cannot push into full buffer");
 

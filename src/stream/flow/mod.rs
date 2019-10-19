@@ -1,8 +1,7 @@
-use crate::stream::internal::{IndividualLogic, LogicContainerFacade, UnionLogic};
+use crate::stream::internal::{IndividualLogic, LogicContainerFacade, UnionLogic, Union2Logic};
 use crate::stream::{Logic, Sink, Source};
 use std::any::Any;
 use std::cell::RefCell;
-use std::marker::PhantomData;
 
 mod delay;
 mod filter;
@@ -17,6 +16,8 @@ pub use self::filter::Filter;
 pub use self::identity::Identity;
 pub use self::map::Map;
 pub use self::scan::Scan;
+
+pub(in crate::stream) use fused::Fused;
 
 pub struct Flow<A, B> {
     pub(in crate::stream) logic: Box<dyn LogicContainerFacade<A, B> + Send>,

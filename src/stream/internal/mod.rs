@@ -2,7 +2,7 @@ use crate::actor::{
     Actor, ActorContext, ActorRef, ActorSpawnContext, FailureReason, Signal, Spawnable, StopReason,
     Watchable,
 };
-use crate::stream::flow::Flow;
+use crate::stream::flow::{Flow, Fused};
 use crate::stream::sink::Sink;
 use crate::stream::{Action, Logic, LogicEvent, Stream, StreamComplete, StreamContext, StreamCtl};
 use crate::util::CuteRingBuffer;
@@ -26,6 +26,7 @@ where
         downstream: Downstream<B>,
         context: &mut ActorSpawnContext,
     ) -> Downstream<A>;
+
 }
 
 pub(in crate::stream) struct IndividualLogic<L> {
@@ -33,10 +34,58 @@ pub(in crate::stream) struct IndividualLogic<L> {
     pub(in crate::stream) fused: bool
 }
 
+pub(in crate::stream) struct Union2Logic<A, B, C, UpCtl, DownCtl, Up: Logic<A, B, Ctl = UpCtl>, Down: Logic<B, C, Ctl = DownCtl>>
+where
+    A: Send,
+    B: Send,
+    C: Send,
+    UpCtl: Send,
+    DownCtl: Send,
+    Up: Send,
+    Down: Send {
+    pub(in crate::stream) upstream: Up,
+    pub(in crate::stream) downstream: Down,
+    pub(in crate::stream) phantom: PhantomData<(A, B, C, UpCtl, DownCtl)>
+}
+
 pub(in crate::stream) struct UnionLogic<A, B, C> {
     pub(in crate::stream) upstream: Box<dyn LogicContainerFacade<A, B> + Send>,
     pub(in crate::stream) downstream: Box<dyn LogicContainerFacade<B, C> + Send>,
+}
 
+impl<A, B, C, UpCtl, DownCtl, Up: Logic<A, B, Ctl = UpCtl>, Down: Logic<B, C, Ctl = DownCtl>> LogicContainerFacade<A, C> for Union2Logic<A, B, C, UpCtl, DownCtl, Up, Down>
+where
+    A: 'static + Send,
+    B: 'static + Send,
+    C: 'static + Send,
+    UpCtl: 'static + Send,
+    DownCtl: 'static + Send,
+    Up: 'static + Send,
+    Down: 'static + Send {
+
+    fn fuse(self: Box<Self>) -> Box<dyn LogicContainerFacade<A, C> + Send> {
+        panic!()
+    }
+
+    fn spawn(
+        self: Box<Self>,
+        downstream: Downstream<C>,
+        context: &mut ActorSpawnContext,
+    ) -> Downstream<A> {
+        let down = Box::new(IndividualLogic {
+            logic: self.downstream,
+            fused: false
+        });
+
+        let up = Box::new(IndividualLogic {
+            logic: self.upstream,
+            fused: false
+        });
+
+        let downstream = down.spawn(downstream, context);
+
+        up.spawn(downstream, context)
+    }
 }
 
 impl<A, B, C> LogicContainerFacade<A, C> for UnionLogic<A, B, C>
@@ -91,7 +140,7 @@ where
     Action(Action<B, Msg>),
     ForwardAny(Box<dyn Any + Send>),
     Forward(DownstreamStageMsg<B>),
-    SpecialThing(SpecialContextAction<Msg>),
+    SpecialThing(SpecialContextAction<DownstreamStageMsg<B>>),
     ProcessLogicActions
 }
 
@@ -128,23 +177,34 @@ where
     }
 }
 
+pub(in crate::stream) struct FusedStage<A, B, Msg, L: Logic<A, B, Ctl = Msg>>
+    where
+        A: 'static + Send,
+        B: 'static + Send,
+        Msg: 'static + Send,
+{
+    logic: L,
+    phantom: PhantomData<(A, B, Msg)>
+}
+
 pub(in crate::stream) struct Stage<A, B, Msg, L: Logic<A, B, Ctl = Msg>>
 where
     A: 'static + Send,
     B: 'static + Send,
     Msg: 'static + Send,
 {
-    logic: L,
-    buffer: VecDeque<A>,
+    logic: Box<L>,
+    buffer: Box<VecDeque<A>>,
     midstream_context: Option<SpecialContext<StageMsg<A, B, Msg>>>,
     downstream: Downstream<B>,
+    downstream_actor_ref: Option<ActorRef<DownstreamStageMsg<B>>>,
     downstream_context: Option<SpecialContext<DownstreamStageMsg<B>>>,
     state: StageState,
     pulled: bool,
     upstream_stopped: bool,
     downstream_demand: u64,
     upstream_demand: u64,
-    stash: CuteRingBuffer<StageMsg<A, B, Msg>>
+    stash: Box<VecDeque<StageMsg<A, B, Msg>>>
 }
 
 enum StageState {
@@ -160,7 +220,7 @@ pub(in crate::stream) enum Upstream {
 pub(in crate::stream) enum InnerStageContext<'a, Msg> where Msg: 'static + Send  {
     Spawned(&'a mut ActorContext<Msg>),
     Special(&'a mut SpecialContext<Msg>),
-    Testing(&'a mut CuteRingBuffer<Msg>)
+    Testing(&'a mut (FnMut(SpecialContextAction<Msg>) + Send), &'a ActorRef<Msg>)
 }
 
 pub(in crate::stream) enum SpecialContextAction<Msg> {
@@ -182,7 +242,8 @@ pub(in crate::stream) struct StageContext<'a, Msg> where Msg: 'static + Send {
 impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
     pub(in crate::stream) fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Msg) {
         match self.inner {
-            InnerStageContext::Testing(ref mut buffer) => {
+            InnerStageContext::Testing(ref mut f, _) => {
+                f(SpecialContextAction::ScheduleDelivery(name.as_ref().to_string(), timeout, msg));
             }
 
             InnerStageContext::Spawned(ref mut context) => {
@@ -197,8 +258,8 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn actor_ref(&self) -> ActorRef<Msg> {
         match self.inner {
-            InnerStageContext::Testing(ref buffer) => {
-                unimplemented!()
+            InnerStageContext::Testing(_, actor_ref) => {
+                actor_ref.clone()
             }
 
             InnerStageContext::Spawned(ref context) => {
@@ -213,8 +274,8 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn cancel_delivery<S: AsRef<str>>(&mut self, name: S) {
         match self.inner {
-            InnerStageContext::Testing(ref mut buffer) => {
-                panic!();
+            InnerStageContext::Testing(ref mut f, _) => {
+                f(SpecialContextAction::CancelDelivery(name.as_ref().to_string()));
             }
 
             InnerStageContext::Spawned(ref mut context) => {
@@ -229,7 +290,7 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn fused(&self) -> bool {
         match self.inner {
-            InnerStageContext::Testing(_) => true,
+            InnerStageContext::Testing(_, _) => true,
             InnerStageContext::Spawned(_) => false,
             InnerStageContext::Special(_) => true,
         }
@@ -237,8 +298,8 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn stop(&mut self) {
         match self.inner {
-            InnerStageContext::Testing(_) => {
-                panic!();
+            InnerStageContext::Testing(ref mut f, _) => {
+                f(SpecialContextAction::Stop);
             }
 
             InnerStageContext::Spawned(ref mut context) => {
@@ -253,8 +314,8 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn tell(&mut self, msg: Msg) {
         match self.inner {
-            InnerStageContext::Testing(_) => {
-                panic!();
+            InnerStageContext::Testing(_, actor_ref) => {
+                actor_ref.tell(msg)
             }
             InnerStageContext::Spawned(ref context) => {
                 context.actor_ref().tell(msg);
@@ -269,8 +330,8 @@ impl<'a, Msg> StageContext<'a, Msg> where Msg: 'static + Send {
 
     fn tell_upstream(&mut self, state: &StageState, msg: UpstreamStageMsg) {
         match self.inner {
-            InnerStageContext::Testing(ref buffer) => {
-                panic!();
+            InnerStageContext::Testing(ref mut f, _) => {
+                f(SpecialContextAction::TellUpstream(msg));
             }
 
             InnerStageContext::Spawned(_) => {
@@ -338,38 +399,6 @@ where
         }
     }
 
-    fn process_downstream_ctx(&mut self, enqueue: bool, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
-        loop {
-            let downstream_ctx = self.downstream_context.as_mut().expect("TODO");
-
-            match downstream_ctx.actions.pop_front() {
-                Some(SpecialContextAction::Stop) => {
-                    ctx.stop();
-                }
-
-                Some(SpecialContextAction::ScheduleDelivery(name, duration, msg)) => {
-                    ctx.schedule_delivery(name, duration, StageMsg::Forward(msg));
-                }
-
-                Some(SpecialContextAction::CancelDelivery(name)) => {
-                    ctx.cancel_delivery(name);
-                }
-
-                Some(SpecialContextAction::TellUpstream(msg)) => {
-                    if enqueue {
-                        self.stash.push(upstream_stage_msg_to_stage_msg(msg));
-                    } else {
-                        self.receive_message(upstream_stage_msg_to_stage_msg(msg), ctx);
-                    }
-                }
-
-                None => {
-                    break;
-                }
-            }
-        }
-    }
-
     fn process_midstream_ctx(&mut self, ctx: &mut StageContext<DownstreamStageMsg<A>>) {
         loop {
             let next = self.midstream_context.as_mut().expect("TODO").actions.pop_front();
@@ -399,24 +428,25 @@ where
         }
     }
 
-    fn receive_signal_started(&mut self, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
+    fn receive_signal_started<'z>(&'z mut self, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
         match self.downstream {
             Downstream::Spawned(ref downstream) => {
                 downstream.tell(DownstreamStageMsg::SetUpstream( Upstream::Spawned(ctx.actor_ref().convert(upstream_stage_msg_to_stage_msg)),));
             }
 
             Downstream::Fused(ref mut downstream) => {
+                self.downstream_actor_ref = Some(ctx.actor_ref().convert(StageMsg::Forward));
+
                 let actor_ref = ctx.actor_ref().convert(upstream_stage_msg_to_stage_msg);
 
-                let mut special_context = SpecialContext {
-                    actions: VecDeque::new(),
-                    actor_ref: ctx.actor_ref().convert(StageMsg::Forward)
+                let stash = &mut self.stash;
+
+                let mut stash_push = |action: SpecialContextAction<DownstreamStageMsg<B>>| {
+                    stash.push_back(StageMsg::SpecialThing(action));
                 };
 
                 let mut downstream_ctx = StageContext {
-                    inner: InnerStageContext::Special(
-                        &mut special_context
-                    )
+                    inner: InnerStageContext::Testing(&mut stash_push, self.downstream_actor_ref.as_ref().unwrap())
                 };
 
                 downstream.receive_signal_started(&mut downstream_ctx);
@@ -425,21 +455,16 @@ where
                     DownstreamStageMsg::SetUpstream(Upstream::Fused(actor_ref)),
                     &mut downstream_ctx
                 );
-
-                self.downstream_context = Some(special_context);
-
-                self.process_downstream_ctx(false, ctx);
             }
         }
     }
 
-    #[inline(always)]
     fn receive_single_message(&mut self, msg: StageMsg<A, B, Msg>, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
-        /*if rand::random() && rand::random() && rand::random() &&rand::random() && rand::random() && rand::random()  {
-            panic!();
-        }*/
-
         match msg {
+            StageMsg::SpecialThing(SpecialContextAction::TellUpstream(msg)) => {
+                self.stash.push_back(upstream_stage_msg_to_stage_msg(msg));
+            }
+
             StageMsg::Pull(demand) => {
                 //println!("{} StageMsg::Pull({})", self.logic.name(), demand);
                 // our downstream has requested more elements
@@ -473,12 +498,6 @@ where
                     self.buffer.push_back(el);
                 }
             }
-
-            /*
-            StageMsg::Action(action) => {
-                //println!("{} StageMsg::Action", self.logic.name());
-                self.receive_action(action, ctx);
-            }*/
 
             StageMsg::Action(Action::Pull) => {
                 if self.pulled {
@@ -520,18 +539,22 @@ where
                         }
 
                         Downstream::Fused(ref mut downstream) => {
-                            let downstream_ctx = self.downstream_context.as_mut().unwrap();
+                            let stash = &mut self.stash;
+
+                            let mut stash_push = |action: SpecialContextAction<DownstreamStageMsg<B>>| {
+                                stash.push_back(StageMsg::SpecialThing(action));
+                            };
+
+                            let mut downstream_ctx = StageContext {
+                                inner: InnerStageContext::Testing(&mut stash_push, self.downstream_actor_ref.as_ref().unwrap())
+                            };
 
                             downstream.receive_message(
                                 DownstreamStageMsg::Produce(el),
-                                &mut StageContext {
-                                    inner: InnerStageContext::Special(downstream_ctx)
-                                }
+                                &mut downstream_ctx
                             );
 
                             self.downstream_demand -= 1;
-
-                            self.process_downstream_ctx(true, ctx);
                         }
                     }
 
@@ -551,6 +574,11 @@ where
                 }
             }
 
+            StageMsg::Action(Action::PushAndComplete(el, reason)) => {
+                self.receive_single_message(StageMsg::Action(Action::Push(el)), ctx);
+                self.receive_single_message(StageMsg::Action(Action::Complete(reason)), ctx);
+            }
+
             StageMsg::Action(Action::Complete(reason)) => {
                 match self.downstream {
                     Downstream::Spawned(ref downstream) => {
@@ -560,38 +588,29 @@ where
                     }
 
                     Downstream::Fused(ref mut downstream) => {
-                        let downstream_ctx = self.downstream_context.as_mut().unwrap();
+                        let stash = &mut self.stash;
+
+                        let mut stash_push = |action: SpecialContextAction<DownstreamStageMsg<B>>| {
+                            stash.push_back(StageMsg::SpecialThing(action));
+                        };
+
+                        let mut downstream_ctx = StageContext {
+                            inner: InnerStageContext::Testing(&mut stash_push, self.downstream_actor_ref.as_ref().unwrap())
+                        };
 
                         downstream.receive_message(
                             DownstreamStageMsg::Complete(reason),
-                            &mut StageContext {
-                                inner: InnerStageContext::Special(downstream_ctx)
-                            }
+                            &mut downstream_ctx
                         );
-
-                        self.process_downstream_ctx(true, ctx);
 
                         // @TODO what about stopping?
                     }
                 }
             }
 
-            StageMsg::SpecialThing(SpecialContextAction::Stop) => {
-                ctx.stop();
-            }
+            StageMsg::Action(Action::None) => {
 
-            StageMsg::SpecialThing(SpecialContextAction::ScheduleDelivery(name, duration, msg)) => {
-                ctx.schedule_delivery(name, duration, StageMsg::Action(Action::Forward(msg)));
             }
-
-            StageMsg::SpecialThing(SpecialContextAction::CancelDelivery(name)) => {
-                ctx.cancel_delivery(name);
-            }
-
-            StageMsg::SpecialThing(SpecialContextAction::TellUpstream(msg)) => {
-                self.stash.push(upstream_stage_msg_to_stage_msg(msg));
-            }
-
 
             StageMsg::ProcessLogicActions => {
                 self.process_messages(ctx);
@@ -602,7 +621,7 @@ where
                 match msg.downcast() {
                     Ok(msg) => {
                         println!("{} downcast success", self.logic.name());
-                        self.stash.push(*msg);
+                        self.stash.push_back(*msg);
                     }
 
                     Err(_) => {
@@ -620,18 +639,35 @@ where
                     }
 
                     Downstream::Fused(ref mut downstream) => {
-                        let downstream_ctx = self.downstream_context.as_mut().unwrap();
+                        let stash = &mut self.stash;
+
+                        let mut stash_push = |action: SpecialContextAction<DownstreamStageMsg<B>>| {
+                            stash.push_back(StageMsg::SpecialThing(action));
+                        };
+
+                        let mut downstream_ctx = StageContext {
+                            inner: InnerStageContext::Testing(&mut stash_push, self.downstream_actor_ref.as_ref().unwrap())
+                        };
 
                         downstream.receive_message(
                             msg,
-                            &mut StageContext {
-                                inner: InnerStageContext::Special(downstream_ctx)
-                            }
+                            &mut downstream_ctx
                         );
-
-                        self.process_downstream_ctx(true, ctx);
                     }
                 }
+            }
+
+            StageMsg::SpecialThing(SpecialContextAction::Stop) => {
+                ctx.stop();
+            }
+
+            StageMsg::SpecialThing(SpecialContextAction::ScheduleDelivery(name, duration, msg)) => {
+                unimplemented!();
+                //ctx.schedule_delivery(name, duration, StageMsg::Action(Action::Forward(msg)));
+            }
+
+            StageMsg::SpecialThing(SpecialContextAction::CancelDelivery(name)) => {
+                ctx.cancel_delivery(name);
             }
 
             StageMsg::Cancel => {
@@ -662,11 +698,8 @@ where
         }
     }
 
-    #[inline(always)]
     fn process_messages(&mut self, ctx: &mut StageContext<StageMsg<A, B, Msg>>) {
-        while !self.stash.is_empty() {
-            let msg = self.stash.pop();
-
+        while let Some(msg) = self.stash.pop_front() {
             self.receive_single_message(msg, ctx);
         }
     }
@@ -688,37 +721,33 @@ where
                 }
 
                 other => {
-                    self.stash.push(other);
+                    self.stash.push_back(other);
                 }
             }
         }
     }
 
+    #[inline(always)]
     fn receive_logic_event(
         &mut self,
         event: LogicEvent<A, Msg>,
         ctx: &mut StageContext<StageMsg<A, B, Msg>>,
     ) {
-        {
+        let action = {
             let mut ctx = StreamContext {
                 ctx,
                 stash: &mut self.stash
             };
 
-            self.logic
-                .receive(event, &mut ctx);
-        }
+            self.logic.receive(event, &mut ctx)
+
+
+        };
+
+        self.receive_single_message(StageMsg::Action(action), ctx);
 
         //@TODO
         //self.process_messages(ctx);
-    }
-
-    #[inline(always)]
-    fn receive_action(
-        &mut self,
-        action: Action<B, Msg>,
-        ctx: &mut StageContext<StageMsg<A, B, Msg>>,
-    ) {
     }
 }
 
@@ -839,17 +868,18 @@ where
     ) -> Downstream<A> {
         if self.fused {
             let stage = Stage {
-                logic: self.logic,
-                buffer: VecDeque::with_capacity(1),
+                logic: Box::new(self.logic),
+                buffer: Box::new(VecDeque::with_capacity(1)),
                 midstream_context: None,
                 downstream,
+                downstream_actor_ref: None,
                 downstream_context: None,
                 state: StageState::Waiting,
                 pulled: false,
                 upstream_stopped: false,
                 downstream_demand: 0,
                 upstream_demand: 0,
-                stash: CuteRingBuffer::new()
+                stash: Box::new(VecDeque::new())
             };
 
             Downstream::Fused(
@@ -866,17 +896,18 @@ where
                 });
 
                 let upstream = context.spawn(Stage {
-                    logic: self.logic,
-                    buffer: VecDeque::with_capacity(buffer_size),
+                    logic: Box::new(self.logic),
+                    buffer: Box::new(VecDeque::with_capacity(buffer_size)),
                     midstream_context: None,
                     downstream,
+                    downstream_actor_ref: None,
                     downstream_context: None,
                     state: StageState::Waiting,
                     pulled: false,
                     upstream_stopped: false,
                     downstream_demand: 0,
                     upstream_demand: 0,
-                    stash: CuteRingBuffer::new()
+                    stash: Box::new(VecDeque::new())
                 });
 
                 Downstream::Spawned(upstream.convert(downstream_stage_msg_to_stage_msg))
@@ -995,17 +1026,18 @@ where
         context: &mut ActorSpawnContext,
     ) -> Downstream<()> {
         let stage = Stage {
-            logic: self.logic,
-            buffer: VecDeque::with_capacity(0),
+            logic: Box::new(self.logic),
+            buffer: Box::new(VecDeque::with_capacity(0)),
             midstream_context: None,
             downstream,
+            downstream_actor_ref: None,
             downstream_context: None,
             state: StageState::Waiting,
             pulled: false,
             upstream_stopped: false,
             downstream_demand: 0,
             upstream_demand: 0,
-            stash: CuteRingBuffer::new()
+            stash: Box::new(VecDeque::new())
         };
 
         if self.fused {
@@ -1221,8 +1253,6 @@ where
                         self.process_downstream_ctx(ctx);
 
                         let (downstream, special_context) = self.downstream.as_mut().expect("TODO");
-
-                        let mut fused_level =  0;
 
                         let mut downstream_ctx = StageContext {
                             inner: InnerStageContext::Special(special_context)

@@ -29,35 +29,39 @@ where
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
         ctx: &mut StreamContext<A, Option<A>, Self::Ctl>,
-    ) {
+    ) -> Action<Option<A>, Self::Ctl> {
         match msg {
             LogicEvent::Pushed(element) => {
                 if self.first.is_none() {
                     self.first = Some(element);
                 }
 
-                ctx.tell(Action::Cancel);
+                Action::Cancel
             }
 
             LogicEvent::Pulled => {
                 self.pulled = true;
+
+                Action::None
             }
 
             LogicEvent::Stopped | LogicEvent::Cancelled => {
                 if self.pulled {
                     self.pulled = false;
 
-                    ctx.tell(Action::Push(self.first.take()));
+                    Action::PushAndComplete(self.first.take(), None)
+                } else {
+                    Action::Complete(None)
                 }
-
-                ctx.tell(Action::Complete(None));
             }
 
             LogicEvent::Started => {
-                ctx.tell(Action::Pull);
+               Action::Pull
             }
 
-            LogicEvent::Forwarded(()) => {}
+            LogicEvent::Forwarded(()) => {
+                Action::None
+            }
         }
     }
 }
