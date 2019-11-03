@@ -1,13 +1,14 @@
-use crate::stream::internal::{LogicContainerFacade, SourceLike, UnionLogic};
+use crate::stream::internal::{
+    ContainedLogicImpl, LogicContainerFacade, LogicType, SourceLike, UnionLogic,
+};
 use crate::stream::sink::Sink;
-use crate::stream::{flow, flow::Flow};
+use crate::stream::{flow, flow::Flow, flow::Fused};
 use crate::stream::{Logic, Stream};
 use std::iter::Iterator as Iter;
 use std::marker::PhantomData;
 
 mod iterator;
 mod merge;
-mod merge2;
 mod queue;
 mod repeat;
 
@@ -17,7 +18,7 @@ pub use iterator::Iterator;
 pub use repeat::Repeat;
 
 pub struct Source<A> {
-    pub(in crate::stream) producers: Vec<Box<LogicContainerFacade<(), A> + Send>>,
+    pub(in crate::stream) producers: Vec<LogicType<(), A>>,
 }
 
 impl<A> Source<A>
@@ -30,11 +31,15 @@ where
         L::Ctl: Send,
     {
         Self {
-            producers: vec![Box::new(SourceLike {
-                logic,
-                fused: false,
-                phantom: PhantomData,
-            })],
+            producers: vec![if logic.fusible() {
+                LogicType::Fusible(Box::new(ContainedLogicImpl::new(logic)))
+            } else {
+                LogicType::Spawnable(Box::new(SourceLike {
+                    logic,
+                    fused: false,
+                    phantom: PhantomData,
+                }))
+            }],
         }
     }
 
@@ -60,23 +65,32 @@ where
     where
         Out: 'static + Send,
     {
-        Stream {
-            runnable_stream: Box::new(UnionLogic {
-                upstream: self.producer(),
-                downstream: sink.logic,
-            }),
+        match (self.producer(), sink.logic) {
+            (LogicType::Fusible(upstream), LogicType::Fusible(downstream)) => Stream {
+                runnable_stream: Box::new(Fused::new(upstream, downstream)),
+            },
+
+            (LogicType::Fusible(upstream), LogicType::Spawnable(downstream)) => Stream {
+                runnable_stream: Box::new(UnionLogic {
+                    upstream: upstream.into_facade(),
+                    downstream,
+                }),
+            },
+
+            (LogicType::Spawnable(upstream), LogicType::Fusible(downstream)) => Stream {
+                runnable_stream: Box::new(UnionLogic {
+                    upstream,
+                    downstream: downstream.into_facade(),
+                }),
+            },
+
+            (LogicType::Spawnable(upstream), LogicType::Spawnable(downstream)) => Stream {
+                runnable_stream: Box::new(UnionLogic {
+                    upstream,
+                    downstream,
+                }),
+            },
         }
-    }
-
-    pub fn fuse(mut self) -> Self {
-        let mut producers = Vec::with_capacity(self.producers.len());
-
-        for p in self.producers.into_iter() {
-            producers.push(p.fuse());
-        }
-
-        self.producers = producers;
-        self
     }
 
     // A NOTE FOR MAINTAINERS
@@ -113,21 +127,43 @@ where
     where
         B: 'static + Send,
     {
-        Source {
-            producers: vec![Box::new(UnionLogic {
-                upstream: self.producer(),
-                downstream: flow.logic,
-            })],
+        match (self.producer(), flow.logic) {
+            (LogicType::Fusible(upstream), LogicType::Fusible(downstream)) => Source {
+                producers: vec![LogicType::Fusible(Box::new(ContainedLogicImpl::new(
+                    Fused::new(upstream, downstream),
+                )))],
+            },
+
+            (LogicType::Fusible(upstream), LogicType::Spawnable(downstream)) => Source {
+                producers: vec![LogicType::Spawnable(Box::new(UnionLogic {
+                    upstream: upstream.into_facade(),
+                    downstream,
+                }))],
+            },
+
+            (LogicType::Spawnable(upstream), LogicType::Fusible(downstream)) => Source {
+                producers: vec![LogicType::Spawnable(Box::new(UnionLogic {
+                    upstream,
+                    downstream: downstream.into_facade(),
+                }))],
+            },
+
+            (LogicType::Spawnable(upstream), LogicType::Spawnable(downstream)) => Source {
+                producers: vec![LogicType::Spawnable(Box::new(UnionLogic {
+                    upstream,
+                    downstream,
+                }))],
+            },
         }
     }
 
-    pub(in crate::stream) fn producer(mut self) -> Box<LogicContainerFacade<(), A> + Send> {
+    pub(in crate::stream) fn producer(mut self) -> LogicType<(), A> {
         if self.producers.len() > 1 {
             unimplemented!()
-            /*Box::new(SourceLike {
-                logic: Merge::new(self.producers),
-                phantom: PhantomData,
-            })*/
+        /*Box::new(SourceLike {
+            logic: Merge::new(self.producers),
+            phantom: PhantomData,
+        })*/
         } else {
             self.producers
                 .pop()

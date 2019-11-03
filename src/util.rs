@@ -8,7 +8,7 @@ pub(in crate) struct CuteRingBuffer<A> {
     front: usize,
     back: usize,
     data: [Option<A>; CUTE_RING_BUFFER_SIZE],
-    len: usize
+    len: usize,
 }
 
 impl<A: Sized> CuteRingBuffer<A> {
@@ -17,7 +17,7 @@ impl<A: Sized> CuteRingBuffer<A> {
             data: [None, None, None, None],
             front: 0,
             back: 0,
-            len: 0
+            len: 0,
         }
     }
 

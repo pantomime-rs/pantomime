@@ -289,7 +289,6 @@ impl<'a> ActorSpawnContext<'a> {
 
         r
     }
-
 }
 
 impl<'a, A: Actor> Spawnable<A, ActorRef<A::Msg>> for ActorSpawnContext<'a>
@@ -300,8 +299,6 @@ where
         self.do_spawn(actor)
     }
 }
-
-
 
 impl<Msg, A: Actor> Spawnable<A, ActorRef<A::Msg>> for ActorContext<Msg>
 where
@@ -599,7 +596,6 @@ where
             .or_insert_with(Vec::new)
             .push(Box::new(msg));
 
-
         if new {
             actor_ref.tell_system(SystemMsg::Watch(self.actor_ref().system_ref()));
         }
@@ -709,9 +705,9 @@ where
         }
     }
 
-    pub (in crate::actor) fn empty_with_id(id: usize) -> Self {
+    pub(in crate::actor) fn empty_with_id(id: usize) -> Self {
         Self {
-            inner: Arc::new(Box::new(EmptyActorRefCell { id }))
+            inner: Arc::new(Box::new(EmptyActorRefCell { id })),
         }
     }
 
@@ -923,7 +919,6 @@ where
 
                 if self.context.children.is_empty() {
                     self.transition(SpawnedActorState::Stopped);
-
                 } else {
                     self.transition(SpawnedActorState::Stopping(None));
 
@@ -958,32 +953,30 @@ where
                 self.context.children.remove(&id);
 
                 if self.context.children.is_empty() {
-
                     let mut state = SpawnedActorState::Stopped;
 
                     mem::swap(&mut state, &mut self.context.state);
 
                     match state {
                         SpawnedActorState::Stopping(reason) => {
-                            self.transition(
-                                match reason {
-                                    None         => SpawnedActorState::Stopped,
-                                    Some(reason) => SpawnedActorState::Failed(reason),
-                                }
-                            );
+                            self.transition(match reason {
+                                None => SpawnedActorState::Stopped,
+                                Some(reason) => SpawnedActorState::Failed(reason),
+                            });
                         }
 
                         _ => {
                             panic!("pantomime bug: illegal state in SpawnedActor::receive_system");
                         }
                     }
-
-
                 }
             }
 
             (SpawnedActorState::Failed(_), SystemMsg::Watch(watcher)) => {
-                watcher.tell_system(SystemMsg::ActorStopped(self.context.actor_ref().id(), StopReason::Failed));
+                watcher.tell_system(SystemMsg::ActorStopped(
+                    self.context.actor_ref().id(),
+                    StopReason::Failed,
+                ));
             }
 
             (SpawnedActorState::Stopped, SystemMsg::Watch(watcher)) => {
@@ -1091,7 +1084,10 @@ where
         }
     }
 
-    fn perform_continue(actor_id: usize, execution_state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>) {
+    fn perform_continue(
+        actor_id: usize,
+        execution_state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>,
+    ) {
         match execution_state.swap(SpawnedActorExecutionState::Messaged) {
             SpawnedActorExecutionState::Idle(actor) => {
                 actor.dispatcher.clone().execute(|| actor.run());
@@ -1111,16 +1107,20 @@ where
         }
     }
 
-    fn drain(actor_id: usize,
-             execution_state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>,
-             mailbox: Mailbox<Envelope<Msg>>,
-             failed: bool) {
+    fn drain(
+        actor_id: usize,
+        execution_state: Arc<AtomicCell<SpawnedActorExecutionState<Msg>>>,
+        mailbox: Mailbox<Envelope<Msg>>,
+        failed: bool,
+    ) {
         // @FIXME duplicate code below
 
         let mut maybe_mailbox = Some(mailbox);
 
         loop {
-            let mut mailbox = maybe_mailbox.take().expect("pantomime bug: Option::take failure in SpawnActor::drain");
+            let mut mailbox = maybe_mailbox
+                .take()
+                .expect("pantomime bug: Option::take failure in SpawnActor::drain");
 
             loop {
                 match mailbox.retrieve() {
@@ -1129,16 +1129,14 @@ where
                     }
 
                     Some(Envelope::SystemMsg(SystemMsg::Watch(watcher))) => {
-                        watcher.tell_system(
-                            SystemMsg::ActorStopped(
-                                actor_id,
-                                if failed {
-                                    StopReason::Failed
-                                } else {
-                                    StopReason::Stopped
-                                }
-                            )
-                        );
+                        watcher.tell_system(SystemMsg::ActorStopped(
+                            actor_id,
+                            if failed {
+                                StopReason::Failed
+                            } else {
+                                StopReason::Stopped
+                            },
+                        ));
                     }
 
                     Some(Envelope::SystemMsg(msg)) => {
@@ -1216,7 +1214,8 @@ where
                             let actor_ref = this.context.actor_ref.clone();
 
                             Deferred::new(move || {
-                                actor_ref.tell_system(SystemMsg::Stop(Some(FailureReason::Panicked)));
+                                actor_ref
+                                    .tell_system(SystemMsg::Stop(Some(FailureReason::Panicked)));
                             });
                         };
                     }
@@ -1224,8 +1223,10 @@ where
 
                 match this.context.state {
                     SpawnedActorState::Stopped => {
-                        let cont = match this.execution_state
-                                  .swap(SpawnedActorExecutionState::Stopped(this.mailbox)) {
+                        let cont = match this
+                            .execution_state
+                            .swap(SpawnedActorExecutionState::Stopped(this.mailbox))
+                        {
                             SpawnedActorExecutionState::Idle(actor) => {
                                 actor.dispatcher.clone().execute(|| actor.run());
                                 false
@@ -1240,7 +1241,7 @@ where
                                     this.context.actor_ref.id(),
                                     this.execution_state.clone(),
                                     mailbox,
-                                    false
+                                    false,
                                 );
 
                                 false
@@ -1251,7 +1252,7 @@ where
                                     this.context.actor_ref.id(),
                                     this.execution_state.clone(),
                                     mailbox,
-                                    true
+                                    true,
                                 );
 
                                 false
@@ -1259,15 +1260,21 @@ where
                         };
 
                         if cont {
-                            Self::perform_continue(this.context.actor_ref.id(), this.execution_state.clone());
+                            Self::perform_continue(
+                                this.context.actor_ref.id(),
+                                this.execution_state.clone(),
+                            );
                         } else {
-                            this.context.actor_ref = ActorRef::empty_with_id(this.context.actor_ref.id());
+                            this.context.actor_ref =
+                                ActorRef::empty_with_id(this.context.actor_ref.id());
                         }
                     }
 
                     SpawnedActorState::Failed(_) => {
-                        let cont = match this.execution_state
-                                  .swap(SpawnedActorExecutionState::Failed(this.mailbox)) {
+                        let cont = match this
+                            .execution_state
+                            .swap(SpawnedActorExecutionState::Failed(this.mailbox))
+                        {
                             SpawnedActorExecutionState::Idle(actor) => {
                                 actor.dispatcher.clone().execute(|| actor.run());
                                 false
@@ -1282,7 +1289,7 @@ where
                                     this.context.actor_ref.id(),
                                     this.execution_state.clone(),
                                     mailbox,
-                                    false
+                                    false,
                                 );
 
                                 false
@@ -1293,7 +1300,7 @@ where
                                     this.context.actor_ref.id(),
                                     this.execution_state.clone(),
                                     mailbox,
-                                    true
+                                    true,
                                 );
 
                                 false
@@ -1301,9 +1308,13 @@ where
                         };
 
                         if cont {
-                            Self::perform_continue(this.context.actor_ref.id(), this.execution_state.clone());
+                            Self::perform_continue(
+                                this.context.actor_ref.id(),
+                                this.execution_state.clone(),
+                            );
                         } else {
-                            this.context.actor_ref = ActorRef::empty_with_id(this.context.actor_ref.id());
+                            this.context.actor_ref =
+                                ActorRef::empty_with_id(this.context.actor_ref.id());
                         }
                     }
 
@@ -1445,7 +1456,6 @@ where
                 SpawnedActorState::WaitingForStop => {
                     return;
                 }*/
-
                 _ => match self.stash.pop_front() {
                     Some(Envelope::Msg(msg)) => {
                         self.receive(msg);
@@ -1503,11 +1513,9 @@ where
                 actor.dispatcher.clone().execute(|| actor.run())
             }
 
-            SpawnedActorExecutionState::Running => {
-            }
+            SpawnedActorExecutionState::Running => {}
 
-            SpawnedActorExecutionState::Messaged => {
-            }
+            SpawnedActorExecutionState::Messaged => {}
 
             SpawnedActorExecutionState::Stopped(mailbox) => {
                 self.drain(mailbox, false);
@@ -1525,7 +1533,9 @@ where
         let mut maybe_mailbox = Some(mailbox);
 
         loop {
-            let mut mailbox = maybe_mailbox.take().expect("pantomime bug: Option::take failure in SpawnActor::drain");
+            let mut mailbox = maybe_mailbox
+                .take()
+                .expect("pantomime bug: Option::take failure in SpawnActor::drain");
 
             loop {
                 match mailbox.retrieve() {
@@ -1534,15 +1544,13 @@ where
                     }
 
                     Some(Envelope::SystemMsg(SystemMsg::Watch(watcher))) => {
-                        watcher.tell_system(
-                            SystemMsg::ActorStopped(
-                                self.id,
-                                match failed {
-                                    true  => StopReason::Failed,
-                                    false => StopReason::Stopped
-                                }
-                            )
-                        );
+                        watcher.tell_system(SystemMsg::ActorStopped(
+                            self.id,
+                            match failed {
+                                true => StopReason::Failed,
+                                false => StopReason::Stopped,
+                            },
+                        ));
                     }
 
                     Some(Envelope::SystemMsg(msg)) => {
@@ -1677,7 +1685,7 @@ where
 }
 
 struct EmptyActorRefCell {
-    id: usize
+    id: usize,
 }
 
 impl<Msg> ActorRefInner<Msg> for EmptyActorRefCell

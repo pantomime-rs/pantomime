@@ -37,9 +37,7 @@ where
         ctx: &mut StreamContext<A, (), Self::Ctl>,
     ) -> Action<(), Self::Ctl> {
         match msg {
-            LogicEvent::Pushed(_) => {
-                Action::Pull
-            }
+            LogicEvent::Pushed(_) => Action::Pull,
 
             LogicEvent::Pulled => {
                 self.pulled = true;
@@ -55,9 +53,7 @@ where
                 }
             }
 
-            LogicEvent::Started | LogicEvent::Forwarded(()) => {
-                Action::None
-            }
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

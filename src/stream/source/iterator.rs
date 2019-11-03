@@ -35,25 +35,17 @@ where
     ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => match self.iterator.next() {
-                Some(element) => {
-                    Action::Push(element)
-                }
+                Some(element) => Action::Push(element),
 
-                None => {
-                    Action::Complete(None)
-                }
+                None => Action::Complete(None),
             },
 
-            LogicEvent::Cancelled => {
-                Action::Complete(None)
-            }
+            LogicEvent::Cancelled => Action::Complete(None),
 
             LogicEvent::Pushed(())
             | LogicEvent::Stopped
             | LogicEvent::Started
-            | LogicEvent::Forwarded(()) => {
-                Action::None
-            }
+            | LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

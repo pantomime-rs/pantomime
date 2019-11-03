@@ -33,20 +33,14 @@ where
         ctx: &mut StreamContext<(), A, Self::Ctl>,
     ) -> Action<A, Self::Ctl> {
         match msg {
-            LogicEvent::Pulled => {
-                Action::Push(self.element.clone())
-            }
+            LogicEvent::Pulled => Action::Push(self.element.clone()),
 
-            LogicEvent::Cancelled => {
-                Action::Complete(None)
-            }
+            LogicEvent::Cancelled => Action::Complete(None),
 
             LogicEvent::Pushed(())
             | LogicEvent::Stopped
             | LogicEvent::Started
-            | LogicEvent::Forwarded(()) => {
-                Action::None
-            }
+            | LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

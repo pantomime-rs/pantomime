@@ -7,20 +7,20 @@ pub enum DelayMsg<A> {
 
 pub struct Delay {
     delay: Duration,
-    state: State
+    state: State,
 }
 
 enum State {
     Waiting,
     Pushing,
-    Stopping
+    Stopping,
 }
 
 impl Delay {
     pub fn new(delay: Duration) -> Self {
         Self {
             delay,
-            state: State::Waiting
+            state: State::Waiting,
         }
     }
 }
@@ -36,11 +36,13 @@ impl<A: Send> Logic<A, A> for Delay {
         Some(0) // @FIXME should this be based on the delay duration?
     }
 
-    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) -> Action<A, Self::Ctl> {
+    fn receive(
+        &mut self,
+        msg: LogicEvent<A, Self::Ctl>,
+        ctx: &mut StreamContext<A, A, Self::Ctl>,
+    ) -> Action<A, Self::Ctl> {
         match msg {
-            LogicEvent::Pulled => {
-                Action::Pull
-            }
+            LogicEvent::Pulled => Action::Pull,
 
             LogicEvent::Pushed(element) => {
                 ctx.schedule_delivery("ready", self.delay.clone(), DelayMsg::Ready(element));
@@ -50,31 +52,21 @@ impl<A: Send> Logic<A, A> for Delay {
                 Action::None
             }
 
-            LogicEvent::Started => {
-                Action::None
-            }
+            LogicEvent::Started => Action::None,
 
-            LogicEvent::Stopped => {
-                match self.state {
-                    State::Pushing => {
-                        self.state = State::Stopping;
+            LogicEvent::Stopped => match self.state {
+                State::Pushing => {
+                    self.state = State::Stopping;
 
-                        Action::None
-                    }
-
-                    State::Waiting => {
-                        Action::Complete(None)
-                    }
-
-                    State::Stopping => {
-                        Action::None
-                    }
+                    Action::None
                 }
-            }
 
-            LogicEvent::Cancelled => {
-                Action::Complete(None)
-            }
+                State::Waiting => Action::Complete(None),
+
+                State::Stopping => Action::None,
+            },
+
+            LogicEvent::Cancelled => Action::Complete(None),
 
             LogicEvent::Forwarded(DelayMsg::Ready(element)) => {
                 self.state = State::Waiting;

@@ -56,13 +56,9 @@ where
                 }
             }
 
-            LogicEvent::Started => {
-                Action::Pull
-            }
+            LogicEvent::Started => Action::Pull,
 
-            LogicEvent::Forwarded(()) => {
-                Action::None
-            }
+            LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

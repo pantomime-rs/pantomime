@@ -1,4 +1,7 @@
-use crate::stream::internal::{IndividualLogic, LogicContainerFacade, UnionLogic, Union2Logic};
+use crate::stream::internal::{
+    ContainedLogic, ContainedLogicImpl, IndividualLogic, LogicContainerFacade, LogicType,
+    UnionLogic,
+};
 use crate::stream::{Logic, Sink, Source};
 use std::any::Any;
 use std::cell::RefCell;
@@ -20,8 +23,8 @@ pub use self::scan::Scan;
 pub(in crate::stream) use fused::Fused;
 
 pub struct Flow<A, B> {
-    pub(in crate::stream) logic: Box<dyn LogicContainerFacade<A, B> + Send>,
-    pub(in crate::stream) empty: bool
+    pub(in crate::stream) logic: LogicType<A, B>,
+    pub(in crate::stream) empty: bool,
 }
 
 impl<A, B> Flow<A, B>
@@ -35,30 +38,46 @@ where
         L::Ctl: 'static + Send,
     {
         Self {
-            logic: Box::new(IndividualLogic {
-                logic,
-                fused: false
-            }),
-            empty: false
-        }
-    }
-
-    /// Fuse this flow, meaning this flow and all of its stages
-    /// will be executed by upstream, i.e. in the same actor.
-    ///
-    /// This can often by much more performant for stages that
-    /// are computationally light weight -- those where the
-    /// message passing overhead outweighs the actual work.
-    pub fn fuse(self) -> Self {
-        Self {
-            logic: self.logic.fuse(),
-            empty: self.empty
+            logic: if logic.fusible() {
+                LogicType::Fusible(Box::new(ContainedLogicImpl::new(logic)))
+            } else {
+                LogicType::Spawnable(Box::new(IndividualLogic {
+                    logic,
+                    fused: false,
+                }))
+            },
+            empty: false,
         }
     }
 
     pub fn to<Out: Send>(self, sink: Sink<B, Out>) -> Sink<A, Out> {
-        Sink {
-            logic: Box::new(UnionLogic { upstream: self.logic, downstream: sink.logic }),
+        match (self.logic, sink.logic) {
+            (LogicType::Fusible(upstream), LogicType::Fusible(downstream)) => Sink {
+                logic: LogicType::Fusible(Box::new(ContainedLogicImpl::new(fused::Fused::new(
+                    upstream, downstream,
+                )))),
+            },
+
+            (LogicType::Fusible(upstream), LogicType::Spawnable(downstream)) => Sink {
+                logic: LogicType::Spawnable(Box::new(UnionLogic {
+                    upstream: upstream.into_facade(),
+                    downstream,
+                })),
+            },
+
+            (LogicType::Spawnable(upstream), LogicType::Fusible(downstream)) => Sink {
+                logic: LogicType::Spawnable(Box::new(UnionLogic {
+                    upstream,
+                    downstream: downstream.into_facade(),
+                })),
+            },
+
+            (LogicType::Spawnable(upstream), LogicType::Spawnable(downstream)) => Sink {
+                logic: LogicType::Spawnable(Box::new(UnionLogic {
+                    upstream,
+                    downstream,
+                })),
+            },
         }
     }
 
@@ -77,12 +96,37 @@ where
 
             cast(self).expect("pantomime bug: stream::flow::cast failure")
         } else {
-            Flow {
-                logic: Box::new(UnionLogic {
-                    upstream: self.logic,
-                    downstream: flow.logic,
-                }),
-                empty: false
+            match (self.logic, flow.logic) {
+                (LogicType::Fusible(upstream), LogicType::Fusible(downstream)) => Flow {
+                    logic: LogicType::Fusible(Box::new(ContainedLogicImpl::new(
+                        fused::Fused::new(upstream, downstream),
+                    ))),
+                    empty: false,
+                },
+
+                (LogicType::Fusible(upstream), LogicType::Spawnable(downstream)) => Flow {
+                    logic: LogicType::Spawnable(Box::new(UnionLogic {
+                        upstream: upstream.into_facade(),
+                        downstream,
+                    })),
+                    empty: false,
+                },
+
+                (LogicType::Spawnable(upstream), LogicType::Fusible(downstream)) => Flow {
+                    logic: LogicType::Spawnable(Box::new(UnionLogic {
+                        upstream,
+                        downstream: downstream.into_facade(),
+                    })),
+                    empty: false,
+                },
+
+                (LogicType::Spawnable(upstream), LogicType::Spawnable(downstream)) => Flow {
+                    logic: LogicType::Spawnable(Box::new(UnionLogic {
+                        upstream,
+                        downstream,
+                    })),
+                    empty: false,
+                },
             }
         }
     }

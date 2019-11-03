@@ -128,12 +128,15 @@ fn test3() {
 
     struct TestReaper {
         n: usize,
-        started: std::time::Instant
+        started: std::time::Instant,
     }
 
     impl TestReaper {
         fn new() -> Self {
-            Self { n: 0, started: std::time::Instant::now() }
+            Self {
+                n: 0,
+                started: std::time::Instant::now(),
+            }
         }
     }
 
@@ -143,7 +146,7 @@ fn test3() {
         fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
             self.n += value;
 
-               println!("       N IS  {}", self.n);
+            println!("       N IS  {}", self.n);
             if self.n == 6 || self.n == 1 || true {
                 // 0 + 1 -> 1
                 // 1 + 2 -> 3
@@ -151,8 +154,8 @@ fn test3() {
 
                 println!("stopping! (took {:?})", self.started.elapsed());
                 ctx.stop();
-           } else {
-           }
+            } else {
+            }
         }
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<usize>) {
@@ -169,44 +172,22 @@ fn test3() {
                         }
 
                         let (_, result) = ctx.spawn(
-                            Source::iterator(1..=10_000_000)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
-                                .map(|n| n)
+                            Source::iterator(1..=1000)
                                 //.map(|n| n)
                                 //.map(|n| n)
                                 //.map(|n| n)
                                 /*.via(Flow::from_logic(Delay::new(Duration::from_millis(1))))
                                 .map(|n| {
                                     println!("one: {}", n);
-
                                     n * 2
                                 })
                                 .via(Flow::from_logic(Delay::new(Duration::from_millis(1))))
                                 .map(|n| {
                                     println!("two: {}", n);
-
                                     n * 2
                                 })
                                 .via(Flow::from_logic(Delay::new(Duration::from_millis(1))))*/
-                                .to(Sink::last())
-                                .fuse()
+                                .to(Sink::last()),
                         );
 
                         ctx.watch(result, |value| 0);

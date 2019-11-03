@@ -483,7 +483,6 @@ where
                 } else {
                     println!("ids didnt match");
                 }
-
             }
 
             ReaperMsg::ActorStopped(actor_id, StopReason::Stopped) => {

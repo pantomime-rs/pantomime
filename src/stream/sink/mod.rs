@@ -1,4 +1,6 @@
-use crate::stream::internal::{InternalStreamCtl, IndividualLogic, LogicContainerFacade};
+use crate::stream::internal::{
+    ContainedLogicImpl, IndividualLogic, InternalStreamCtl, LogicContainerFacade, LogicType,
+};
 use crate::stream::Logic;
 use std::marker::PhantomData;
 
@@ -25,7 +27,7 @@ pub struct Sink<A, Out>
 where
     Out: 'static + Send,
 {
-    pub(in crate::stream) logic: Box<dyn LogicContainerFacade<A, Out> + Send>,
+    pub(in crate::stream) logic: LogicType<A, Out>,
 }
 
 impl<In, Out> Sink<In, Out>
@@ -39,16 +41,14 @@ where
         L::Ctl: 'static + Send,
     {
         Self {
-            logic: Box::new(IndividualLogic {
-                logic,
-                fused: false
-            }),
-        }
-    }
-
-    pub fn fuse(self) -> Self {
-        Self {
-            logic: self.logic.fuse(),
+            logic: if logic.fusible() {
+                LogicType::Fusible(Box::new(ContainedLogicImpl::new(logic)))
+            } else {
+                LogicType::Spawnable(Box::new(IndividualLogic {
+                    logic,
+                    fused: false,
+                }))
+            },
         }
     }
 }

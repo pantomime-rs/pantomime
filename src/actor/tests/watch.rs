@@ -114,8 +114,7 @@ fn basic_test() {
                     }
                 },
 
-                ReaperState::Five => panic!("unexpected msg in Five")
-
+                ReaperState::Five => panic!("unexpected msg in Five"),
             }
         }
 
@@ -144,7 +143,6 @@ fn basic_test() {
             reason: FailureReason,
             ctx: &mut ActorContext<Self::Msg>,
         ) -> FailureAction {
-
             ctx.stop();
 
             FailureAction::Resume

@@ -20,11 +20,13 @@ impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
         "TakeWhile"
     }
 
-    fn receive(&mut self, msg: LogicEvent<A, Self::Ctl>, ctx: &mut StreamContext<A, A, Self::Ctl>) -> Action<A, Self::Ctl> {
+    fn receive(
+        &mut self,
+        msg: LogicEvent<A, Self::Ctl>,
+        ctx: &mut StreamContext<A, A, Self::Ctl>,
+    ) -> Action<A, Self::Ctl> {
         match msg {
-            LogicEvent::Pulled => {
-                Action::Pull
-            }
+            LogicEvent::Pulled => Action::Pull,
 
             LogicEvent::Pushed(element) => {
                 if (self.while_fn)(&element) {
@@ -34,13 +36,9 @@ impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
                 }
             }
 
-            LogicEvent::Stopped | LogicEvent::Cancelled => {
-                Action::Complete(None)
-            }
+            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
 
-            LogicEvent::Started | LogicEvent::Forwarded(()) => {
-                Action::None
-            }
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }
