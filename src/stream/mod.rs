@@ -68,7 +68,7 @@ pub enum LogicPortEvent<A> {
 /// It is rare that you'll need to write your own logic, but sometimes
 /// performance or other considerations makes it necessary. Be sure to
 /// look at the numerous stages provided out of the box before
-/// continuing.
+/// proceeding.
 pub trait Logic<In: Send, Out: Send>
 where
     Self: Send + Sized,
@@ -104,6 +104,7 @@ where
     Ctl: 'static + Send,
 {
     ctx: StreamContextType<'a, In, Out, Ctl>,
+    calls: usize
 }
 
 pub(in crate::stream) enum StreamContextType<'a, In, Out, Ctl>
@@ -125,6 +126,7 @@ where
     fn tell(&mut self, action: Action<Out, Ctl>) {
         match self.ctx {
             StreamContextType::Fused(ref mut actions) => {
+                println!("pushed back");
                 actions.push_back(action);
             }
 

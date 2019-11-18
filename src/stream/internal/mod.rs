@@ -15,6 +15,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
+// @TODO config
+const MAX_CALLS: usize = 10;
+
 pub(in crate::stream) enum LogicType<Up, Down> {
     Spawnable(Box<dyn LogicContainerFacade<Up, Down> + Send>),
     Fusible(Box<dyn ContainedLogic<Up, Down> + Send>),
@@ -68,6 +71,7 @@ where
     ) -> Action<Down, Box<Any + Send>> {
         let mut stream_ctx = StreamContext {
             ctx: StreamContextType::Fused(&mut self.actions),
+            calls: ctx.calls
         };
 
         match self.logic.receive(event, &mut stream_ctx) {
@@ -262,6 +266,7 @@ where
     midstream_stopped: bool,
     downstream_demand: u64,
     upstream_demand: u64,
+    calls: usize
 }
 
 enum StageState<A, B, Msg>
@@ -337,6 +342,7 @@ where
         let action = {
             let mut ctx = StreamContext {
                 ctx: StreamContextType::Spawned(ctx),
+                calls: self.calls
             };
 
             self.logic.receive(event, &mut ctx)
@@ -356,13 +362,21 @@ where
         action: Action<B, Msg>,
         ctx: &mut ActorContext<StageMsg<A, B, Msg>>,
     ) {
+        self.calls += 1;
+
         if self.midstream_stopped {
+            return;
+        }
+
+        if self.calls >= MAX_CALLS {
+            ctx.actor_ref().tell(StageMsg::Action(action));
+
             return;
         }
 
         match action {
             Action::Pull => {
-                println!("{} Action::Pull", self.logic.name());
+                //println!("{} Action::Pull", self.logic.name());
 
                 if self.pulled {
                     //println!("already pulled, this is a bug");
@@ -370,7 +384,6 @@ where
                 } else {
                     match self.buffer.pop_front() {
                         Some(el) => {
-                            println!("{} some!", self.logic.name());
                             self.upstream_demand -= 1;
                             self.check_upstream_demand(ctx);
 
@@ -382,7 +395,6 @@ where
                         }
 
                         None => {
-                            println!("{} none!", self.logic.name());
                             self.pulled = true;
                         }
                     }
@@ -390,7 +402,7 @@ where
             }
 
             Action::Push(el) => {
-                println!("{} Action::Push", self.logic.name());
+                //println!("{} Action::Push", self.logic.name());
 
                 if self.downstream_demand == 0 {
                     // @TODO must fail - logic has violated the rules
@@ -405,7 +417,7 @@ where
             }
 
             Action::Forward(msg) => {
-                println!("{} Action::Forward", self.logic.name());
+                //println!("{} Action::Forward", self.logic.name());
                 self.receive_logic_event(LogicEvent::Forwarded(msg), ctx);
             }
 
@@ -445,6 +457,8 @@ where
     type Msg = StageMsg<A, B, Msg>;
 
     fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<StageMsg<A, B, Msg>>) {
+        self.calls = 0;
+
         if let Signal::Started = signal {
             self.downstream.tell(DownstreamStageMsg::SetUpstream(
                 ctx.actor_ref().convert(upstream_stage_msg_to_stage_msg),
@@ -453,6 +467,8 @@ where
     }
 
     fn receive(&mut self, msg: StageMsg<A, B, Msg>, ctx: &mut ActorContext<StageMsg<A, B, Msg>>) {
+        self.calls = 0;
+
         if self.midstream_stopped {
             return;
         }
@@ -609,6 +625,7 @@ where
             midstream_stopped: false,
             downstream_demand: 0,
             upstream_demand: 0,
+            calls: 0
         });
 
         upstream.convert(downstream_stage_msg_to_stage_msg)
@@ -730,6 +747,7 @@ where
             midstream_stopped: false,
             downstream_demand: 0,
             upstream_demand: 0,
+            calls: 0
         };
 
         let midstream = context.spawn(stage);

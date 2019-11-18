@@ -172,7 +172,7 @@ fn test3() {
                         }
 
                         let (_, result) = ctx.spawn(
-                            Source::iterator(1..=1000)
+                            Source::iterator(1..=10_000_000)
                                 //.map(|n| n)
                                 //.map(|n| n)
                                 //.map(|n| n)
@@ -190,7 +190,7 @@ fn test3() {
                                 .to(Sink::last()),
                         );
 
-                        ctx.watch(result, |value| 0);
+                        ctx.watch(result, |value| value.unwrap_or_default());
                     }
 
                     if false {
