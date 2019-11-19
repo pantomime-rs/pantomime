@@ -85,11 +85,11 @@ where
         } else if self.empty {
             // we know that A and B are the same
 
-            cast(flow).expect("pantomime bug: stream::flow::cast failure")
+            cast(flow).expect("pantomime bug: stream::flow::cast (A eq B) failure")
         } else if flow.empty {
             // we know that B and C are the same
 
-            cast(self).expect("pantomime bug: stream::flow::cast failure")
+            cast(self).expect("pantomime bug: stream::flow::cast (B eq C) failure")
         } else {
             match (self.logic, flow.logic) {
                 (LogicType::Fusible(upstream), LogicType::Fusible(downstream)) => Flow {
@@ -167,5 +167,14 @@ where
         let mut flow = Flow::from_logic(Identity);
         flow.empty = true;
         flow
+    }
+}
+
+impl<A> Default for Flow<A, A>
+where
+    A: 'static + Send,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }

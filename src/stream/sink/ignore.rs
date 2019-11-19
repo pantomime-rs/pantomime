@@ -1,6 +1,7 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 use std::marker::PhantomData;
 
+#[derive(Default)]
 pub struct Ignore<A>
 where
     A: Send,

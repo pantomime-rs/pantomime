@@ -43,15 +43,11 @@ impl Actor for MyActor {
     }
 
     fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<MyMsg>) {
-        match signal {
-            Signal::Started => {
-                context.watch(PosixSignals, MyMsg::Signal1);
-                context.watch(PosixSignals, MyMsg::Signal2);
+        if let Signal::Started = signal {
+            context.watch(PosixSignals, MyMsg::Signal1);
+            context.watch(PosixSignals, MyMsg::Signal2);
 
-                context.schedule_delivery("kill", Duration::from_millis(100), MyMsg::DoKill);
-            }
-
-            _ => {}
+            context.schedule_delivery("kill", Duration::from_millis(100), MyMsg::DoKill);
         }
     }
 }

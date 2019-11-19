@@ -46,7 +46,6 @@ pub mod cfg;
 pub mod dispatcher;
 pub mod io;
 pub mod mailbox;
-pub mod pattern;
 pub mod prelude;
 pub mod stream;
 pub mod timer;
@@ -55,8 +54,5 @@ pub mod util;
 #[cfg(feature = "posix-signals-support")]
 pub mod posix_signals;
 
-#[cfg(feature = "testkit")]
-pub mod testkit;
-
-#[cfg(test)]
+#[cfg(any(feature = "testkit", test))]
 pub mod testkit;

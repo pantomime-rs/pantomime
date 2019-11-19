@@ -71,10 +71,8 @@ impl<M: 'static + Send> Probe<M> {
         let start = time::Instant::now();
 
         loop {
-            let next = self.mailbox.retrieve();
-
-            if next.is_some() {
-                return next.unwrap();
+            if let Some(next) = self.mailbox.retrieve() {
+                return next;
             } else if start.elapsed() > limit {
                 panic!("provided function hasn't returned true within {:?}", limit);
             } else {

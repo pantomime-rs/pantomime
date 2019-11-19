@@ -45,7 +45,7 @@ impl<A: Send> Logic<A, A> for Delay {
             LogicEvent::Pulled => Action::Pull,
 
             LogicEvent::Pushed(element) => {
-                ctx.schedule_delivery("ready", self.delay.clone(), DelayMsg::Ready(element));
+                ctx.schedule_delivery("ready", self.delay, DelayMsg::Ready(element));
 
                 self.state = State::Pushing;
 

@@ -1,5 +1,6 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
+#[derive(Default)]
 pub struct Last<A> {
     last: Option<A>,
     pulled: bool,

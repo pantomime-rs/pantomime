@@ -119,8 +119,8 @@ fn basic_test() {
         }
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<ReaperMsg>) {
-            match self.state {
-                ReaperState::One => match signal {
+            if let ReaperState::One = self.state {
+                match signal {
                     Signal::Started => {
                         let actor_ref = ctx.spawn(MyActor { fail: true });
 
@@ -132,9 +132,7 @@ fn basic_test() {
                     _ => {
                         panic!("unexpected signal in One");
                     }
-                },
-
-                _ => {}
+                }
             }
         }
 

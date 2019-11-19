@@ -116,7 +116,7 @@ where
             }
         }
 
-        return result;
+        result
     }
 
     fn up_receive(
@@ -204,7 +204,7 @@ where
             }
         }
 
-        return result;
+        result
     }
 }
 

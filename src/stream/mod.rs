@@ -153,7 +153,7 @@ where
     }
 }
 
-enum StreamCtl {
+pub enum StreamCtl {
     Stop,
     Fail,
 }

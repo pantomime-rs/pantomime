@@ -169,7 +169,7 @@ where
             LogicEvent::Forwarded(msg) => match msg.downcast() {
                 Ok(msg) => self.logic_receive(LogicEvent::Forwarded(*msg), ctx),
 
-                Err(_) => {
+                Err(_e) => {
                     panic!("TODO");
                 }
             },
@@ -835,12 +835,8 @@ where
     type Msg = InternalStreamCtl<Out>;
 
     fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<InternalStreamCtl<Out>>) {
-        match signal {
-            Signal::Started => {
-                self.stream.take().unwrap().run(ctx);
-            }
-
-            _ => {}
+        if let Signal::Started = signal {
+            self.stream.take().unwrap().run(ctx);
         }
     }
 

@@ -162,6 +162,7 @@ where
 
     pub(in crate::actor) system_context: ActorSystemContext,
 
+    #[allow(clippy::type_complexity)]
     pub(in crate::actor) watching:
         HashMap<usize, Vec<Box<dyn Fn(StopReason) -> Msg + 'static + Send>>>,
 
@@ -273,7 +274,7 @@ impl<'a> ActorSpawnContext<'a> {
 
         self.children.insert(actor_ref.id(), actor_ref.system_ref());
 
-        let r = match self.state {
+        match self.state {
             SpawnedActorState::Stopped
             | SpawnedActorState::Failed(_)
             | SpawnedActorState::Stopping(_)
@@ -284,9 +285,7 @@ impl<'a> ActorSpawnContext<'a> {
             }
 
             SpawnedActorState::Active => actor_ref,
-        };
-
-        r
+        }
     }
 }
 
@@ -1217,7 +1216,7 @@ where
                             Deferred::new(move || {
                                 actor_ref
                                     .tell_system(SystemMsg::Stop(Some(FailureReason::Panicked)));
-                            });
+                            })
                         };
                     }
                 }
@@ -1547,9 +1546,10 @@ where
                     Some(Envelope::SystemMsg(SystemMsg::Watch(watcher))) => {
                         watcher.tell_system(SystemMsg::ActorStopped(
                             self.id,
-                            match failed {
-                                true => StopReason::Failed,
-                                false => StopReason::Stopped,
+                            if failed {
+                                StopReason::Failed
+                            } else {
+                                StopReason::Stopped
                             },
                         ));
                     }

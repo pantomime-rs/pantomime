@@ -1,5 +1,6 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
+#[derive(Default)]
 pub struct Collect<A> {
     entries: Option<Vec<A>>,
     pulled: bool,
