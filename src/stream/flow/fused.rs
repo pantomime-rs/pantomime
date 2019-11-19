@@ -1,27 +1,18 @@
-use crate::stream::internal::{ContainedLogic, SpecialContextAction, StageMsg};
-use crate::stream::{Action, Logic, LogicEvent, StreamContext, StreamContextType};
+use crate::stream::internal::ContainedLogic;
+use crate::stream::{
+    Action, Logic, LogicEvent, StreamContext, StreamContextAction, StreamContextType,
+};
 use std::any::Any;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
-const MAX_CALLS: usize = 100;
+const MAX_CALLS: usize = 10;
 
 pub(in crate::stream) enum FusedMsg<A, B> {
     ForwardUp(Box<dyn Any + Send>),
     ForwardDown(Box<dyn Any + Send>),
     DownReceive(LogicEvent<B, Box<dyn Any + Send>>),
-    UpReceive(LogicEvent<A, Box<dyn Any + Send>>)
-}
-
-enum FusedAction<B, C, UpCtl, DownCtl>
-where
-    B: Send,
-    C: Send,
-    UpCtl: Send,
-    DownCtl: Send,
-{
-    UpstreamAction(Action<B, UpCtl>),
-    DownstreamAction(Action<C, DownCtl>),
+    UpReceive(LogicEvent<A, Box<dyn Any + Send>>),
 }
 
 pub(in crate::stream) struct Fused<A, B, C>
@@ -31,9 +22,9 @@ where
     C: 'static + Send,
 {
     up: Box<dyn ContainedLogic<A, B> + Send>,
-    up_actions: VecDeque<Action<B, Box<dyn Any + Send>>>,
+    up_actions: VecDeque<StreamContextAction<B, Box<dyn Any + Send>>>,
     down: Box<dyn ContainedLogic<B, C> + Send>,
-    down_actions: VecDeque<Action<C, Box<dyn Any + Send>>>,
+    down_actions: VecDeque<StreamContextAction<C, Box<dyn Any + Send>>>,
     phantom: PhantomData<(A, B, C)>,
 }
 
@@ -64,21 +55,13 @@ where
         ctx.calls += 1;
 
         if ctx.calls >= MAX_CALLS {
-            //ctx.tell(Action::Forward(FusedMsg::DownReceive(event)));
-
             return Action::Forward(FusedMsg::DownReceive(event));
-            return Action::None;
         }
 
         let mut down_ctx = StreamContext {
             ctx: StreamContextType::Fused(&mut self.down_actions),
-            calls: ctx.calls
+            calls: ctx.calls,
         };
-
-        /*
-        if rand::random() && rand::random() && rand::random() && rand::random() && rand::random() && rand::random() && rand::random() {
-            panic!()
-        }*/
 
         let result = match self.down.receive(event, &mut down_ctx) {
             Action::Pull => self.up_receive(LogicEvent::Pulled, ctx),
@@ -98,24 +81,39 @@ where
 
         while let Some(a) = self.down_actions.pop_front() {
             let next_result = match a {
-                Action::Pull => self.up_receive(LogicEvent::Pulled, ctx),
+                StreamContextAction::Action(Action::Pull) => {
+                    self.up_receive(LogicEvent::Pulled, ctx)
+                }
 
-                Action::Push(el) => Action::Push(el),
+                StreamContextAction::Action(Action::Push(el)) => Action::Push(el),
 
-                Action::None => Action::None,
+                StreamContextAction::Action(Action::None) => Action::None,
 
-                Action::Forward(msg) => {
+                StreamContextAction::Action(Action::Forward(msg)) => {
                     self.down_receive(LogicEvent::Forwarded(msg), ctx)
-                },
+                }
 
-                Action::Cancel => self.up_receive(LogicEvent::Cancelled, ctx),
+                StreamContextAction::Action(Action::Cancel) => {
+                    self.up_receive(LogicEvent::Cancelled, ctx)
+                }
 
-                Action::PushAndComplete(el, reason) => Action::PushAndComplete(el, reason),
+                StreamContextAction::Action(Action::PushAndComplete(el, reason)) => {
+                    Action::PushAndComplete(el, reason)
+                }
 
-                Action::Complete(reason) => Action::Complete(reason),
+                StreamContextAction::Action(Action::Complete(reason)) => Action::Complete(reason),
+
+                StreamContextAction::ScheduleDelivery(name, duration, msg) => {
+                    ctx.schedule_delivery(name, duration, FusedMsg::ForwardDown(msg)); // @TODO namespace name
+
+                    Action::None
+                }
             };
 
-            ctx.tell(next_result);
+            if let Action::None = next_result {
+            } else {
+                ctx.tell(next_result);
+            }
         }
 
         return result;
@@ -129,16 +127,12 @@ where
         ctx.calls += 1;
 
         if ctx.calls >= MAX_CALLS {
-            //ctx.tell(Action::Forward(FusedMsg::UpReceive(event)));
-
             return Action::Forward(FusedMsg::UpReceive(event));
-
-            return Action::None;
         }
 
         let mut up_ctx = StreamContext {
             ctx: StreamContextType::Fused(&mut self.up_actions),
-            calls: ctx.calls
+            calls: ctx.calls,
         };
 
         let result = match self.up.receive(event, &mut up_ctx) {
@@ -152,7 +146,7 @@ where
 
             Action::Cancel => Action::Cancel,
 
-            Action::PushAndComplete(el, reason) => {
+            Action::PushAndComplete(el, _reason) => {
                 // @TODO reason
                 let result = self.down_receive(LogicEvent::Pushed(el), ctx);
                 let follow_up = self.down_receive(LogicEvent::Stopped, ctx);
@@ -162,22 +156,27 @@ where
                 result
             }
 
-            Action::Complete(reason) => self.down_receive(LogicEvent::Stopped, ctx),
+            // @TODO reason
+            Action::Complete(_reason) => self.down_receive(LogicEvent::Stopped, ctx),
         };
 
         while let Some(a) = self.up_actions.pop_front() {
             let next_result = match a {
-                Action::Pull => Action::Pull,
+                StreamContextAction::Action(Action::Pull) => Action::Pull,
 
-                Action::Push(el) => self.down_receive(LogicEvent::Pushed(el), ctx),
+                StreamContextAction::Action(Action::Push(el)) => {
+                    self.down_receive(LogicEvent::Pushed(el), ctx)
+                }
 
-                Action::None => Action::None,
+                StreamContextAction::Action(Action::None) => Action::None,
 
-                Action::Forward(msg) => self.up_receive(LogicEvent::Forwarded(msg), ctx),
+                StreamContextAction::Action(Action::Forward(msg)) => {
+                    self.up_receive(LogicEvent::Forwarded(msg), ctx)
+                }
 
-                Action::Cancel => Action::Cancel,
+                StreamContextAction::Action(Action::Cancel) => Action::Cancel,
 
-                Action::PushAndComplete(el, reason) => {
+                StreamContextAction::Action(Action::PushAndComplete(el, _reason)) => {
                     // @TODO reason
                     let result = self.down_receive(LogicEvent::Pushed(el), ctx);
                     let follow_up = self.down_receive(LogicEvent::Stopped, ctx);
@@ -187,10 +186,22 @@ where
                     result
                 }
 
-                Action::Complete(reason) => self.down_receive(LogicEvent::Stopped, ctx),
+                // @TODO reason
+                StreamContextAction::Action(Action::Complete(_reason)) => {
+                    self.down_receive(LogicEvent::Stopped, ctx)
+                }
+
+                StreamContextAction::ScheduleDelivery(name, duration, msg) => {
+                    ctx.schedule_delivery(name, duration, FusedMsg::ForwardUp(msg)); // @TODO namespace name
+
+                    Action::None
+                }
             };
 
-            ctx.tell(next_result);
+            if let Action::None = next_result {
+            } else {
+                ctx.tell(next_result);
+            }
         }
 
         return result;
@@ -235,13 +246,9 @@ where
                 result
             }
 
-            LogicEvent::Forwarded(FusedMsg::DownReceive(event)) => {
-                self.down_receive(event, ctx)
-            }
+            LogicEvent::Forwarded(FusedMsg::DownReceive(event)) => self.down_receive(event, ctx),
 
-            LogicEvent::Forwarded(FusedMsg::UpReceive(event)) => {
-                self.up_receive(event, ctx)
-            }
+            LogicEvent::Forwarded(FusedMsg::UpReceive(event)) => self.up_receive(event, ctx),
 
             LogicEvent::Forwarded(FusedMsg::ForwardUp(msg)) => {
                 self.up_receive(LogicEvent::Forwarded(msg), ctx)

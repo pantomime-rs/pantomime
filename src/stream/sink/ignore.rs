@@ -34,7 +34,7 @@ where
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, (), Self::Ctl>,
+        _: &mut StreamContext<A, (), Self::Ctl>,
     ) -> Action<(), Self::Ctl> {
         match msg {
             LogicEvent::Pushed(_) => Action::Pull,

@@ -23,7 +23,7 @@ impl<A: Send, B: Send, F: FnMut(A) -> B + Send> Logic<A, B> for Map<F> {
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, B, Self::Ctl>,
+        _: &mut StreamContext<A, B, Self::Ctl>,
     ) -> Action<B, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => Action::Pull,

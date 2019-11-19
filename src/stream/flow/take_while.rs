@@ -1,11 +1,11 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
-struct TakeWhile<F> {
+pub struct TakeWhile<F> {
     while_fn: F,
 }
 
 impl<F> TakeWhile<F> {
-    fn new<A>(while_fn: F) -> Self
+    pub fn new<A>(while_fn: F) -> Self
     where
         F: FnMut(&A) -> bool,
     {
@@ -23,7 +23,7 @@ impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, A, Self::Ctl>,
+        _: &mut StreamContext<A, A, Self::Ctl>,
     ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => Action::Pull,

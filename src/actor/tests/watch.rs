@@ -140,7 +140,7 @@ fn basic_test() {
 
         fn handle_failure(
             &mut self,
-            reason: FailureReason,
+            _reason: FailureReason,
             ctx: &mut ActorContext<Self::Msg>,
         ) -> FailureAction {
             ctx.stop();

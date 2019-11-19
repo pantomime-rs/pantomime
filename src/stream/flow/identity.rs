@@ -18,7 +18,7 @@ impl<A: Send> Logic<A, A> for Identity {
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, A, Self::Ctl>,
+        _: &mut StreamContext<A, A, Self::Ctl>,
     ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => Action::Pull,

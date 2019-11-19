@@ -12,16 +12,12 @@ use fern::colors::{Color, ColoredLevelConfig};
 use mio::{Event, Events, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::{cmp, thread, time, usize};
 
 #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
 use signal_hook::iterator::Signals;
-
-#[cfg(all(feature = "posix-signals-support"))]
-use crate::posix_signals::PosixSignal;
 
 static INITIALIZE_ONCE: Once = Once::new();
 
@@ -157,10 +153,12 @@ impl ActorSystemContext {
         actor_ref
     }
 
+    #[allow(dead_code)]
     pub(crate) fn subscribe(&self, actor_ref: ActorRef<SubscriptionEvent>) {
         self.send(ActorSystemMsg::Subscribe(actor_ref));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn unsubscribe(&self, token: usize) {
         self.send(ActorSystemMsg::Unsubscribe(token));
     }

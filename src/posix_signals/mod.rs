@@ -1,4 +1,4 @@
-use crate::actor::{ActorContext, StopReason, Watchable};
+use crate::actor::{ActorContext, Watchable};
 
 pub enum PosixSignal {
     SIGHUP = 1,
@@ -23,7 +23,7 @@ where
     Msg: 'static + Send,
     F: 'static + Send,
 {
-    fn perform_watch(&mut self, subject: PosixSignals, convert: F) {
+    fn perform_watch(&mut self, _: PosixSignals, convert: F) {
         self.watch_posix_signals_with(convert);
     }
 }

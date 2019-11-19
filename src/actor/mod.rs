@@ -18,6 +18,5 @@ pub use self::actor_ref::{
 pub use self::probe::{Probe, SpawnProbe};
 pub use self::system::{ActiveActorSystem, ActorSystem, ActorSystemContext};
 
-pub(self) use self::actor_ref::*;
-
-pub(crate) use self::system::SubscriptionEvent;
+#[cfg(all(feature = "posix-signals-support"))]
+pub(self) use self::actor_ref::SystemMsg;

@@ -1,12 +1,7 @@
-use crate::actor::{Actor, ActorContext, ActorRef, ActorSpawnContext, FailureReason};
-use crate::stream::internal::{
-    DownstreamStageMsg, InternalStreamCtl, RunnableStream, Stage, StageMsg,
-};
-use crate::util::CuteRingBuffer;
+use crate::actor::{ActorContext, ActorRef, FailureReason};
+use crate::stream::internal::{InternalStreamCtl, RunnableStream, StageMsg};
 use crossbeam::atomic::AtomicCell;
-use std::any::Any;
 use std::collections::VecDeque;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -86,6 +81,7 @@ where
     }
 
     fn fusible(&self) -> bool {
+        // @TODO
         true
     }
 
@@ -104,7 +100,12 @@ where
     Ctl: 'static + Send,
 {
     ctx: StreamContextType<'a, In, Out, Ctl>,
-    calls: usize
+    calls: usize,
+}
+
+pub(in crate::stream) enum StreamContextAction<Out, Ctl> {
+    Action(Action<Out, Ctl>),
+    ScheduleDelivery(String, Duration, Ctl),
 }
 
 pub(in crate::stream) enum StreamContextType<'a, In, Out, Ctl>
@@ -114,7 +115,7 @@ where
     Ctl: 'static + Send,
 {
     Spawned(&'a mut ActorContext<StageMsg<In, Out, Ctl>>),
-    Fused(&'a mut VecDeque<Action<Out, Ctl>>),
+    Fused(&'a mut VecDeque<StreamContextAction<Out, Ctl>>),
 }
 
 impl<'a, 'c, In, Out, Ctl> StreamContext<'a, In, Out, Ctl>
@@ -123,30 +124,14 @@ where
     Out: 'static + Send,
     Ctl: 'static + Send,
 {
-    fn tell(&mut self, action: Action<Out, Ctl>) {
-        match self.ctx {
-            StreamContextType::Fused(ref mut actions) => {
-                println!("pushed back");
-                actions.push_back(action);
-            }
-
-            StreamContextType::Spawned(ref mut ctx) => {
-                ctx.actor_ref().tell(StageMsg::Action(action));
-            }
-        }
-    }
-
-    fn tell_port<Y>(&mut self, handle: &mut PortRef<In, Out, Ctl, Y>, action: PortAction<Y>)
-    where
-        Y: Send,
-    {
-        unimplemented!();
-    }
-
     fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Ctl) {
         match self.ctx {
-            StreamContextType::Fused(_) => {
-                panic!();
+            StreamContextType::Fused(ref mut actions) => {
+                actions.push_back(StreamContextAction::ScheduleDelivery(
+                    name.as_ref().to_string(),
+                    timeout,
+                    msg,
+                ));
             }
 
             StreamContextType::Spawned(ref mut ctx) => {
@@ -155,60 +140,16 @@ where
         }
     }
 
-    /// Spawns a port, which is a flow whose upstream and downstream are both
-    /// this logic.
-    ///
-    /// An id and handle are returned, and these are used to control the spawned
-    /// port.
-    ///
-    /// Port ids are always assigned in a monotonic fashion starting from 0.
-    fn spawn_port<Y, Z, C: FnMut(LogicPortEvent<Y>) -> Ctl>(
-        &mut self,
-        flow: Flow<Y, Z>,
-        convert: C,
-    ) -> PortRef<In, Out, Ctl, Y>
-    where
-        Y: Send,
-    {
-        PortRef {
-            port: unimplemented!(),
+    fn tell(&mut self, action: Action<Out, Ctl>) {
+        match self.ctx {
+            StreamContextType::Fused(ref mut actions) => {
+                actions.push_back(StreamContextAction::Action(action));
+            }
+
+            StreamContextType::Spawned(ref mut ctx) => {
+                ctx.actor_ref().tell(StageMsg::Action(action));
+            }
         }
-    }
-}
-
-trait SpawnedPort<In, Out, Ctl, A>
-where
-    A: 'static + Send,
-    In: 'static + Send,
-    Out: 'static + Send,
-    Ctl: 'static + Send,
-{
-    fn tell(&mut self, action: PortAction<A>, ctx: &mut StreamContext<In, Out, Ctl>);
-}
-
-struct PortRef<In, Out, Ctl, A>
-where
-    A: 'static + Send,
-    In: 'static + Send,
-    Out: 'static + Send,
-    Ctl: 'static + Send,
-{
-    port: Box<dyn SpawnedPort<In, Out, Ctl, A> + Send>,
-}
-
-impl<In, Out, Ctl, PortIn> PortRef<In, Out, Ctl, PortIn>
-where
-    In: Send,
-    Out: Send,
-    Ctl: Send,
-    PortIn: Send,
-{
-    fn id(&self) -> usize {
-        0
-    }
-
-    fn tell(&mut self, action: PortAction<PortIn>, ctx: &mut StreamContext<In, Out, Ctl>) {
-        self.port.tell(action, ctx);
     }
 }
 
@@ -226,7 +167,7 @@ where
 }
 
 pub struct Stream<Out> {
-    runnable_stream: Box<RunnableStream<Out> + Send>,
+    runnable_stream: Box<dyn RunnableStream<Out> + Send>,
 }
 
 impl<Out> Stream<Out>

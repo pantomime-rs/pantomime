@@ -29,7 +29,7 @@ impl<A: Send, B: Clone + Send, F: FnMut(B, A) -> B + Send> Logic<A, B> for Scan<
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, B, Self::Ctl>,
+        _: &mut StreamContext<A, B, Self::Ctl>,
     ) -> Action<B, Self::Ctl> {
         match msg {
             LogicEvent::Pushed(element) => {

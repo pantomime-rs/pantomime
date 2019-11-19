@@ -27,7 +27,7 @@ where
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, Vec<A>, Self::Ctl>,
+        _: &mut StreamContext<A, Vec<A>, Self::Ctl>,
     ) -> Action<Vec<A>, Self::Ctl> {
         match msg {
             LogicEvent::Pushed(element) => {

@@ -1,8 +1,5 @@
-use crate::stream::internal::{
-    ContainedLogicImpl, IndividualLogic, InternalStreamCtl, LogicContainerFacade, LogicType,
-};
+use crate::stream::internal::{ContainedLogicImpl, IndividualLogic, LogicType};
 use crate::stream::Logic;
-use std::marker::PhantomData;
 
 mod collect;
 mod first;
@@ -44,10 +41,7 @@ where
             logic: if logic.fusible() {
                 LogicType::Fusible(Box::new(ContainedLogicImpl::new(logic)))
             } else {
-                LogicType::Spawnable(Box::new(IndividualLogic {
-                    logic,
-                    fused: false,
-                }))
+                LogicType::Spawnable(Box::new(IndividualLogic { logic }))
             },
         }
     }

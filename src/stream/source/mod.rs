@@ -1,6 +1,4 @@
-use crate::stream::internal::{
-    ContainedLogicImpl, LogicContainerFacade, LogicType, SourceLike, UnionLogic,
-};
+use crate::stream::internal::{ContainedLogicImpl, LogicType, SourceLike, UnionLogic};
 use crate::stream::sink::Sink;
 use crate::stream::{flow, flow::Flow, flow::Fused};
 use crate::stream::{Logic, Stream};
@@ -36,7 +34,6 @@ where
             } else {
                 LogicType::Spawnable(Box::new(SourceLike {
                     logic,
-                    fused: false,
                     phantom: PhantomData,
                 }))
             }],
@@ -159,11 +156,7 @@ where
 
     pub(in crate::stream) fn producer(mut self) -> LogicType<(), A> {
         if self.producers.len() > 1 {
-            unimplemented!()
-        /*Box::new(SourceLike {
-            logic: Merge::new(self.producers),
-            phantom: PhantomData,
-        })*/
+            panic!("merge not supported until ports are implemented")
         } else {
             self.producers
                 .pop()

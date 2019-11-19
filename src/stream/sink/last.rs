@@ -1,5 +1,4 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
 pub struct Last<A> {
     last: Option<A>,
@@ -28,7 +27,7 @@ where
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, Option<A>, Self::Ctl>,
+        _: &mut StreamContext<A, Option<A>, Self::Ctl>,
     ) -> Action<Option<A>, Self::Ctl> {
         match msg {
             LogicEvent::Pushed(element) => {

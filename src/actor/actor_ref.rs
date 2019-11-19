@@ -7,7 +7,6 @@ use downcast_rs::Downcast;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
-use std::marker::PhantomData;
 use std::mem;
 use std::panic;
 use std::rc::Rc;
@@ -17,7 +16,7 @@ use std::time::Duration;
 use std::usize;
 
 #[cfg(feature = "posix-signals-support")]
-use crate::posix_signals::{PosixSignal, PosixSignals};
+use crate::posix_signals::PosixSignal;
 
 pub enum SystemMsg {
     Stop(Option<FailureReason>),
@@ -570,10 +569,12 @@ where
 
         self.watching_posix_signals.push(Box::new(convert));
 
-        self.system_context
-            .tell_reaper_monitor(system::ReaperMsg::WatchPosixSignals(
-                self.actor_ref().system_ref(),
-            ));
+        if new {
+            self.system_context
+                .tell_reaper_monitor(system::ReaperMsg::WatchPosixSignals(
+                    self.actor_ref().system_ref(),
+                ));
+        }
     }
 
     #[cfg(all(feature = "posix-signals-support", target_family = "windows"))]

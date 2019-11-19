@@ -23,7 +23,7 @@ impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for Filter<F> {
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        ctx: &mut StreamContext<A, A, Self::Ctl>,
+        _: &mut StreamContext<A, A, Self::Ctl>,
     ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => Action::Pull,

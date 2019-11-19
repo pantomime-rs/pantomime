@@ -1,8 +1,5 @@
-use crate::stream::internal::{
-    ContainedLogic, ContainedLogicImpl, IndividualLogic, LogicContainerFacade, LogicType,
-    UnionLogic,
-};
-use crate::stream::{Logic, Sink, Source};
+use crate::stream::internal::{ContainedLogicImpl, IndividualLogic, LogicType, UnionLogic};
+use crate::stream::{Logic, Sink};
 use std::any::Any;
 use std::cell::RefCell;
 
@@ -19,6 +16,7 @@ pub use self::filter::Filter;
 pub use self::identity::Identity;
 pub use self::map::Map;
 pub use self::scan::Scan;
+pub use self::take_while::TakeWhile;
 
 pub(in crate::stream) use fused::Fused;
 
@@ -41,10 +39,7 @@ where
             logic: if logic.fusible() {
                 LogicType::Fusible(Box::new(ContainedLogicImpl::new(logic)))
             } else {
-                LogicType::Spawnable(Box::new(IndividualLogic {
-                    logic,
-                    fused: false,
-                }))
+                LogicType::Spawnable(Box::new(IndividualLogic { logic }))
             },
             empty: false,
         }
@@ -172,14 +167,5 @@ where
         let mut flow = Flow::from_logic(Identity);
         flow.empty = true;
         flow
-    }
-}
-
-impl<A> Flow<(), A>
-where
-    A: 'static + Send,
-{
-    pub fn from_source(source: Source<A>) -> Self {
-        unimplemented!()
     }
 }

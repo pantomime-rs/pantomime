@@ -1,5 +1,4 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
 pub struct Repeat<A>
 where
@@ -30,7 +29,7 @@ where
     fn receive(
         &mut self,
         msg: LogicEvent<(), Self::Ctl>,
-        ctx: &mut StreamContext<(), A, Self::Ctl>,
+        _: &mut StreamContext<(), A, Self::Ctl>,
     ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => Action::Push(self.element.clone()),
