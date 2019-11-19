@@ -7,7 +7,9 @@ struct MyActor {
     actor_ref: ActorRef<usize>,
 }
 
-impl Actor<()> for MyActor {
+impl Actor for MyActor {
+    type Msg = ();
+
     fn receive(&mut self, _: (), context: &mut ActorContext<()>) {
         if self.id == 1 {
             panic!();
@@ -32,7 +34,7 @@ impl Actor<()> for MyActor {
                 }
             }
 
-            Signal::Failed(_) => {
+            Signal::Stopped(Some(_)) => {
                 self.actor_ref.tell(0);
             }
 
@@ -53,7 +55,9 @@ impl Drop for MyActor {
 fn test() {
     struct TestReaper;
 
-    impl Actor<()> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = ();
+
         fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {

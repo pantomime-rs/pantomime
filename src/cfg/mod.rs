@@ -148,6 +148,7 @@ pub struct ActorSystemConfig {
     pub default_dispatcher_logic_work_stealing_parallelism_factor: f32,
     pub default_dispatcher_logic_work_stealing_task_queue_fifo: bool,
     pub default_mailbox_logic: String,
+    pub default_streams_buffer_size: usize,
     pub log_config_on_start: bool,
     pub mio_event_capacity: usize,
     pub mio_poll_error_delay_ms: u64,
@@ -182,10 +183,11 @@ impl ActorSystemConfig {
     pub fn new(cfg: &Config) -> io::Result<Self> {
         #[cfg(feature = "posix-signals-support")]
         fn posix_signal(sig: String) -> i32 {
+            // @FIXME support numeric specification
             match sig.as_str() {
-                "SIGHUP"  => crate::posix_signals::SIGHUP,
-                "SIGINT"  => crate::posix_signals::SIGINT,
-                "SIGTERM" => crate::posix_signals::SIGTERM,
+                "SIGHUP"  => crate::posix_signals::PosixSignal::SIGHUP as i32,
+                "SIGINT"  => crate::posix_signals::PosixSignal::SIGINT as i32,
+                "SIGTERM" => crate::posix_signals::PosixSignal::SIGTERM as i32,
                 _         => 0,
             }
         }
@@ -198,13 +200,14 @@ impl ActorSystemConfig {
             ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_FACTOR", "1.0"),
             ("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_TASK_QUEUE_FIFO",    "true"),
             ("PANTOMIME_DEFAULT_MAILBOX_LOGIC",                                     "conqueue"),
+            ("PANTOMIME_DEFAULT_STREAMS_BUFFER_SIZE",                               "15"),
             ("PANTOMIME_LOG_CONFIG_ON_START",                                       "false"),
             ("PANTOMIME_MIO_EVENT_CAPACITY",                                        "1024"),
             ("PANTOMIME_MIO_POLL_ERROR_DELAY_MS",                                   "1000"),
             ("PANTOMIME_NUM_CPUS",                                                  "0"),
             ("PANTOMIME_PROCESS_EXIT",                                              "true"),
             ("PANTOMIME_TICKER_INTERVAL_MS",                                        "10"),
-            ("PANTOMIME_POSIX_SIGNALS",                                             "SIGINT,SIGTERM,SIGHUP,SIGUSR1,SIGUSR2"),
+            ("PANTOMIME_POSIX_SIGNALS",                                             "SIGINT,SIGTERM,SIGHUP"),
             ("PANTOMIME_POSIX_EXIT_SIGNALS",                                        "SIGINT,SIGTERM"),
         ]);
 
@@ -216,6 +219,7 @@ impl ActorSystemConfig {
             default_dispatcher_logic_work_stealing_parallelism_factor:  cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_PARALLELISM_FACTOR")?,
             default_dispatcher_logic_work_stealing_task_queue_fifo:     cfg.parsed("PANTOMIME_DEFAULT_DISPATCHER_LOGIC_WORK_STEALING_TASK_QUEUE_FIFO")?,
             default_mailbox_logic:                                      cfg.parsed("PANTOMIME_DEFAULT_MAILBOX_LOGIC")?,
+            default_streams_buffer_size:                                cfg.parsed("PANTOMIME_DEFAULT_STREAMS_BUFFER_SIZE")?,
             log_config_on_start:                                        cfg.parsed("PANTOMIME_LOG_CONFIG_ON_START")?,
             mio_event_capacity:                                         cfg.parsed("PANTOMIME_MIO_EVENT_CAPACITY")?,
             mio_poll_error_delay_ms:                                    cfg.parsed("PANTOMIME_MIO_POLL_ERROR_DELAY_MS")?,

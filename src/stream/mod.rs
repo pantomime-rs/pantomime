@@ -1,384 +1,180 @@
-pub mod disconnected;
+use crate::actor::{ActorContext, ActorRef, FailureReason};
+use crate::stream::internal::{InternalStreamCtl, RunnableStream, StageMsg};
+use crossbeam::atomic::AtomicCell;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::Duration;
+
 pub mod flow;
-pub mod oxidized;
 pub mod sink;
 pub mod source;
+
+pub use crate::stream::flow::Flow;
+pub use crate::stream::sink::Sink;
+pub use crate::stream::source::Source;
+
+mod internal;
 
 #[cfg(test)]
 mod tests;
 
-pub use disconnected::Disconnected;
-pub use flow::*;
-pub use sink::tell::TellEvent;
-pub use sink::*;
-pub use source::*;
-
-use crate::actor::{ActorContext, ActorSystemContext};
-use crate::dispatcher::{Dispatcher, Trampoline};
-use filter::Filter;
-use oxidized::{Consumer, Producer};
-
-pub struct StreamContext {
-    dispatcher: Dispatcher,
-    system_context: ActorSystemContext,
+pub enum Action<A, Msg> {
+    Cancel,
+    Complete(Option<FailureReason>),
+    Pull,
+    Push(A),
+    PushAndComplete(A, Option<FailureReason>),
+    Forward(Msg),
+    None,
 }
 
-impl StreamContext {
-    pub fn dispatcher(&self) -> &Dispatcher {
-        &self.dispatcher
-    }
-
-    pub fn system_context(&self) -> &ActorSystemContext {
-        &self.system_context
-    }
-
-    fn new(dispatcher: &Dispatcher, system_context: &ActorSystemContext) -> Self {
-        Self {
-            dispatcher: dispatcher.clone(),
-            system_context: system_context.clone(),
-        }
-    }
+pub enum PortAction<A> {
+    Cancel,
+    Complete(Option<FailureReason>),
+    Pull,
+    Push(A),
 }
 
-impl Clone for StreamContext {
-    fn clone(&self) -> Self {
-        Self {
-            dispatcher: self.dispatcher.clone(),
-            system_context: self.system_context.clone(),
-        }
-    }
+pub enum LogicEvent<A, Msg> {
+    Pulled,
+    Pushed(A),
+    Started,
+    Stopped,
+    Cancelled,
+    Forwarded(Msg),
 }
 
-pub struct Error; // TODO
-
-pub enum Terminated {
-    Completed,
-    Failed(Error),
+pub enum LogicPortEvent<A> {
+    Pulled(usize),
+    Pushed(usize, A),
+    Started(usize),
+    Stopped(usize),
+    Cancelled(usize),
 }
 
-pub trait Stage<A>: Producer<A>
+/// All stages are backed by a particular `Logic` that defines
+/// the behavior of the stage.
+///
+/// To preserve the execution guarantees, logic implementations must
+/// follow these rules:
+///
+/// * Only push a (single) value after being pulled.
+///
+/// It is rare that you'll need to write your own logic, but sometimes
+/// performance or other considerations makes it necessary. Be sure to
+/// look at the numerous stages provided out of the box before
+/// proceeding.
+pub trait Logic<In: Send, Out: Send>
 where
-    A: 'static + Send,
+    Self: Send + Sized,
+    Self::Ctl: Send,
 {
-    #[must_use]
-    fn filter<F: FnMut(&A) -> bool>(
-        self,
-        filter: F,
-    ) -> Attached<A, A, Filter<A, F>, Self, Disconnected>
-    where
-        F: 'static + Send,
-    {
-        Attached::new(Filter::new(filter))(self)
+    type Ctl;
+
+    fn name(&self) -> &'static str;
+
+    /// Defines the buffer size for the stage that runs this logic. Elements
+    /// are buffered to amortize the cost of passing elements over asynchronous
+    /// boundaries.
+    fn buffer_size(&self) -> Option<usize> {
+        None
+    }
+
+    fn fusible(&self) -> bool {
+        // @TODO
+        true
     }
 
     #[must_use]
-    fn filter_map<B, F: FnMut(A) -> Option<B>>(
-        self,
-        filter_map: F,
-    ) -> Attached<A, B, FilterMap<A, B, F>, Self, Disconnected>
-    where
-        A: 'static + Send,
-        B: 'static + Send,
-        F: 'static + Send,
-    {
-        Attached::new(FilterMap::new(filter_map))(self)
-    }
-
-    /// Inserts a stage that converts incoming elements using
-    /// the provided function and emits them downstream,
-    /// 1 to 1.
-    #[must_use]
-    fn map<B, F: FnMut(A) -> B>(self, map: F) -> Attached<A, B, Map<A, B, F>, Self, Disconnected>
-    where
-        A: 'static + Send,
-        B: 'static + Send,
-        F: 'static + Send,
-    {
-        Attached::new(Map::new(map))(self)
-    }
-
-    #[must_use]
-    fn take_while<F: FnMut(&A) -> bool>(
-        self,
-        func: F,
-    ) -> Attached<A, A, TakeWhile<A, F>, Self, Disconnected>
-    where
-        A: 'static + Send,
-        F: 'static + Send,
-    {
-        Attached::new(TakeWhile::new(func))(self)
-    }
-
-    /// Inserts a stage that decouples upstream and downstream,
-    /// allowing them to execute concurrently. This is similar
-    /// to an asynchronous boundary in other streaming
-    /// abstractions.
-    ///
-    /// To do this, a `Detached` flow is created which buffers
-    /// elements from upstream and sends them downstream in
-    /// batches. This work is coordinated by an actor to manage
-    /// signals from both directions.
-    #[must_use]
-    fn detach(self) -> Detached<A, A, (), Identity, Self, Disconnected> {
-        self.via(Detached::new(Identity))
-    }
-
-    #[must_use]
-    fn via<B, Down: Flow<A, B>, F: FnOnce(Self) -> Down>(self, f: F) -> Down
-    where
-        B: 'static + Send,
-    {
-        f(self)
-    }
-
-    #[must_use]
-    fn to<Down: Sink<A>, F: FnOnce(Self) -> Down>(self, sink: F) -> Down {
-        sink(self)
-    }
+    fn receive(
+        &mut self,
+        msg: LogicEvent<In, Self::Ctl>,
+        ctx: &mut StreamContext<In, Out, Self::Ctl>,
+    ) -> Action<Out, Self::Ctl>;
 }
 
-pub trait Source<A>: Stage<A>
+pub struct StreamContext<'a, In, Out, Ctl>
 where
-    A: 'static + Send,
+    In: 'static + Send,
+    Out: 'static + Send,
+    Ctl: 'static + Send,
 {
+    ctx: StreamContextType<'a, In, Out, Ctl>,
+    calls: usize,
 }
 
-pub trait Sink<A>: Consumer<A>
+pub(in crate::stream) enum StreamContextAction<Out, Ctl> {
+    Action(Action<Out, Ctl>),
+    ScheduleDelivery(String, Duration, Ctl),
+}
+
+pub(in crate::stream) enum StreamContextType<'a, In, Out, Ctl>
 where
-    A: 'static + Send,
+    In: 'static + Send,
+    Out: 'static + Send,
+    Ctl: 'static + Send,
 {
-    fn start(self, stream_context: &StreamContext) -> Trampoline;
+    Spawned(&'a mut ActorContext<StageMsg<In, Out, Ctl>>),
+    Fused(&'a mut VecDeque<StreamContextAction<Out, Ctl>>),
 }
 
-pub trait Flow<A, B>: Consumer<A> + Stage<B>
+impl<'a, 'c, In, Out, Ctl> StreamContext<'a, In, Out, Ctl>
 where
-    A: 'static + Send,
-    B: 'static + Send,
+    In: 'static + Send,
+    Out: 'static + Send,
+    Ctl: 'static + Send,
 {
-}
+    fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Ctl) {
+        match self.ctx {
+            StreamContextType::Fused(ref mut actions) => {
+                actions.push_back(StreamContextAction::ScheduleDelivery(
+                    name.as_ref().to_string(),
+                    timeout,
+                    msg,
+                ));
+            }
 
-pub trait SpawnStream {
-    fn spawn_stream<M, Stream: Sink<M>>(&self, stream: Stream)
-    where
-        M: 'static + Send,
-        Stream: 'static + Send;
-}
-
-impl<N> SpawnStream for ActorContext<N>
-where
-    N: 'static + Send,
-{
-    fn spawn_stream<M, Stream: Sink<M>>(&self, stream: Stream)
-    where
-        M: 'static + Send,
-        Stream: 'static + Send,
-    {
-        let context = self.system_context();
-        let dispatcher = context.dispatcher();
-        let inner_dispatcher = dispatcher.clone();
-        let stream_context = StreamContext::new(&dispatcher, &context);
-
-        dispatcher.execute(move || {
-            inner_dispatcher.execute_trampoline(stream.start(&stream_context));
-        });
-    }
-}
-
-impl SpawnStream for StreamContext {
-    fn spawn_stream<M, Stream: Sink<M>>(&self, stream: Stream)
-    where
-        M: 'static + Send,
-        Stream: 'static + Send,
-    {
-        let inner_dispatcher = self.dispatcher.clone();
-        let stream_context = StreamContext::new(&self.dispatcher, &self.system_context);
-
-        self.dispatcher.execute(move || {
-            inner_dispatcher.execute_trampoline(stream.start(&stream_context));
-        });
-    }
-}
-
-#[cfg(test)]
-mod temp_tests {
-    use crate::actor::*;
-    use crate::stream::for_each::ForEach;
-    use crate::stream::iter::Iter;
-    use crate::stream::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    fn spin(value: usize) -> usize {
-        let start = std::time::Instant::now();
-
-        while start.elapsed().subsec_millis() < 10 {}
-
-        value
-    }
-
-    #[test]
-    fn test_for_each_add() {
-        struct TestReaper;
-
-        impl Actor<()> for TestReaper {
-            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
-
-            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {
-                    let iterator = 0..2000;
-
-                    let completed = Arc::new(AtomicBool::new(false));
-                    let sum = Arc::new(AtomicUsize::new(0));
-
-                    {
-                        let completed = completed.clone();
-                        let sum = sum.clone();
-
-                        let stream = Iter::new(iterator)
-                            .map(spin)
-                            .detach()
-                            .map(spin)
-                            .to(ForEach::new(move |n| {
-                                sum.fetch_add(n, Ordering::SeqCst);
-                            }))
-                            .watch_termination(move |terminated| match terminated {
-                                Terminated::Completed => {
-                                    completed.store(true, Ordering::SeqCst);
-                                }
-
-                                Terminated::Failed(_) => {
-                                    panic!("unexpected");
-                                }
-                            });
-
-                        ctx.spawn_stream(stream);
-                    }
-
-                    loop {
-                        // @TODO remove
-                        std::thread::sleep(std::time::Duration::from_millis(1000));
-                    }
-                }
+            StreamContextType::Spawned(ref mut ctx) => {
+                ctx.schedule_delivery(name, timeout, StageMsg::Action(Action::Forward(msg)));
             }
         }
-        if true {
-            return;
-        };
-
-        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
 
-    #[test]
-    fn test() {
-        struct TestReaper;
+    fn tell(&mut self, action: Action<Out, Ctl>) {
+        match self.ctx {
+            StreamContextType::Fused(ref mut actions) => {
+                actions.push_back(StreamContextAction::Action(action));
+            }
 
-        impl Actor<()> for TestReaper {
-            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
-
-            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {
-                    let iterator = 0..2000;
-
-                    let stream = Iter::new(iterator)
-                        .map(spin)
-                        .detach()
-                        .map(spin)
-                        .to(ForEach::new(|_n| {}));
-
-                    ctx.spawn_stream(stream);
-
-                    loop {
-                        // @TODO remove
-                        std::thread::sleep(std::time::Duration::from_millis(1000));
-                    }
-                }
+            StreamContextType::Spawned(ref mut ctx) => {
+                ctx.actor_ref().tell(StageMsg::Action(action));
             }
         }
-
-        if true {
-            return;
-        };
-
-        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
     }
+}
 
-    #[test]
-    fn test2() {
-        struct TestReaper;
+pub enum StreamCtl {
+    Stop,
+    Fail,
+}
 
-        impl Actor<()> for TestReaper {
-            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
+struct StreamComplete<Out>
+where
+    Out: 'static + Send,
+{
+    controller_ref: ActorRef<InternalStreamCtl<Out>>,
+    state: Arc<AtomicCell<Option<Out>>>,
+}
 
-            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {
-                    let my_source = Sources::iterator(0..10_000);
+pub struct Stream<Out> {
+    runnable_stream: Box<dyn RunnableStream<Out> + Send>,
+}
 
-                    fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, usize> {
-                        upstream
-                            .filter(|&n| n % 3 == 0)
-                            .filter(|&n| n % 5 == 0)
-                            .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
-                            .map(|n| n * 2)
-                    }
-
-                    let my_sink = Sinks::for_each(|n: usize| println!("sink received {}", n));
-
-                    ctx.spawn_stream(my_source.via(my_flow).to(my_sink));
-
-                    loop {
-                        // @TODO remove
-                        std::thread::sleep(std::time::Duration::from_millis(1000));
-                    }
-                }
-            }
-        }
-        if true {
-            return;
-        };
-
-        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
-    }
-
-    #[test]
-    fn test3() {
-        struct TestReaper;
-
-        impl Actor<()> for TestReaper {
-            fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
-
-            fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
-                if let Signal::Started = signal {
-                    let my_source = Sources::iterator(0..100_000_000);
-
-                    fn my_flow<Up: Stage<usize>>(upstream: Up) -> impl Flow<usize, ()> {
-                        upstream
-                            .filter(|&n| n % 3 == 0)
-                            .filter(|&n| n % 5 == 0)
-                            .filter_map(|n| if n % 7 == 0 { None } else { Some(n * 2) })
-                            .map(|n| n * 2)
-                            .map(|n| {
-                                if n == 399_999_960 {
-                                    std::process::exit(0);
-                                }
-                            })
-                    }
-
-                    let my_sink = Sinks::ignore();
-
-                    ctx.spawn_stream(my_source.via(my_flow).to(my_sink));
-
-                    loop {
-                        // @TODO remove
-                        std::thread::sleep(std::time::Duration::from_millis(1000));
-                    }
-                }
-            }
-        }
-
-        if true {
-            return;
-        }
-
-        assert!(ActorSystem::new().spawn(TestReaper).is_ok());
+impl<Out> Stream<Out>
+where
+    Out: 'static + Send,
+{
+    pub(in crate::stream) fn run(self, context: &mut ActorContext<InternalStreamCtl<Out>>) {
+        self.runnable_stream.run(context)
     }
 }

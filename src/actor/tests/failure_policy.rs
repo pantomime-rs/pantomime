@@ -14,7 +14,8 @@ struct MyActor {
     actor_ref: ActorRef<usize>,
 }
 
-impl Actor<MyMsg> for MyActor {
+impl Actor for MyActor {
+    type Msg = MyMsg;
     fn handle_failure(&mut self, r: FailureReason, _: &mut ActorContext<MyMsg>) -> FailureAction {
         match self.id {
             0 => FailureAction::Fail(r),
@@ -25,7 +26,7 @@ impl Actor<MyMsg> for MyActor {
 
     fn receive_signal(&mut self, signal: Signal, _: &mut ActorContext<MyMsg>) {
         match (self.id, signal) {
-            (0, Signal::Failed(_)) => {
+            (0, Signal::Stopped(Some(_))) => {
                 self.actor_ref.tell(self.num);
             }
 
@@ -60,7 +61,9 @@ impl Actor<MyMsg> for MyActor {
 fn test() {
     struct TestReaper;
 
-    impl Actor<()> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = ();
+
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
                 let mut probe = ctx.spawn_probe::<usize>();

@@ -1,52 +1,38 @@
-use crate::stream::flow::attached::*;
-use crate::stream::*;
-use std::marker::PhantomData;
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
-pub struct Map<A, B, F: FnMut(A) -> B>
-where
-    A: 'static + Send,
-    B: 'static + Send,
-    F: 'static + Send,
-{
+pub struct Map<F> {
     map: F,
-    phantom: PhantomData<(A, B)>,
 }
 
-impl<A, B, F: FnMut(A) -> B> Map<A, B, F>
-where
-    A: 'static + Send,
-    B: 'static + Send,
-    F: 'static + Send,
-{
-    pub fn new(map: F) -> Self {
-        Self {
-            map,
-            phantom: PhantomData,
+impl<F> Map<F> {
+    pub fn new<A, B>(map: F) -> Self
+    where
+        F: FnMut(A) -> B,
+    {
+        Self { map }
+    }
+}
+
+impl<A: Send, B: Send, F: FnMut(A) -> B + Send> Logic<A, B> for Map<F> {
+    type Ctl = ();
+
+    fn name(&self) -> &'static str {
+        "Map"
+    }
+
+    fn receive(
+        &mut self,
+        msg: LogicEvent<A, Self::Ctl>,
+        _: &mut StreamContext<A, B, Self::Ctl>,
+    ) -> Action<B, Self::Ctl> {
+        match msg {
+            LogicEvent::Pulled => Action::Pull,
+
+            LogicEvent::Pushed(element) => Action::Push((self.map)(element)),
+
+            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
+
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
-    }
-}
-
-impl<A, B, F: FnMut(A) -> B> AttachedLogic<A, B> for Map<A, B, F>
-where
-    A: 'static + Send,
-    B: 'static + Send,
-    F: 'static + Send,
-{
-    fn attach(&mut self, _: &StreamContext) {}
-
-    fn produced(&mut self, elem: A) -> Action<B> {
-        Action::Push((self.map)(elem))
-    }
-
-    fn pulled(&mut self) -> Action<B> {
-        Action::Pull
-    }
-
-    fn completed(&mut self) -> Action<B> {
-        Action::Complete
-    }
-
-    fn failed(&mut self, error: Error) -> Action<B> {
-        Action::Fail(error)
     }
 }

@@ -1,53 +1,44 @@
-use crate::stream::flow::attached::*;
-use crate::stream::*;
-use std::marker::PhantomData;
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
-pub struct TakeWhile<A, F: FnMut(&A) -> bool>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    func: F,
-    phantom: PhantomData<A>,
+pub struct TakeWhile<F> {
+    while_fn: F,
 }
 
-impl<A, F: FnMut(&A) -> bool> TakeWhile<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    pub fn new(func: F) -> Self {
-        Self {
-            func,
-            phantom: PhantomData,
-        }
+impl<F> TakeWhile<F> {
+    pub fn new<A>(while_fn: F) -> Self
+    where
+        F: FnMut(&A) -> bool,
+    {
+        Self { while_fn }
     }
 }
 
-impl<A, F: FnMut(&A) -> bool> AttachedLogic<A, A> for TakeWhile<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    fn attach(&mut self, _: &StreamContext) {}
+impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
+    type Ctl = ();
 
-    fn produced(&mut self, elem: A) -> Action<A> {
-        if (self.func)(&elem) {
-            Action::Push(elem)
-        } else {
-            Action::Cancel
+    fn name(&self) -> &'static str {
+        "TakeWhile"
+    }
+
+    fn receive(
+        &mut self,
+        msg: LogicEvent<A, Self::Ctl>,
+        _: &mut StreamContext<A, A, Self::Ctl>,
+    ) -> Action<A, Self::Ctl> {
+        match msg {
+            LogicEvent::Pulled => Action::Pull,
+
+            LogicEvent::Pushed(element) => {
+                if (self.while_fn)(&element) {
+                    Action::Push(element)
+                } else {
+                    Action::Complete(None)
+                }
+            }
+
+            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
+
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
-    }
-
-    fn pulled(&mut self) -> Action<A> {
-        Action::Pull
-    }
-
-    fn completed(&mut self) -> Action<A> {
-        Action::Complete
-    }
-
-    fn failed(&mut self, error: Error) -> Action<A> {
-        Action::Fail(error)
     }
 }

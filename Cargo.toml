@@ -16,7 +16,6 @@ conqueue = "0.3.0"
 crossbeam = "0.7.1"
 downcast-rs = "1.0.3"
 fern = { version = "0.5", features = ["colored"] }
-futures = { version = "0.1", optional = true }
 log = "0.4"
 mio = "0.6"
 num_cpus = "1.0"
@@ -30,15 +29,7 @@ rand = "0.6"
 #        https://github.com/rust-lang/cargo/issues/1197
 signal-hook-shim = { path = "./crates/signal-hook-shim", optional = true }
 
-tokio = { version = "0.1.15", optional = true }
-tokio-executor = { version = "0.1", optional = true }
-tokio-threadpool = { version = "0.1.11", optional = true }
-tokio-reactor = { version = "0.1", optional = true }
-tokio-timer = { version = "0.2", optional = true }
-
 [features]
 default = ["posix-signals-support"]
-futures-support = ["futures"]
 posix-signals-support = ["signal-hook-shim"]
 testkit = []
-tokio-support = ["futures", "futures-support", "tokio", "tokio-executor", "tokio-threadpool", "tokio-reactor", "tokio-timer"]

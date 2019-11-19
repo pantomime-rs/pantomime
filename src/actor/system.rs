@@ -12,7 +12,6 @@ use fern::colors::{Color, ColoredLevelConfig};
 use mio::{Event, Events, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::{cmp, thread, time, usize};
@@ -84,16 +83,17 @@ impl ActorSystemContext {
         }
     }
 
-    pub(crate) fn spawn<M, A: Actor<M>>(&self, actor: A) -> ActorRef<M>
+    pub(crate) fn spawn<A: Actor>(&self, actor: A) -> ActorRef<A::Msg>
     where
         A: 'static + Send,
-        M: 'static + Send,
     {
         /////////////////////////////////////////////////////////////////////////////////////////
         // NOTE: this is quite similiar to ActorContext::spawn, and changes should be mirrored //
         /////////////////////////////////////////////////////////////////////////////////////////
 
         use crate::actor::actor_ref::*;
+
+        let actor = Box::new(actor);
 
         let empty_ref = ActorRef::empty();
 
@@ -110,7 +110,7 @@ impl ActorSystemContext {
             .unwrap_or(self.inner.config.default_actor_throughput);
 
         let mut spawned_actor = SpawnedActor {
-            actor: Box::new(actor),
+            actor,
             context: ActorContext {
                 actor_ref: empty_ref.clone(),
                 children: HashMap::new(),
@@ -120,6 +120,9 @@ impl ActorSystemContext {
                 state: SpawnedActorState::Active,
                 system_context: self.clone(),
                 watching: HashMap::new(),
+
+                #[cfg(feature = "posix-signals-support")]
+                watching_posix_signals: Vec::new(),
             },
             dispatcher,
             execution_state: Arc::new(AtomicCell::new(SpawnedActorExecutionState::Running)),
@@ -150,8 +153,14 @@ impl ActorSystemContext {
         actor_ref
     }
 
+    #[allow(dead_code)]
     pub(crate) fn subscribe(&self, actor_ref: ActorRef<SubscriptionEvent>) {
         self.send(ActorSystemMsg::Subscribe(actor_ref));
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn unsubscribe(&self, token: usize) {
+        self.send(ActorSystemMsg::Unsubscribe(token));
     }
 
     pub(in crate::actor) fn new_actor_id(&self) -> usize {
@@ -204,6 +213,7 @@ enum ActorSystemMsg {
     Forward(ReaperMsg),
     Done,
     Subscribe(ActorRef<SubscriptionEvent>),
+    Unsubscribe(usize),
 }
 
 impl Clone for ActorSystemContext {
@@ -229,9 +239,9 @@ pub struct ActiveActorSystem {
 }
 
 impl ActiveActorSystem {
-    pub fn spawn<M: 'static + Send, A: 'static + Send>(&mut self, actor: A) -> ActorRef<M>
+    pub fn spawn<A: Actor>(&mut self, actor: A) -> ActorRef<A::Msg>
     where
-        A: Actor<M>,
+        A: 'static,
     {
         self.context.spawn(actor)
     }
@@ -324,8 +334,6 @@ impl ActiveActorSystem {
                     Ok(ActorSystemMsg::Subscribe(subscriber)) => {
                         match Self::next_token_id(&subscribers, last_token_id) {
                             Some(next_token_id) => {
-                                // @TODO need to have unsubscribe as well
-
                                 subscriber
                                     .tell(SubscriptionEvent::Ready(poll.clone(), next_token_id));
 
@@ -338,6 +346,10 @@ impl ActiveActorSystem {
                                 panic!("pantomime bug: reached maximum tokens");
                             }
                         }
+                    }
+
+                    Ok(ActorSystemMsg::Unsubscribe(token_id)) => {
+                        subscribers.remove(&token_id);
                     }
 
                     Ok(ActorSystemMsg::Forward(msg)) => {
@@ -409,6 +421,8 @@ impl ActiveActorSystem {
 pub(in crate::actor) enum ReaperMsg {
     Stop,
 
+    ActorStopped(usize, StopReason),
+
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     ReceivedPosixSignal(i32),
 
@@ -416,9 +430,8 @@ pub(in crate::actor) enum ReaperMsg {
     WatchPosixSignals(SystemActorRef),
 }
 
-struct ReaperMonitor<M, A: Actor<M>>
+struct ReaperMonitor<A: Actor>
 where
-    M: 'static + Send,
     A: 'static + Send,
 {
     actor: Option<A>,
@@ -427,13 +440,10 @@ where
 
     #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
     posix_signals_watchers: HashMap<usize, SystemActorRef>,
-
-    phantom: PhantomData<M>,
 }
 
-impl<M, A: Actor<M>> ReaperMonitor<M, A>
+impl<A: Actor> ReaperMonitor<A>
 where
-    M: 'static + Send,
     A: 'static + Send,
 {
     fn new(actor: A, failed: &Arc<AtomicBool>) -> Self {
@@ -444,36 +454,64 @@ where
 
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             posix_signals_watchers: HashMap::new(),
-
-            phantom: PhantomData,
         }
     }
 }
 
-impl<M, A: Actor<M>> Actor<ReaperMsg> for ReaperMonitor<M, A>
+impl<A: Actor> Actor for ReaperMonitor<A>
 where
-    M: 'static + Send,
     A: 'static + Send,
 {
+    type Msg = ReaperMsg;
+
     fn receive(&mut self, msg: ReaperMsg, ctx: &mut ActorContext<ReaperMsg>) {
         match msg {
             ReaperMsg::Stop => {
+                println!("ReaperMsg::Stop");
                 ctx.stop();
+            }
+
+            ReaperMsg::ActorStopped(actor_id, StopReason::Failed) => {
+                println!("ReaperMsg::ActorStopped (failed)");
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+                self.posix_signals_watchers.remove(&actor_id);
+
+                if actor_id == self.reaper_id {
+                    ctx.fail(Error::new(ErrorKind::Other, "error"));
+                } else {
+                    println!("ids didnt match");
+                }
+            }
+
+            ReaperMsg::ActorStopped(actor_id, StopReason::Stopped) => {
+                println!("ReaperMsg::ActorStopped (stopped)");
+                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
+                self.posix_signals_watchers.remove(&actor_id);
+
+                if actor_id == self.reaper_id {
+                    ctx.stop();
+                } else {
+                    println!("ids didnt match");
+                }
             }
 
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             ReaperMsg::ReceivedPosixSignal(signal) => {
                 for watcher in self.posix_signals_watchers.values() {
-                    watcher.tell_system(SystemMsg::Signaled(Signal::PosixSignal(signal)));
+                    watcher.tell_system(SystemMsg::PosixSignal(signal));
                 }
             }
 
             #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
             ReaperMsg::WatchPosixSignals(system_ref) => {
-                ctx.watch_system(&system_ref);
+                let system_ref_id = system_ref.id();
+
+                ctx.watch(&system_ref, move |reason| {
+                    ReaperMsg::ActorStopped(system_ref_id, reason)
+                });
 
                 self.posix_signals_watchers
-                    .insert(system_ref.id(), system_ref);
+                    .insert(system_ref_id, system_ref);
             }
         }
     }
@@ -487,32 +525,30 @@ where
                         .expect("pantomime bug: ReaperMonitor cannot get actor"),
                 );
 
-                self.reaper_id = actor_ref.id();
+                let actor_ref_id = actor_ref.id();
 
-                ctx.watch(&actor_ref);
+                self.reaper_id = actor_ref_id;
+
+                let failed = self.failed.clone();
+
+                //std::thread::sleep(std::time::Duration::from_millis(10));
+
+                ctx.watch(&actor_ref, move |reason| {
+                    println!("reaper watch executed");
+                    // this will often (e.g. when system is stopped) be dropped,
+                    // so we set failed here
+
+                    if let StopReason::Failed = reason {
+                        failed.store(true, Ordering::Release);
+                    }
+
+                    ReaperMsg::ActorStopped(actor_ref_id, reason)
+                });
             }
 
-            Signal::ActorStopped(actor, StopReason::Failed) => {
-                let actor_id = actor.id();
-
-                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-                self.posix_signals_watchers.remove(&actor_id);
-
-                if actor_id == self.reaper_id {
-                    self.failed.store(true, Ordering::Release);
-                    ctx.system_context().done();
-                }
-            }
-
-            Signal::ActorStopped(actor, _) => {
-                let actor_id = actor.id();
-
-                #[cfg(all(feature = "posix-signals-support", target_family = "unix"))]
-                self.posix_signals_watchers.remove(&actor_id);
-
-                if actor_id == self.reaper_id {
-                    ctx.system_context().done();
-                }
+            Signal::Stopped(_) => {
+                println!("reaper is done!");
+                ctx.system_context().done();
             }
 
             _ => {}
@@ -544,9 +580,9 @@ impl ActorSystem {
     /// A suggested pattern is to spawn and watch all of your top level actors
     /// with the reaper, and react to any termination signals of those actors
     /// via the `receive_signal` method.
-    pub fn spawn<M: 'static + Send, A: 'static + Send>(mut self, actor: A) -> Result<(), Error>
+    pub fn spawn<A: 'static + Send>(mut self, actor: A) -> Result<(), Error>
     where
-        A: Actor<M>,
+        A: Actor,
     {
         INITIALIZE_ONCE.call_once(|| {
             if let Some(log_err) = Self::setup_logger().err() {
@@ -671,7 +707,7 @@ impl ActorSystem {
                     ))
                 }
             })
-            .level(log::LevelFilter::Info)
+            .level(log::LevelFilter::Debug) // @TODO config this?
             .chain(std::io::stderr())
             .apply()?;
         Ok(())

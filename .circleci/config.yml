@@ -21,15 +21,21 @@ jobs:
           command: |
             cargo fmt && git diff --quiet
       - run:
-          name: Build & Test
+          name: Build & Test (All Features)
           command: |
             cargo clean
             cargo build --release
-            cargo test --release --features tokio-support --no-fail-fast -- --nocapture --ignored
+            cargo test --release --all-features --no-fail-fast -- --nocapture --ignored
+      - run:
+          name: Build & Test (No Features)
+          command: |
+            cargo clean
+            cargo build --release
+            cargo test --release --no-default-features --no-fail-fast -- --nocapture --ignored
       - run:
           name: Run Clippy
           command: |
-            cargo clippy --features tokio-support --tests -- -D warnings
+            cargo clippy --all-features --tests -- -D warnings
       - save_cache:
           key: linux-cargo-cache-1
           paths:
@@ -51,11 +57,17 @@ jobs:
           command: |
             cargo fmt && git diff --quiet
       - run:
-          name: Build & Test
+          name: Build & Test (All Features)
           command: |
             cargo clean
             cargo build --release
-            cargo test --release --features tokio-support --no-fail-fast -- --nocapture --ignored
+            cargo test --release --all-features --no-fail-fast -- --nocapture --ignored
+      - run:
+          name: Build & Test (No Features)
+          command: |
+            cargo clean
+            cargo build --release
+            cargo test --release --no-default-features --no-fail-fast -- --nocapture --ignored
       - save_cache:
           key: mac-cargo-cache-1
           paths:
@@ -80,10 +92,15 @@ jobs:
               exit 1
             fi
 
-            # Build and test
+            # Build and test (All Features)
             cargo clean
             cargo build --release
-            cargo test --release --features tokio-support --no-fail-fast -- --nocapture --ignored
+            cargo test --release --all-features --no-fail-fast -- --nocapture --ignored
+
+            # Build and test (No Features)
+            cargo clean
+            cargo build --release
+            cargo test --release --no-default-features --no-fail-fast -- --nocapture --ignored
 
             # Publish to Crates.io
             if [ "$CRATES_API_KEY" != "" ]; then

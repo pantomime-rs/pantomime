@@ -1,53 +1,44 @@
-use crate::stream::flow::attached::*;
-use crate::stream::*;
-use std::marker::PhantomData;
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
-pub struct Filter<A, F: FnMut(&A) -> bool>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
+pub struct Filter<F> {
     filter: F,
-    phantom: PhantomData<(A)>,
 }
 
-impl<A, F: FnMut(&A) -> bool> Filter<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    pub fn new(filter: F) -> Self {
-        Self {
-            filter,
-            phantom: PhantomData,
-        }
+impl<F> Filter<F> {
+    pub fn new<A>(filter: F) -> Self
+    where
+        F: FnMut(&A) -> bool,
+    {
+        Self { filter }
     }
 }
 
-impl<A, F: FnMut(&A) -> bool> AttachedLogic<A, A> for Filter<A, F>
-where
-    A: 'static + Send,
-    F: 'static + Send,
-{
-    fn attach(&mut self, _: &StreamContext) {}
+impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for Filter<F> {
+    type Ctl = ();
 
-    fn produced(&mut self, elem: A) -> Action<A> {
-        if (self.filter)(&elem) {
-            Action::Push(elem)
-        } else {
-            Action::Pull
+    fn name(&self) -> &'static str {
+        "Filter"
+    }
+
+    fn receive(
+        &mut self,
+        msg: LogicEvent<A, Self::Ctl>,
+        _: &mut StreamContext<A, A, Self::Ctl>,
+    ) -> Action<A, Self::Ctl> {
+        match msg {
+            LogicEvent::Pulled => Action::Pull,
+
+            LogicEvent::Pushed(element) => {
+                if (self.filter)(&element) {
+                    Action::Push(element)
+                } else {
+                    Action::Pull
+                }
+            }
+
+            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
+
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
-    }
-
-    fn pulled(&mut self) -> Action<A> {
-        Action::Pull
-    }
-
-    fn completed(&mut self) -> Action<A> {
-        Action::Complete
-    }
-
-    fn failed(&mut self, error: Error) -> Action<A> {
-        Action::Fail(error)
     }
 }

@@ -8,7 +8,9 @@ struct MyMsg {
     reply_to: ActorRef<usize>,
 }
 
-impl Actor<MyMsg> for MyActor {
+impl Actor for MyActor {
+    type Msg = MyMsg;
+
     fn receive(&mut self, msg: MyMsg, _context: &mut ActorContext<MyMsg>) {
         msg.reply_to.tell(msg.num);
     }
@@ -18,7 +20,9 @@ impl Actor<MyMsg> for MyActor {
 fn basic_test() {
     struct TestReaper;
 
-    impl Actor<()> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = ();
+
         fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {

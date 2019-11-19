@@ -71,10 +71,8 @@ impl<M: 'static + Send> Probe<M> {
         let start = time::Instant::now();
 
         loop {
-            let next = self.mailbox.retrieve();
-
-            if next.is_some() {
-                return next.unwrap();
+            if let Some(next) = self.mailbox.retrieve() {
+                return next;
             } else if start.elapsed() > limit {
                 panic!("provided function hasn't returned true within {:?}", limit);
             } else {
@@ -110,7 +108,9 @@ impl<M: 'static + Send> ProbeActor<M> {
     }
 }
 
-impl<M: 'static + Send> Actor<M> for ProbeActor<M> {
+impl<M: 'static + Send> Actor for ProbeActor<M> {
+    type Msg = M;
+
     fn receive(&mut self, message: M, _context: &mut ActorContext<M>) {
         self.appender.append(message);
     }
@@ -126,7 +126,9 @@ mod tests {
         Double(usize, ActorRef<usize>),
     }
 
-    impl Actor<DoublerMsg> for Doubler {
+    impl Actor for Doubler {
+        type Msg = DoublerMsg;
+
         fn receive(&mut self, msg: DoublerMsg, _context: &mut ActorContext<DoublerMsg>) {
             match msg {
                 DoublerMsg::Double(number, reply_to) => {
@@ -140,7 +142,9 @@ mod tests {
     fn test_probe() {
         struct TestReaper;
 
-        impl Actor<()> for TestReaper {
+        impl Actor for TestReaper {
+            type Msg = ();
+
             fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
             fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {

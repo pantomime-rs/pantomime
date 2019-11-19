@@ -1,38 +1,53 @@
 use crate::actor::*;
-use crate::posix_signals;
+use crate::posix_signals::{PosixSignal, PosixSignals};
 use std::process;
 use std::time::Duration;
 
-struct MyActor;
+enum MyMsg {
+    Signal1(PosixSignal),
+    Signal2(PosixSignal),
+    DoKill,
+}
 
-impl Actor<()> for MyActor {
-    fn receive(&mut self, _msg: (), _context: &mut ActorContext<()>) {
-        let pid = process::id();
+struct MyActor {
+    received_signal1: bool,
+}
 
-        let killed = process::Command::new("kill")
-            .args(&["-s", "hup", &pid.to_string()])
-            .status()
-            .expect("failed to invoke kill")
-            .success();
+impl Actor for MyActor {
+    type Msg = MyMsg;
 
-        assert!(killed);
-    }
+    fn receive(&mut self, msg: MyMsg, context: &mut ActorContext<MyMsg>) {
+        match msg {
+            MyMsg::DoKill => {
+                let pid = process::id();
 
-    fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<()>) {
-        match signal {
-            Signal::Started => {
-                context.watch_posix_signals();
+                let killed = process::Command::new("kill")
+                    .args(&["-s", "hup", &pid.to_string()])
+                    .status()
+                    .expect("failed to invoke kill")
+                    .success();
 
-                context.schedule_delivery("kill", Duration::from_millis(100), ());
+                assert!(killed);
             }
 
-            Signal::PosixSignal(value) => {
-                if value == posix_signals::SIGHUP {
-                    context.system_context().stop();
-                }
+            MyMsg::Signal1(PosixSignal::SIGHUP) => {
+                self.received_signal1 = true;
+            }
+
+            MyMsg::Signal2(PosixSignal::SIGHUP) if self.received_signal1 => {
+                context.system_context().stop();
             }
 
             _ => {}
+        }
+    }
+
+    fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<MyMsg>) {
+        if let Signal::Started = signal {
+            context.watch(PosixSignals, MyMsg::Signal1);
+            context.watch(PosixSignals, MyMsg::Signal2);
+
+            context.schedule_delivery("kill", Duration::from_millis(100), MyMsg::DoKill);
         }
     }
 }
@@ -42,12 +57,16 @@ impl Actor<()> for MyActor {
 fn basic_test() {
     struct TestReaper;
 
-    impl Actor<()> for TestReaper {
+    impl Actor for TestReaper {
+        type Msg = ();
+
         fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
         fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
             if let Signal::Started = signal {
-                ctx.spawn(MyActor);
+                ctx.spawn(MyActor {
+                    received_signal1: false,
+                });
             }
         }
     }

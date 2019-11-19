@@ -1,42 +1,43 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
 #[derive(Default)]
-pub struct First<A> {
-    first: Option<A>,
+pub struct Collect<A> {
+    entries: Option<Vec<A>>,
     pulled: bool,
 }
 
-impl<A> First<A> {
+impl<A> Collect<A> {
     pub fn new() -> Self {
         Self {
-            first: None,
+            entries: Some(Vec::new()),
             pulled: false,
         }
     }
 }
 
-impl<A> Logic<A, Option<A>> for First<A>
+impl<A> Logic<A, Vec<A>> for Collect<A>
 where
     A: 'static + Send,
 {
     type Ctl = ();
 
     fn name(&self) -> &'static str {
-        "First"
+        "Collect"
     }
 
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
-        _: &mut StreamContext<A, Option<A>, Self::Ctl>,
-    ) -> Action<Option<A>, Self::Ctl> {
+        _: &mut StreamContext<A, Vec<A>, Self::Ctl>,
+    ) -> Action<Vec<A>, Self::Ctl> {
         match msg {
             LogicEvent::Pushed(element) => {
-                if self.first.is_none() {
-                    self.first = Some(element);
-                }
+                self.entries
+                    .as_mut()
+                    .expect("pantomime bug: Collect::entries is None")
+                    .push(element);
 
-                Action::Cancel
+                Action::Pull
             }
 
             LogicEvent::Pulled => {
@@ -49,7 +50,12 @@ where
                 if self.pulled {
                     self.pulled = false;
 
-                    Action::PushAndComplete(self.first.take(), None)
+                    let entries = self
+                        .entries
+                        .take()
+                        .expect("pantomime bug: Collect::entries is None");
+
+                    Action::PushAndComplete(entries, None)
                 } else {
                     Action::Complete(None)
                 }

@@ -1,62 +1,34 @@
-use crate::actor::ActorRef;
-use crate::stream::flow::attached::*;
-use crate::stream::flow::detached::*;
-use crate::stream::*;
+use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 
+#[derive(Default)]
 pub struct Identity;
 
-impl<A> AttachedLogic<A, A> for Identity
-where
-    A: 'static + Send,
-{
-    fn attach(&mut self, _: &StreamContext) {}
-
-    fn produced(&mut self, elem: A) -> Action<A> {
-        Action::Push(elem)
-    }
-
-    fn pulled(&mut self) -> Action<A> {
-        Action::Pull
-    }
-
-    fn completed(&mut self) -> Action<A> {
-        Action::Complete
-    }
-
-    fn failed(&mut self, error: Error) -> Action<A> {
-        Action::Fail(error)
+impl Identity {
+    pub fn new() -> Self {
+        Self
     }
 }
 
-impl<A> DetachedLogic<A, A, ()> for Identity
-where
-    A: 'static + Send,
-{
-    fn attach(
+impl<A: Send> Logic<A, A> for Identity {
+    type Ctl = ();
+
+    fn name(&self) -> &'static str {
+        "Identity"
+    }
+
+    fn receive(
         &mut self,
-        _: &StreamContext,
-        _: &ActorRef<AsyncAction<A, ()>>,
-    ) -> Option<AsyncAction<A, ()>> {
-        None
-    }
+        msg: LogicEvent<A, Self::Ctl>,
+        _: &mut StreamContext<A, A, Self::Ctl>,
+    ) -> Action<A, Self::Ctl> {
+        match msg {
+            LogicEvent::Pulled => Action::Pull,
 
-    fn forwarded(&mut self, _: ()) -> Option<AsyncAction<A, ()>> {
-        None
-    }
+            LogicEvent::Pushed(element) => Action::Push(element),
 
-    fn produced(&mut self, elem: A) -> Option<AsyncAction<A, ()>> {
-        Some(AsyncAction::Push(elem))
-    }
+            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
 
-    fn pulled(&mut self) -> Option<AsyncAction<A, ()>> {
-        Some(AsyncAction::Pull)
-    }
-
-    fn completed(&mut self) -> Option<AsyncAction<A, ()>> {
-        Some(AsyncAction::Complete)
-    }
-
-    fn failed(&mut self, error: Error) -> Option<AsyncAction<A, ()>> {
-        Some(AsyncAction::Fail(error))
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
+        }
     }
 }
