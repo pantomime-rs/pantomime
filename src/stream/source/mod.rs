@@ -9,11 +9,13 @@ mod iterator;
 mod merge;
 mod queue;
 mod repeat;
+mod udp;
 
 pub use iterator::Iterator;
 //pub use merge::Merge;
 //pub use queue::SourceQueue;
 pub use repeat::Repeat;
+pub use udp::Udp;
 
 pub struct Source<A> {
     pub(in crate::stream) producers: Vec<LogicType<(), A>>,

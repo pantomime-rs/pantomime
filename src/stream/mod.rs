@@ -1,4 +1,4 @@
-use crate::actor::{ActorContext, ActorRef, FailureReason};
+use crate::actor::{ActorContext, ActorRef, FailureReason, SubscriptionEvent};
 use crate::stream::internal::{InternalStreamCtl, RunnableStream, StageMsg};
 use crossbeam::atomic::AtomicCell;
 use std::collections::VecDeque;
@@ -179,7 +179,7 @@ where
     Out: 'static + Send,
     Ctl: 'static + Send,
 {
-    fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Ctl) {
+    pub fn schedule_delivery<S: AsRef<str>>(&mut self, name: S, timeout: Duration, msg: Ctl) {
         match self.ctx {
             StreamContextType::Fused(ref mut actions, _) => {
                 actions.push_back(StreamContextAction::ScheduleDelivery(
@@ -195,7 +195,7 @@ where
         }
     }
 
-    fn stage_ref(&mut self) -> StageRef<Ctl> {
+    pub fn stage_ref(&mut self) -> StageRef<Ctl> {
         match self.ctx {
             StreamContextType::Fused(_, ref stage_ref) => StageRef {
                 actor_ref: stage_ref.actor_ref.clone(),
@@ -209,7 +209,7 @@ where
         }
     }
 
-    fn tell(&mut self, action: Action<Out, Ctl>) {
+    pub fn tell(&mut self, action: Action<Out, Ctl>) {
         match self.ctx {
             StreamContextType::Fused(ref mut actions, _) => {
                 actions.push_back(StreamContextAction::Action(action));
@@ -219,6 +219,14 @@ where
                 ctx.actor_ref().tell(StageMsg::Action(action));
             }
         }
+    }
+
+    pub(crate) fn subscribe(&self, actor_ref: ActorRef<SubscriptionEvent>) {
+        unimplemented!()
+    }
+
+    pub(crate) fn unsubscribe(&self, token: usize) {
+        unimplemented!()
     }
 }
 

@@ -27,7 +27,7 @@ const MIO_TOKEN_SENDER: usize = 1;
 #[cfg(feature = "posix-signals-support")]
 const MIO_TOKEN_POSIX_SIGNALS: usize = 2;
 
-pub(crate) enum SubscriptionEvent {
+pub enum SubscriptionEvent {
     Ready(Arc<Poll>, usize),
     MioEvent(Event),
 }
@@ -153,12 +153,10 @@ impl ActorSystemContext {
         actor_ref
     }
 
-    #[allow(dead_code)]
     pub(crate) fn subscribe(&self, actor_ref: ActorRef<SubscriptionEvent>) {
         self.send(ActorSystemMsg::Subscribe(actor_ref));
     }
 
-    #[allow(dead_code)]
     pub(crate) fn unsubscribe(&self, token: usize) {
         self.send(ActorSystemMsg::Unsubscribe(token));
     }
