@@ -36,6 +36,12 @@ impl<A: Send> Logic<A, A> for Delay {
         Some(0) // @FIXME should this be based on the delay duration?
     }
 
+    /// By default, Delay is not fusible, as it relies on the asynchronous nature
+    /// of scheduled deliveries.
+    fn fusible(&self) -> bool {
+        false
+    }
+
     fn receive(
         &mut self,
         msg: LogicEvent<A, Self::Ctl>,
