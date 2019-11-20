@@ -3,8 +3,8 @@ use crate::actor::{
 };
 use crate::stream::flow::Fused;
 use crate::stream::{
-    Action, Logic, LogicEvent, Stream, StreamComplete, StreamContext, StreamContextAction,
-    StreamContextType, StreamCtl,
+    Action, Logic, LogicEvent, StageRef, Stream, StreamComplete, StreamContext,
+    StreamContextAction, StreamContextType, StreamCtl,
 };
 use crossbeam::atomic::AtomicCell;
 use std::any::Any;
@@ -44,6 +44,7 @@ where
 {
     logic: L,
     actions: VecDeque<StreamContextAction<Down, Ctl>>, // @TODO too much memory usage
+    stage_ref: StageRef<Ctl>,
     phantom: PhantomData<(Up, Down, Ctl)>,
 }
 
@@ -57,6 +58,7 @@ where
         Self {
             logic,
             actions: VecDeque::new(),
+            stage_ref: StageRef::empty(),
             phantom: PhantomData,
         }
     }
@@ -66,8 +68,12 @@ where
         event: LogicEvent<Up, Ctl>,
         ctx: &mut StreamContext<Up, Down, Box<dyn Any + Send>>,
     ) -> Action<Down, Box<dyn Any + Send>> {
+        if let LogicEvent::Started = event {
+            self.stage_ref = ctx.stage_ref().convert(|msg| Box::new(msg));
+        }
+
         let mut stream_ctx = StreamContext {
-            ctx: StreamContextType::Fused(&mut self.actions),
+            ctx: StreamContextType::Fused(&mut self.actions, &self.stage_ref),
             calls: ctx.calls,
         };
 
@@ -77,7 +83,7 @@ where
 
         while let Some(a) = self.actions.pop_front() {
             let mut stream_ctx = StreamContext {
-                ctx: StreamContextType::Fused(&mut self.actions),
+                ctx: StreamContextType::Fused(&mut self.actions, &self.stage_ref),
                 calls: ctx.calls,
             };
 
@@ -170,7 +176,7 @@ where
                 Ok(msg) => self.logic_receive(LogicEvent::Forwarded(*msg), ctx),
 
                 Err(_e) => {
-                    panic!("TODO");
+                    panic!("TODO {:?}", _e.type_id());
                 }
             },
         }

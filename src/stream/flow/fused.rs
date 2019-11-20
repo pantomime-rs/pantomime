@@ -1,6 +1,6 @@
 use crate::stream::internal::ContainedLogic;
 use crate::stream::{
-    Action, Logic, LogicEvent, StreamContext, StreamContextAction, StreamContextType,
+    Action, Logic, LogicEvent, StageRef, StreamContext, StreamContextAction, StreamContextType,
 };
 use std::any::Any;
 use std::collections::VecDeque;
@@ -23,8 +23,10 @@ where
 {
     up: Box<dyn ContainedLogic<A, B> + Send>,
     up_actions: VecDeque<StreamContextAction<B, Box<dyn Any + Send>>>,
+    up_ref: StageRef<Box<dyn Any + Send>>,
     down: Box<dyn ContainedLogic<B, C> + Send>,
     down_actions: VecDeque<StreamContextAction<C, Box<dyn Any + Send>>>,
+    down_ref: StageRef<Box<dyn Any + Send>>,
     phantom: PhantomData<(A, B, C)>,
 }
 
@@ -41,8 +43,10 @@ where
         Fused {
             up: upstream,
             up_actions: VecDeque::new(),
+            up_ref: StageRef::empty(),
             down: downstream,
             down_actions: VecDeque::new(),
+            down_ref: StageRef::empty(),
             phantom: PhantomData,
         }
     }
@@ -52,6 +56,10 @@ where
         event: LogicEvent<B, Box<dyn Any + Send>>,
         ctx: &mut StreamContext<A, C, FusedMsg<A, B>>,
     ) -> Action<C, FusedMsg<A, B>> {
+        if let LogicEvent::Started = event {
+            self.down_ref = ctx.stage_ref().convert(FusedMsg::ForwardDown);
+        }
+
         ctx.calls += 1;
 
         if ctx.calls >= MAX_CALLS {
@@ -59,7 +67,7 @@ where
         }
 
         let mut down_ctx = StreamContext {
-            ctx: StreamContextType::Fused(&mut self.down_actions),
+            ctx: StreamContextType::Fused(&mut self.down_actions, &self.down_ref),
             calls: ctx.calls,
         };
 
@@ -124,6 +132,10 @@ where
         event: LogicEvent<A, Box<dyn Any + Send>>,
         ctx: &mut StreamContext<A, C, FusedMsg<A, B>>,
     ) -> Action<C, FusedMsg<A, B>> {
+        if let LogicEvent::Started = event {
+            self.up_ref = ctx.stage_ref().convert(FusedMsg::ForwardUp);
+        }
+
         ctx.calls += 1;
 
         if ctx.calls >= MAX_CALLS {
@@ -131,7 +143,7 @@ where
         }
 
         let mut up_ctx = StreamContext {
-            ctx: StreamContextType::Fused(&mut self.up_actions),
+            ctx: StreamContextType::Fused(&mut self.up_actions, &self.up_ref),
             calls: ctx.calls,
         };
 
