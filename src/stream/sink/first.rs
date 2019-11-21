@@ -4,6 +4,7 @@ use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 pub struct First<A> {
     first: Option<A>,
     pulled: bool,
+    stopped: bool,
 }
 
 impl<A> First<A> {
@@ -11,6 +12,7 @@ impl<A> First<A> {
         Self {
             first: None,
             pulled: false,
+            stopped: false,
         }
     }
 }
@@ -23,6 +25,10 @@ where
 
     fn name(&self) -> &'static str {
         "First"
+    }
+
+    fn fusible(&self) -> bool {
+        false
     }
 
     fn receive(
@@ -42,22 +48,34 @@ where
             LogicEvent::Pulled => {
                 self.pulled = true;
 
-                Action::None
-            }
-
-            LogicEvent::Stopped | LogicEvent::Cancelled => {
-                if self.pulled {
-                    self.pulled = false;
-
+                if self.stopped {
                     Action::PushAndComplete(self.first.take(), None)
                 } else {
-                    Action::Complete(None)
+                    Action::Pull
                 }
             }
 
-            LogicEvent::Started => Action::Pull,
+            LogicEvent::Stopped => {
+                self.stopped = true;
 
-            LogicEvent::Forwarded(()) => Action::None,
+                if self.pulled {
+                    Action::PushAndComplete(self.first.take(), None)
+                } else {
+                    Action::None
+                }
+            }
+
+            LogicEvent::Cancelled => {
+                if self.stopped && self.pulled {
+                    Action::PushAndComplete(self.first.take(), None)
+                } else if self.stopped {
+                    Action::Complete(None)
+                } else {
+                    Action::Cancel
+                }
+            }
+
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

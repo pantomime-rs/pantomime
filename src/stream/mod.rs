@@ -2,6 +2,7 @@ use crate::actor::{ActorContext, ActorRef, FailureReason, SubscriptionEvent};
 use crate::stream::internal::{InternalStreamCtl, RunnableStream, StageMsg};
 use crossbeam::atomic::AtomicCell;
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +27,17 @@ pub enum Action<A, Msg> {
     PushAndComplete(A, Option<FailureReason>),
     Forward(Msg),
     None,
+}
+
+pub struct Datagram {
+    pub data: Vec<u8>,
+    pub address: SocketAddr,
+}
+
+impl Datagram {
+    pub fn new(data: Vec<u8>, address: SocketAddr) -> Self {
+        Self { data, address }
+    }
 }
 
 pub enum PortAction<A> {
@@ -221,12 +233,28 @@ where
         }
     }
 
-    pub(crate) fn subscribe(&self, actor_ref: ActorRef<SubscriptionEvent>) {
-        unimplemented!()
+    pub(crate) fn subscribe(&mut self, actor_ref: ActorRef<SubscriptionEvent>) {
+        match self.ctx {
+            StreamContextType::Spawned(ref mut ctx) => {
+                ctx.system_context().subscribe(actor_ref);
+            }
+
+            StreamContextType::Fused(_, _) => {
+                panic!("StreamContext::subscribe isn't supported by fused stages");
+            }
+        }
     }
 
-    pub(crate) fn unsubscribe(&self, token: usize) {
-        unimplemented!()
+    pub(crate) fn unsubscribe(&mut self, token: usize) {
+        match self.ctx {
+            StreamContextType::Spawned(ref mut ctx) => {
+                ctx.system_context().unsubscribe(token);
+            }
+
+            StreamContextType::Fused(_, _) => {
+                panic!("StreamContext::unsubscribe isn't supported by fused stages");
+            }
+        }
     }
 }
 

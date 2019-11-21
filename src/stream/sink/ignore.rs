@@ -1,28 +1,21 @@
 use crate::stream::{Action, Logic, LogicEvent, StreamContext};
-use std::marker::PhantomData;
 
 #[derive(Default)]
-pub struct Ignore<A>
-where
-    A: Send,
-{
+pub struct Ignore {
     pulled: bool,
-    phantom: PhantomData<A>,
+    stopped: bool,
 }
 
-impl<A> Ignore<A>
-where
-    A: Send,
-{
+impl Ignore {
     pub fn new() -> Self {
         Self {
             pulled: false,
-            phantom: PhantomData,
+            stopped: false,
         }
     }
 }
 
-impl<A> Logic<A, ()> for Ignore<A>
+impl<A> Logic<A, ()> for Ignore
 where
     A: Send,
 {
@@ -43,14 +36,30 @@ where
             LogicEvent::Pulled => {
                 self.pulled = true;
 
-                Action::Pull
+                if self.stopped {
+                    Action::PushAndComplete((), None)
+                } else {
+                    Action::Pull
+                }
             }
 
-            LogicEvent::Stopped | LogicEvent::Cancelled => {
+            LogicEvent::Stopped => {
+                self.stopped = true;
+
                 if self.pulled {
                     Action::PushAndComplete((), None)
                 } else {
+                    Action::None
+                }
+            }
+
+            LogicEvent::Cancelled => {
+                if self.stopped && self.pulled {
+                    Action::PushAndComplete((), None)
+                } else if self.stopped {
                     Action::Complete(None)
+                } else {
+                    Action::Cancel
                 }
             }
 

@@ -1,7 +1,7 @@
 use crate::stream::internal::{ContainedLogicImpl, LogicType, SourceLike, UnionLogic};
 use crate::stream::sink::Sink;
 use crate::stream::{flow, flow::Flow, flow::Fused};
-use crate::stream::{Logic, Stream};
+use crate::stream::{Datagram, Logic, Stream};
 use std::iter::Iterator as Iter;
 use std::marker::PhantomData;
 
@@ -9,12 +9,14 @@ mod iterator;
 mod merge;
 mod queue;
 mod repeat;
+mod single;
 mod udp;
 
 pub use iterator::Iterator;
 //pub use merge::Merge;
 //pub use queue::SourceQueue;
 pub use repeat::Repeat;
+pub use single::Single;
 pub use udp::Udp;
 
 pub struct Source<A> {
@@ -58,6 +60,10 @@ where
         A: Clone,
     {
         Self::new(Repeat::new(element))
+    }
+
+    pub fn single(element: A) -> Self {
+        Self::new(Single::new(element))
     }
 
     pub fn to<Out>(self, sink: Sink<A, Out>) -> Stream<Out>
@@ -164,5 +170,11 @@ where
                 .pop()
                 .expect("pantomime bug: Source::producers is empty")
         }
+    }
+}
+
+impl Source<Datagram> {
+    pub fn udp(socket: &mio::net::UdpSocket) -> Self {
+        Self::new(Udp::new(socket))
     }
 }

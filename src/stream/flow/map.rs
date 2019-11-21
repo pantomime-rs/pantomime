@@ -27,12 +27,11 @@ impl<A: Send, B: Send, F: FnMut(A) -> B + Send> Logic<A, B> for Map<F> {
     ) -> Action<B, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => Action::Pull,
-
             LogicEvent::Pushed(element) => Action::Push((self.map)(element)),
-
-            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
-
-            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
+            LogicEvent::Cancelled => Action::Cancel,
+            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Started => Action::None,
+            LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

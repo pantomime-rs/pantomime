@@ -23,11 +23,9 @@ impl<A: Send> Logic<A, A> for Identity {
     ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => Action::Pull,
-
             LogicEvent::Pushed(element) => Action::Push(element),
-
-            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
-
+            LogicEvent::Cancelled => Action::Cancel,
+            LogicEvent::Stopped => Action::Complete(None),
             LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
     }

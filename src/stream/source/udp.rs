@@ -1,14 +1,8 @@
 use crate::actor::SubscriptionEvent;
-use crate::stream::{Action, Logic, LogicEvent, StreamContext};
+use crate::stream::{Action, Datagram, Logic, LogicEvent, StreamContext};
 use mio::{net::UdpSocket, Poll, PollOpt, Ready, Token};
 use std::io::{ErrorKind as IoErrorKind, Result as IoResult};
-use std::net::SocketAddr;
 use std::sync::Arc;
-
-pub struct Datagram {
-    pub data: Vec<u8>,
-    pub address: SocketAddr
-}
 
 pub struct Udp {
     socket: IoResult<UdpSocket>,
@@ -20,14 +14,14 @@ pub struct Udp {
 }
 
 impl Udp {
-    pub fn new(address: &SocketAddr) -> Self {
+    pub fn new(socket: &UdpSocket) -> Self {
         Self {
-            socket: UdpSocket::bind(address),
+            socket: socket.try_clone(),
             buffer: vec![0; 8192], // @TODO
             ready: false,
             waiting: false,
             poll: None,
-            token: 0
+            token: 0,
         }
     }
 
@@ -40,7 +34,7 @@ impl Udp {
 
                         Action::Push(Datagram {
                             data: self.buffer[0..bytes_read].to_vec(),
-                            address: socket_addr
+                            address: socket_addr,
                         })
                     }
 
@@ -57,9 +51,7 @@ impl Udp {
                 }
             }
 
-            _ => {
-                Action::None
-            }
+            _ => Action::None,
         }
     }
 }
@@ -68,7 +60,7 @@ impl Logic<(), Datagram> for Udp {
     type Ctl = SubscriptionEvent;
 
     fn name(&self) -> &'static str {
-        "Udp"
+        "pantomime::stream::source::Udp"
     }
 
     fn buffer_size(&self) -> Option<usize> {
@@ -86,12 +78,14 @@ impl Logic<(), Datagram> for Udp {
     ) -> Action<Datagram, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => {
+                println!("got pulled");
                 self.waiting = true;
 
                 self.try_read()
             }
 
             LogicEvent::Forwarded(SubscriptionEvent::MioEvent(event)) => {
+                println!("source got a mio event");
                 if event.readiness().is_readable() {
                     self.ready = true;
 
@@ -102,21 +96,17 @@ impl Logic<(), Datagram> for Udp {
             }
 
             LogicEvent::Forwarded(SubscriptionEvent::Ready(poll, token)) => {
+                println!("source got a ready");
                 match self.socket {
                     Ok(ref socket) => {
                         // @TODO expect doesn't seem appropriate
-                        poll.register(
-                            socket,
-                            Token(token),
-                            Ready::readable(),
-                            PollOpt::edge(),
-                        )
-                        .expect("pantomime bug: failed to register socket");
+                        poll.register(socket, Token(token), Ready::readable(), PollOpt::edge())
+                            .expect("pantomime bug: failed to register socket");
 
                         self.poll = Some(poll);
                         self.token = token;
 
-                        Action::None
+                        self.try_read()
                     }
 
                     Err(ref _e) => {
@@ -137,11 +127,29 @@ impl Logic<(), Datagram> for Udp {
                 Action::None
             }
 
+            LogicEvent::Stopped => Action::None,
+
             LogicEvent::Cancelled => {
-                unimplemented!()
+                println!(" SOURCE CANCELLED!");
+                if let Some(poll) = self.poll.take() {
+                    if let Ok(ref socket) = self.socket {
+                        // @TODO expect doesn't seem appropriate
+
+                        poll.deregister(socket)
+                            .expect("pantomime bug: failed to deregister socket");
+                    }
+                }
+
+                if self.token > 0 {
+                    ctx.unsubscribe(self.token);
+
+                    self.token = 0;
+                }
+
+                Action::Complete(None)
             }
 
-            LogicEvent::Pushed(()) | LogicEvent::Stopped => Action::None,
+            LogicEvent::Pushed(()) => Action::None,
         }
     }
 }
