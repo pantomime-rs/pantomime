@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 pub struct ForEach<A, F: FnMut(A) -> ()> {
     for_each_fn: F,
     pulled: bool,
+    stopped: bool,
     phantom: PhantomData<A>,
 }
 
@@ -12,6 +13,7 @@ impl<A, F: FnMut(A) -> ()> ForEach<A, F> {
         Self {
             for_each_fn,
             pulled: false,
+            stopped: false,
             phantom: PhantomData,
         }
     }
@@ -43,22 +45,34 @@ where
             LogicEvent::Pulled => {
                 self.pulled = true;
 
-                Action::None
-            }
-
-            LogicEvent::Stopped | LogicEvent::Cancelled => {
-                if self.pulled {
-                    self.pulled = false;
-
+                if self.stopped {
                     Action::PushAndComplete((), None)
                 } else {
-                    Action::Complete(None)
+                    Action::Pull
                 }
             }
 
-            LogicEvent::Started => Action::Pull,
+            LogicEvent::Stopped => {
+                self.stopped = true;
 
-            LogicEvent::Forwarded(()) => Action::None,
+                if self.pulled {
+                    Action::PushAndComplete((), None)
+                } else {
+                    Action::None
+                }
+            }
+
+            LogicEvent::Cancelled => {
+                if self.stopped && self.pulled {
+                    Action::PushAndComplete((), None)
+                } else if self.stopped {
+                    Action::Complete(None)
+                } else {
+                    Action::Cancel
+                }
+            }
+
+            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

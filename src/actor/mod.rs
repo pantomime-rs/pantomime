@@ -16,7 +16,7 @@ pub use self::actor_ref::{
     Signal, Spawnable, StopReason, SystemActorRef, Watchable,
 };
 pub use self::probe::{Probe, SpawnProbe};
-pub use self::system::{ActiveActorSystem, ActorSystem, ActorSystemContext};
+pub use self::system::{ActiveActorSystem, ActorSystem, ActorSystemContext, SubscriptionEvent};
 
 #[cfg(all(feature = "posix-signals-support"))]
 pub(self) use self::actor_ref::SystemMsg;

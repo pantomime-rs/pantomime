@@ -299,6 +299,7 @@ where
     downstream_demand: u64,
     upstream_demand: u64,
     calls: usize,
+    cancelled: bool,
 }
 
 enum StageState<A, B, Msg>
@@ -376,6 +377,7 @@ where
         self.calls += 1;
 
         if self.midstream_stopped {
+            //println!("{} Dropped Action (midstream stopped)", self.logic.name());
             return;
         }
 
@@ -435,6 +437,9 @@ where
             }
 
             Action::Cancel => {
+                //println!("{} Action::Cancel", self.logic.name());
+                self.cancelled = true;
+
                 if !self.upstream_stopped {
                     if let StageState::Running(ref upstream) = self.state {
                         upstream.tell(UpstreamStageMsg::Cancel);
@@ -443,6 +448,7 @@ where
             }
 
             Action::Complete(reason) => {
+                //println!("{} Action::Complete", self.logic.name());
                 self.downstream.tell(DownstreamStageMsg::Complete(reason));
 
                 self.midstream_stopped = true;
@@ -451,6 +457,7 @@ where
             }
 
             Action::PushAndComplete(el, reason) => {
+                //println!("{} Action::PushAndComplete", self.logic.name());
                 self.receive_action(Action::Push(el), ctx);
                 self.receive_action(Action::Complete(reason), ctx);
             }
@@ -487,7 +494,7 @@ where
         }
 
         match self.state {
-            StageState::Running(ref upstream) => {
+            StageState::Running(_) => {
                 match msg {
                     StageMsg::Pull(demand) => {
                         //println!("{} StageMsg::Pull({})", self.logic.name(), demand);
@@ -520,6 +527,7 @@ where
 
                                 self.check_upstream_demand();
                             } else {
+                                //println!("{} Consume Buffered", self.logic.name());
                                 self.buffer.push_back(el);
                             }
                         }
@@ -530,23 +538,29 @@ where
                     }
 
                     StageMsg::Cancel => {
+                        //println!("{} StageMsg::Cancel", self.logic.name());
                         // downstream has cancelled us
 
-                        if !self.upstream_stopped {
-                            upstream.tell(UpstreamStageMsg::Cancel);
-                        }
+                        // @TODO verify this, as this defers cancellation entirely to the logic
+                        //if !self.upstream_stopped {
+                        //    upstream.tell(UpstreamStageMsg::Cancel);
+                        //}
 
                         self.receive_logic_event(LogicEvent::Cancelled, ctx);
                     }
 
                     StageMsg::Stopped(_reason) => {
+                        //println!("{} StageMsg::Stopped (cancelled={})", self.logic.name(), self.cancelled);
                         // @TODO reason
                         // upstream has stopped, need to drain buffers and be done
+                        // this solution has a rare race though and freezes
 
                         self.upstream_stopped = true;
 
-                        if self.buffer.is_empty() {
+                        // TODO here's the problem, see #66
+                        if self.buffer.is_empty() || self.cancelled {
                             self.receive_logic_event(LogicEvent::Stopped, ctx);
+                            self.buffer.drain(..);
                         }
                     }
 
@@ -642,6 +656,7 @@ where
             downstream_demand: 0,
             upstream_demand: 0,
             calls: 0,
+            cancelled: false,
         });
 
         upstream.convert(downstream_stage_msg_to_stage_msg)
@@ -761,6 +776,7 @@ where
             downstream_demand: 0,
             upstream_demand: 0,
             calls: 0,
+            cancelled: false,
         };
 
         let midstream = context.spawn(stage);

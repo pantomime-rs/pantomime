@@ -26,8 +26,6 @@ impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
         _: &mut StreamContext<A, A, Self::Ctl>,
     ) -> Action<A, Self::Ctl> {
         match msg {
-            LogicEvent::Pulled => Action::Pull,
-
             LogicEvent::Pushed(element) => {
                 if (self.while_fn)(&element) {
                     Action::Push(element)
@@ -36,9 +34,11 @@ impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
                 }
             }
 
-            LogicEvent::Stopped | LogicEvent::Cancelled => Action::Complete(None),
-
-            LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
+            LogicEvent::Pulled => Action::Pull,
+            LogicEvent::Cancelled => Action::Cancel,
+            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Started => Action::None,
+            LogicEvent::Forwarded(()) => Action::None,
         }
     }
 }

@@ -17,7 +17,7 @@ crossbeam = "0.7.1"
 downcast-rs = "1.0.3"
 fern = { version = "0.5", features = ["colored"] }
 log = "0.4"
-mio = "0.6"
+mio = "0.6.19"
 num_cpus = "1.0"
 parking_lot = "0.8"
 rand = "0.6"

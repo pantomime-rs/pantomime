@@ -4,6 +4,7 @@ use crate::stream::{Action, Logic, LogicEvent, StreamContext};
 pub struct Last<A> {
     last: Option<A>,
     pulled: bool,
+    stopped: bool,
 }
 
 impl<A> Last<A> {
@@ -11,6 +12,7 @@ impl<A> Last<A> {
         Self {
             last: None,
             pulled: false,
+            stopped: false,
         }
     }
 }
@@ -40,16 +42,30 @@ where
             LogicEvent::Pulled => {
                 self.pulled = true;
 
-                Action::Pull
-            }
-
-            LogicEvent::Stopped | LogicEvent::Cancelled => {
-                if self.pulled {
-                    self.pulled = false;
-
+                if self.stopped {
                     Action::PushAndComplete(self.last.take(), None)
                 } else {
+                    Action::Pull
+                }
+            }
+
+            LogicEvent::Stopped => {
+                self.stopped = true;
+
+                if self.pulled {
+                    Action::PushAndComplete(self.last.take(), None)
+                } else {
+                    Action::None
+                }
+            }
+
+            LogicEvent::Cancelled => {
+                if self.stopped && self.pulled {
+                    Action::PushAndComplete(self.last.take(), None)
+                } else if self.stopped {
                     Action::Complete(None)
+                } else {
+                    Action::Cancel
                 }
             }
 
