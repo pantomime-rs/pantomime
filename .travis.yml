@@ -6,4 +6,4 @@ rust:
 os:
   - linux
   - osx
-  - windows
+    #- windows
