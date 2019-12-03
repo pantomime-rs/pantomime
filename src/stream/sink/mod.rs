@@ -1,19 +1,12 @@
 use crate::stream::internal::{ContainedLogicImpl, IndividualLogic, LogicType};
 use crate::stream::{Datagram, Logic};
 
-mod collect;
-mod first;
-mod for_each;
-mod ignore;
-mod last;
-mod udp;
-
-pub use collect::Collect;
-pub use first::First;
-pub use for_each::ForEach;
-pub use ignore::Ignore;
-pub use last::Last;
-pub use udp::Udp;
+pub mod collect;
+pub mod first;
+pub mod for_each;
+pub mod ignore;
+pub mod last;
+pub mod udp;
 
 /// A `Sink` is a stage that accepts a single output, and outputs a
 /// terminal value.
@@ -66,11 +59,11 @@ where
     A: Send,
 {
     pub fn first() -> Self {
-        Sink::new(First::new())
+        Sink::new(first::First::new())
     }
 
     pub fn last() -> Self {
-        Sink::new(Last::new())
+        Sink::new(last::Last::new())
     }
 }
 
@@ -82,11 +75,11 @@ where
     where
         F: 'static + Send,
     {
-        Sink::new(ForEach::new(for_each_fn))
+        Sink::new(for_each::ForEach::new(for_each_fn))
     }
 
     pub fn ignore() -> Self {
-        Sink::new(Ignore::new())
+        Sink::new(ignore::Ignore::new())
     }
 }
 
@@ -95,12 +88,12 @@ where
     A: Send,
 {
     pub fn collect() -> Self {
-        Sink::new(Collect::new())
+        Sink::new(collect::Collect::new())
     }
 }
 
 impl Sink<Datagram, ()> {
     pub fn udp(socket: &mio::net::UdpSocket) -> Self {
-        Self::new(Udp::new(socket))
+        Self::new(udp::Udp::new(socket))
     }
 }

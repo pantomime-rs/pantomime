@@ -8,3 +8,4 @@ pub use crate::actor::{
 };
 pub use crate::cfg::Config;
 pub use crate::dispatcher::*;
+pub use crate::stream::{Flow, Sink, Source};
