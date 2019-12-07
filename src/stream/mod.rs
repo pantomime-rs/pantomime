@@ -12,6 +12,7 @@ pub mod source;
 
 pub use crate::stream::flow::Flow;
 pub use crate::stream::sink::Sink;
+pub use crate::stream::source::queue::QueueRef;
 pub use crate::stream::source::Source;
 
 mod internal;
