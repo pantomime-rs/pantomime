@@ -5,6 +5,7 @@ use std::cell::RefCell;
 
 mod delay;
 mod filter;
+mod filter_map;
 mod fused;
 mod identity;
 mod map;
@@ -13,6 +14,7 @@ mod take_while;
 
 pub use self::delay::Delay;
 pub use self::filter::Filter;
+pub use self::filter_map::FilterMap;
 pub use self::identity::Identity;
 pub use self::map::Map;
 pub use self::scan::Scan;
@@ -139,6 +141,14 @@ where
         F: 'static + Send,
     {
         self.via(Flow::from_logic(Filter::new(filter)))
+    }
+
+    pub fn filter_map<C, F: FnMut(B) -> Option<C>>(self, filter_map: F) -> Flow<A, C>
+    where
+        C: 'static + Send,
+        F: 'static + Send,
+    {
+        self.via(Flow::from_logic(FilterMap::new(filter_map)))
     }
 
     pub fn map<C, F: FnMut(B) -> C>(self, map_fn: F) -> Flow<A, C>

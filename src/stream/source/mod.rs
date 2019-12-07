@@ -103,6 +103,14 @@ where
         self.via(Flow::from_logic(flow::Filter::new(filter)))
     }
 
+    pub fn filter_map<B, F: FnMut(A) -> Option<B>>(self, filter_map: F) -> Source<B>
+    where
+        B: 'static + Send,
+        F: 'static + Send,
+    {
+        self.via(Flow::from_logic(flow::FilterMap::new(filter_map)))
+    }
+
     pub fn map<B, F: FnMut(A) -> B>(self, map_fn: F) -> Source<B>
     where
         B: 'static + Send,
