@@ -38,7 +38,7 @@ impl Udp {
                         })
                     }
 
-                    Err(e) if e.kind() == IoErrorKind::WouldBlock => {
+                    Err(ref e) if e.kind() == IoErrorKind::WouldBlock => {
                         self.ready = false;
 
                         Action::None
