@@ -1,33 +1,29 @@
-/*use crate::actor::{Actor, ActorContext, ActorRef, Spawnable};
-use crate::stream::source::Source;
-use crate::stream::{Action, Logic, StreamContext};
+use crate::actor::{Actor, ActorContext, ActorRef, Spawnable};
+use crate::stream::{
+    Action, Logic, LogicEvent, OverflowStrategy, PushResult, Source, StageRef, StreamContext,
+};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::mem;
-
-pub enum QueuePushResult {
-    Pushed,
-    Dropped,
-}
 
 enum QueueCtl<A>
 where
     A: Send,
 {
-    Initialize(ActorRef<Action<A, QueueLogicCtl<A>>>),
-    Push(A, ActorRef<QueuePushResult>),
+    Initialize(StageRef<QueueLogicCtl<A>>),
+    Push(A, ActorRef<PushResult>),
     Complete,
 }
 
 pub enum QueueLogicCtl<A>
-// @TODO shouldnt need pub
 where
     A: Send,
 {
-    Push(A, ActorRef<QueuePushResult>),
+    Push(A, ActorRef<PushResult>),
     Complete,
 }
 
+#[derive(Clone)]
 pub struct QueueRef<A>
 where
     A: Send,
@@ -43,7 +39,7 @@ where
         Self { actor_ref }
     }
 
-    pub fn push(&self, element: A, reply_to: ActorRef<QueuePushResult>) {
+    pub fn push(&self, element: A, reply_to: ActorRef<PushResult>) {
         self.actor_ref.tell(QueueCtl::Push(element, reply_to));
     }
 
@@ -57,7 +53,7 @@ where
     A: Send,
 {
     Uninitialized(Vec<QueueCtl<A>>),
-    Initialized(ActorRef<Action<A, QueueLogicCtl<A>>>),
+    Initialized(StageRef<QueueLogicCtl<A>>),
 }
 
 struct QueueActor<A>
@@ -106,7 +102,7 @@ where
 
             QueueCtl::Push(element, reply_to) => match &mut self.state {
                 QueueActorState::Initialized(stage_ref) => {
-                    stage_ref.tell(Action::Forward(QueueLogicCtl::Push(element, reply_to)));
+                    stage_ref.tell(QueueLogicCtl::Push(element, reply_to));
                 }
 
                 QueueActorState::Uninitialized(buffer) => {
@@ -116,7 +112,7 @@ where
 
             QueueCtl::Complete => match &mut self.state {
                 QueueActorState::Initialized(stage_ref) => {
-                    stage_ref.tell(Action::Forward(QueueLogicCtl::Complete));
+                    stage_ref.tell(QueueLogicCtl::Complete);
                 }
 
                 QueueActorState::Uninitialized(buffer) => {
@@ -137,7 +133,11 @@ where
         // to our logic. It's shutdown when our logic is dropped.
 
         let actor_ref = self.spawn(QueueActor::new());
-        let source = Source::new(Queue::new(actor_ref.clone(), queue.capacity));
+        let source = Source::new(Queue::new(
+            actor_ref.clone(),
+            queue.capacity,
+            queue.overflow_strategy,
+        ));
         let queue_ref = QueueRef::new(actor_ref);
 
         (queue_ref, source)
@@ -149,6 +149,7 @@ where
     A: 'static + Send,
 {
     capacity: usize,
+    overflow_strategy: OverflowStrategy,
     phantom: PhantomData<A>,
 }
 
@@ -159,8 +160,14 @@ where
     pub fn new(capacity: usize) -> Self {
         SourceQueue {
             capacity,
+            overflow_strategy: OverflowStrategy::DropOldest,
             phantom: PhantomData,
         }
+    }
+
+    pub fn with_overflow_strategy(mut self, strategy: OverflowStrategy) -> Self {
+        self.overflow_strategy = strategy;
+        self
     }
 }
 
@@ -169,26 +176,27 @@ where
     A: 'static + Send,
 {
     queue_actor_ref: ActorRef<QueueCtl<A>>,
-    buffer: VecDeque<A>, // @TODO don't use VecDeque
+    buffer: VecDeque<A>,
     overflow_strategy: OverflowStrategy,
     pulled: bool,
-}
-
-pub enum OverflowStrategy {
-    DropNewest,
-    DropOldest,
+    completed: bool,
 }
 
 impl<A> Queue<A>
 where
     A: 'static + Send,
 {
-    fn new(queue_actor_ref: ActorRef<QueueCtl<A>>, capacity: usize) -> Self {
+    fn new(
+        queue_actor_ref: ActorRef<QueueCtl<A>>,
+        capacity: usize,
+        overflow_strategy: OverflowStrategy,
+    ) -> Self {
         Self {
             queue_actor_ref,
             buffer: VecDeque::with_capacity(capacity),
-            overflow_strategy: OverflowStrategy::DropOldest,
+            overflow_strategy,
             pulled: false,
+            completed: false,
         }
     }
 }
@@ -211,62 +219,82 @@ where
         &mut self,
         msg: LogicEvent<(), Self::Ctl>,
         ctx: &mut StreamContext<(), A, Self::Ctl>,
-    ) {
+    ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => match self.buffer.pop_front() {
-                Some(element) => {
-                    ctx.tell(Action::Push(element));
-                }
+                Some(element) => Action::Push(element),
+
+                None if self.completed => Action::Complete(None),
 
                 None => {
                     self.pulled = true;
+
+                    Action::None
                 }
             },
 
             LogicEvent::Forwarded(QueueLogicCtl::Push(element, reply_to)) => {
-                let len = self.buffer.len();
-
-                if self.pulled {
+                if self.completed {
+                    Action::None
+                } else if self.pulled {
                     // @TODO assert len == 0
 
                     self.pulled = false;
 
-                    ctx.tell(Action::Push(element));
-                    reply_to.tell(QueuePushResult::Pushed);
-                } else if len == self.buffer.capacity() {
+                    reply_to.tell(PushResult::Pushed);
+
+                    Action::Push(element)
+                } else if self.buffer.len() == self.buffer.capacity() {
                     match self.overflow_strategy {
                         OverflowStrategy::DropOldest => {
-                            reply_to.tell(QueuePushResult::Pushed);
+                            reply_to.tell(PushResult::Pushed);
 
                             self.buffer.pop_front();
                             self.buffer.push_back(element);
+
+                            Action::None
                         }
 
                         OverflowStrategy::DropNewest => {
-                            reply_to.tell(QueuePushResult::Dropped);
+                            reply_to.tell(PushResult::Dropped);
+
+                            Action::None
                         }
                     }
                 } else {
-                    reply_to.tell(QueuePushResult::Pushed);
+                    reply_to.tell(PushResult::Pushed);
 
                     self.buffer.push_back(element);
+
+                    Action::None
                 }
             }
 
             LogicEvent::Forwarded(QueueLogicCtl::Complete) => {
-                ctx.tell(Action::Complete(None));
+                self.completed = true;
+
+                if self.buffer.is_empty() {
+                    Action::Complete(None)
+                } else {
+                    Action::None
+                }
             }
 
             LogicEvent::Cancelled => {
-                ctx.tell(Action::Complete(None));
+                self.buffer.clear();
+                self.completed = true;
+
+                Action::Complete(None)
             }
 
             LogicEvent::Started => {
                 self.queue_actor_ref
-                    .tell(QueueCtl::Initialize(ctx.actor_ref()));
+                    .tell(QueueCtl::Initialize(ctx.stage_ref()));
+
+                Action::None
             }
 
-            LogicEvent::Pushed(()) | LogicEvent::Stopped => {}
+            LogicEvent::Pushed(()) | LogicEvent::Stopped => Action::None,
         }
     }
 }
@@ -280,73 +308,3 @@ where
         self.queue_actor_ref.stop();
     }
 }
-
-use crate::actor::*;
-use crate::stream::*;
-use std::time::Duration;
-
-#[test]
-fn test2() {
-    use crate::actor::*;
-    use crate::stream::flow::Delay;
-    use std::io::{Error, ErrorKind};
-
-    struct TestReaper {
-        n: usize,
-    }
-
-    impl TestReaper {
-        fn new() -> Self {
-            Self { n: 0 }
-        }
-    }
-
-    impl Actor for TestReaper {
-        type Msg = usize;
-
-        fn receive(&mut self, value: usize, ctx: &mut ActorContext<usize>) {
-            self.n += value;
-
-            if self.n == 160 {
-                ctx.stop();
-            }
-        }
-
-        fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<usize>) {
-            match signal {
-                Signal::Started => {
-                    {
-                        let actor_ref = ctx.actor_ref().clone();
-
-                        ctx.schedule_thunk(Duration::from_secs(10), move || {
-                            actor_ref
-                                .fail(FailureError::new(Error::new(ErrorKind::Other, "failed")))
-                        });
-                    }
-
-                    let (queue_ref, queue_src) = ctx.spawn(Source::queue(16));
-
-                    queue_ref.push(10, ActorRef::empty());
-                    queue_ref.push(20, ActorRef::empty());
-                    queue_ref.push(30, ActorRef::empty());
-                    queue_ref.complete();
-
-                    let (stream_ref, result) = ctx.spawn(
-                        queue_src
-                            .map(|n| n * 2)
-                            .via(Flow::from_logic(Delay::new(Duration::from_millis(50))))
-                            .to(Sink::last()),
-                    );
-
-                    ctx.watch(stream_ref, |_: StopReason| 100);
-                    ctx.watch(result, |value: Option<usize>| value.unwrap_or_default());
-                }
-
-                _ => {}
-            }
-        }
-    }
-
-    assert!(ActorSystem::new().spawn(TestReaper::new()).is_ok());
-}
-*/

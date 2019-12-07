@@ -40,13 +40,6 @@ impl Datagram {
     }
 }
 
-pub enum PortAction<A> {
-    Cancel,
-    Complete(Option<FailureReason>),
-    Pull,
-    Push(A),
-}
-
 pub enum LogicEvent<A, Msg> {
     Pulled,
     Pushed(A),
@@ -62,6 +55,24 @@ pub enum LogicPortEvent<A> {
     Started(usize),
     Stopped(usize),
     Cancelled(usize),
+}
+
+// @TODO add backpressure, fail
+pub enum OverflowStrategy {
+    DropNewest,
+    DropOldest,
+}
+
+pub enum PortAction<A> {
+    Cancel,
+    Complete(Option<FailureReason>),
+    Pull,
+    Push(A),
+}
+
+pub enum PushResult {
+    Pushed,
+    Dropped,
 }
 
 /// All stages are backed by a particular `Logic` that defines
@@ -263,7 +274,7 @@ pub enum StreamCtl {
     Fail,
 }
 
-struct StreamComplete<Out>
+pub struct StreamComplete<Out>
 where
     Out: 'static + Send,
 {

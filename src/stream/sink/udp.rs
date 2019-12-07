@@ -47,7 +47,7 @@ impl Udp {
             (Ok(ref mut s), Some(ref mut chunk)) if self.ready => {
                 match s.send_to(&chunk.data.data[chunk.written..], &chunk.data.address) {
                     Ok(bytes_written) => {
-                        println!("wrote {}", bytes_written);
+                        //println!("wrote {}", bytes_written);
                         chunk.written += bytes_written;
 
                         if chunk.written == chunk.data.data.len() {
@@ -65,7 +65,7 @@ impl Udp {
                     }
 
                     Err(e) if e.kind() == IoErrorKind::WouldBlock => {
-                        println!("would block");
+                        //println!("would block");
                         self.ready = false;
 
                         Action::None
@@ -125,7 +125,7 @@ impl Logic<Datagram, ()> for Udp {
                 if self.chunk.is_some() {
                     panic!("TODO");
                 }
-                println!("got some data ready={:?}", self.ready);
+                //println!("got some data ready={:?}", self.ready);
 
                 self.chunk = Some(Chunk { data, written: 0 });
 
@@ -133,9 +133,9 @@ impl Logic<Datagram, ()> for Udp {
             }
 
             LogicEvent::Forwarded(SubscriptionEvent::MioEvent(event)) => {
-                println!("sink got an mio event");
+                //println!("sink got an mio event");
                 if event.readiness().is_writable() {
-                    println!("is writable");
+                    //println!("is writable");
                     self.ready = true;
 
                     self.try_write(ctx)
@@ -145,10 +145,10 @@ impl Logic<Datagram, ()> for Udp {
             }
 
             LogicEvent::Forwarded(SubscriptionEvent::Ready(poll, token)) => {
-                println!("sink is ready");
+                //println!("sink is ready");
                 match self.socket {
                     Ok(ref socket) => {
-                        println!("registering the socket (token={})", token);
+                        //println!("registering the socket (token={})", token);
                         // @TODO expect doesn't seem appropriate
                         poll.register(socket, Token(token), Ready::writable(), PollOpt::edge())
                             .expect("pantomime bug: failed to register socket");
@@ -160,7 +160,7 @@ impl Logic<Datagram, ()> for Udp {
                     }
 
                     Err(ref _e) => {
-                        println!("ERRRR");
+                        //println!("ERRRR");
                         // shouldn't happen
 
                         ctx.unsubscribe(token);
@@ -173,9 +173,9 @@ impl Logic<Datagram, ()> for Udp {
             LogicEvent::Started => {
                 let actor_ref = ctx.stage_ref().actor_ref.clone();
 
-                println!("sink subscribing for id={}", actor_ref.id());
+                //println!("sink subscribing for id={}", actor_ref.id());
 
-                println!("messaging self");
+                //println!("messaging self");
 
                 ctx.subscribe(actor_ref);
 
@@ -184,7 +184,7 @@ impl Logic<Datagram, ()> for Udp {
 
             LogicEvent::Pulled => {
                 self.pulled = true;
-                println!("will pull");
+                //println!("will pull");
 
                 Action::Pull
             }

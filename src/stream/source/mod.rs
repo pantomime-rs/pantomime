@@ -5,19 +5,12 @@ use crate::stream::{Datagram, Logic, Stream};
 use std::iter::Iterator as Iter;
 use std::marker::PhantomData;
 
-mod iterator;
-mod merge;
-mod queue;
-mod repeat;
-mod single;
-mod udp;
-
-pub use iterator::Iterator;
-//pub use merge::Merge;
-//pub use queue::SourceQueue;
-pub use repeat::Repeat;
-pub use single::Single;
-pub use udp::Udp;
+pub mod iterator;
+pub mod merge;
+pub mod queue;
+pub mod repeat;
+pub mod single;
+pub mod udp;
 
 pub struct Source<A> {
     pub(in crate::stream) producers: Vec<LogicType<(), A>>,
@@ -48,22 +41,22 @@ where
     where
         I: 'static + Send,
     {
-        Self::new(Iterator::new(iterator))
+        Self::new(iterator::Iterator::new(iterator))
     }
 
-    //pub fn queue(capacity: usize) -> SourceQueue<A> {
-    //    SourceQueue::new(capacity)
-    //}
+    pub fn queue(capacity: usize) -> queue::SourceQueue<A> {
+        queue::SourceQueue::new(capacity)
+    }
 
     pub fn repeat(element: A) -> Self
     where
         A: Clone,
     {
-        Self::new(Repeat::new(element))
+        Self::new(repeat::Repeat::new(element))
     }
 
     pub fn single(element: A) -> Self {
-        Self::new(Single::new(element))
+        Self::new(single::Single::new(element))
     }
 
     pub fn to<Out>(self, sink: Sink<A, Out>) -> Stream<Out>
@@ -175,6 +168,6 @@ where
 
 impl Source<Datagram> {
     pub fn udp(socket: &mio::net::UdpSocket) -> Self {
-        Self::new(Udp::new(socket))
+        Self::new(udp::Udp::new(socket))
     }
 }

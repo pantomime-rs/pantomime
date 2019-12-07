@@ -78,14 +78,14 @@ impl Logic<(), Datagram> for Udp {
     ) -> Action<Datagram, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => {
-                println!("got pulled");
+                //println!("got pulled");
                 self.waiting = true;
 
                 self.try_read()
             }
 
             LogicEvent::Forwarded(SubscriptionEvent::MioEvent(event)) => {
-                println!("source got a mio event");
+                //println!("source got a mio event");
                 if event.readiness().is_readable() {
                     self.ready = true;
 
@@ -96,7 +96,7 @@ impl Logic<(), Datagram> for Udp {
             }
 
             LogicEvent::Forwarded(SubscriptionEvent::Ready(poll, token)) => {
-                println!("source got a ready");
+                //println!("source got a ready");
                 match self.socket {
                     Ok(ref socket) => {
                         // @TODO expect doesn't seem appropriate
@@ -130,7 +130,7 @@ impl Logic<(), Datagram> for Udp {
             LogicEvent::Stopped => Action::None,
 
             LogicEvent::Cancelled => {
-                println!(" SOURCE CANCELLED!");
+                //println!(" SOURCE CANCELLED!");
                 if let Some(poll) = self.poll.take() {
                     if let Ok(ref socket) = self.socket {
                         // @TODO expect doesn't seem appropriate
