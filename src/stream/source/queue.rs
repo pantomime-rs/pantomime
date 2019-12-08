@@ -238,7 +238,7 @@ where
             LogicEvent::Pulled => match self.buffer.pop_front() {
                 Some(element) => Action::Push(element),
 
-                None if self.completed => Action::Complete(None),
+                None if self.completed => Action::Stop(None),
 
                 None => {
                     self.pulled = true;
@@ -288,7 +288,7 @@ where
                 self.completed = true;
 
                 if self.buffer.is_empty() {
-                    Action::Complete(None)
+                    Action::Stop(None)
                 } else {
                     Action::None
                 }
@@ -298,7 +298,7 @@ where
                 self.buffer.clear();
                 self.completed = true;
 
-                Action::Complete(None)
+                Action::Stop(None)
             }
 
             LogicEvent::Started => {

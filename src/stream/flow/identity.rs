@@ -25,7 +25,7 @@ impl<A: Send> Logic<A, A> for Identity {
             LogicEvent::Pulled => Action::Pull,
             LogicEvent::Pushed(element) => Action::Push(element),
             LogicEvent::Cancelled => Action::Cancel,
-            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Stopped => Action::Stop(None),
             LogicEvent::Started | LogicEvent::Forwarded(()) => Action::None,
         }
     }

@@ -49,7 +49,7 @@ where
                 self.pulled = true;
 
                 if self.stopped {
-                    Action::PushAndComplete(self.first.take(), None)
+                    Action::PushAndStop(self.first.take(), None)
                 } else {
                     Action::Pull
                 }
@@ -59,7 +59,7 @@ where
                 self.stopped = true;
 
                 if self.pulled {
-                    Action::PushAndComplete(self.first.take(), None)
+                    Action::PushAndStop(self.first.take(), None)
                 } else {
                     Action::None
                 }
@@ -67,9 +67,9 @@ where
 
             LogicEvent::Cancelled => {
                 if self.stopped && self.pulled {
-                    Action::PushAndComplete(self.first.take(), None)
+                    Action::PushAndStop(self.first.take(), None)
                 } else if self.stopped {
-                    Action::Complete(None)
+                    Action::Stop(None)
                 } else {
                     Action::Cancel
                 }

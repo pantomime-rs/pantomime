@@ -34,7 +34,7 @@ where
         match msg {
             LogicEvent::Pulled => Action::Push(self.element.clone()),
 
-            LogicEvent::Cancelled => Action::Complete(None),
+            LogicEvent::Cancelled => Action::Stop(None),
 
             LogicEvent::Pushed(())
             | LogicEvent::Stopped

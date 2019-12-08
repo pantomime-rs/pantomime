@@ -52,7 +52,7 @@ where
 
             LogicEvent::Cancelled => Action::Cancel,
 
-            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Stopped => Action::Stop(None),
 
             LogicEvent::Started => Action::None,
 

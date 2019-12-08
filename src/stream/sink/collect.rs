@@ -23,9 +23,9 @@ impl<A> Collect<A> {
                 .take()
                 .expect("pantomime bug: Collect::entries is None");
 
-            Action::PushAndComplete(entries, None)
+            Action::PushAndStop(entries, None)
         } else {
-            Action::Complete(None)
+            Action::Stop(None)
         }
     }
 }

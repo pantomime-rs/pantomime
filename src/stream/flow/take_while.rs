@@ -30,13 +30,13 @@ impl<A: Send, F: FnMut(&A) -> bool + Send> Logic<A, A> for TakeWhile<F> {
                 if (self.while_fn)(&element) {
                     Action::Push(element)
                 } else {
-                    Action::Complete(None)
+                    Action::Stop(None)
                 }
             }
 
             LogicEvent::Pulled => Action::Pull,
             LogicEvent::Cancelled => Action::Cancel,
-            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Stopped => Action::Stop(None),
             LogicEvent::Started => Action::None,
             LogicEvent::Forwarded(()) => Action::None,
         }

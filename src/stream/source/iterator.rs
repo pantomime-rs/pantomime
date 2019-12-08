@@ -36,10 +36,10 @@ where
             LogicEvent::Pulled => match self.iterator.next() {
                 Some(element) => Action::Push(element),
 
-                None => Action::Complete(None),
+                None => Action::Stop(None),
             },
 
-            LogicEvent::Cancelled => Action::Complete(None),
+            LogicEvent::Cancelled => Action::Stop(None),
 
             LogicEvent::Pushed(())
             | LogicEvent::Stopped

@@ -82,9 +82,9 @@ where
 
             Action::Cancel => self.up_receive(LogicEvent::Cancelled, ctx),
 
-            Action::PushAndComplete(el, reason) => Action::PushAndComplete(el, reason),
+            Action::PushAndStop(el, reason) => Action::PushAndStop(el, reason),
 
-            Action::Complete(reason) => Action::Complete(reason),
+            Action::Stop(reason) => Action::Stop(reason),
         };
 
         while let Some(a) = self.down_actions.pop_front() {
@@ -105,11 +105,11 @@ where
                     self.up_receive(LogicEvent::Cancelled, ctx)
                 }
 
-                StreamContextAction::Action(Action::PushAndComplete(el, reason)) => {
-                    Action::PushAndComplete(el, reason)
+                StreamContextAction::Action(Action::PushAndStop(el, reason)) => {
+                    Action::PushAndStop(el, reason)
                 }
 
-                StreamContextAction::Action(Action::Complete(reason)) => Action::Complete(reason),
+                StreamContextAction::Action(Action::Stop(reason)) => Action::Stop(reason),
 
                 StreamContextAction::ScheduleDelivery(name, duration, msg) => {
                     ctx.schedule_delivery(name, duration, FusedMsg::ForwardDown(msg)); // @TODO namespace name
@@ -158,7 +158,7 @@ where
 
             Action::Cancel => Action::Cancel,
 
-            Action::PushAndComplete(el, _reason) => {
+            Action::PushAndStop(el, _reason) => {
                 // @TODO reason
                 let result = self.down_receive(LogicEvent::Pushed(el), ctx);
                 let follow_up = self.down_receive(LogicEvent::Stopped, ctx);
@@ -169,7 +169,7 @@ where
             }
 
             // @TODO reason
-            Action::Complete(_reason) => self.down_receive(LogicEvent::Stopped, ctx),
+            Action::Stop(_reason) => self.down_receive(LogicEvent::Stopped, ctx),
         };
 
         while let Some(a) = self.up_actions.pop_front() {
@@ -188,7 +188,7 @@ where
 
                 StreamContextAction::Action(Action::Cancel) => Action::Cancel,
 
-                StreamContextAction::Action(Action::PushAndComplete(el, _reason)) => {
+                StreamContextAction::Action(Action::PushAndStop(el, _reason)) => {
                     // @TODO reason
                     let result = self.down_receive(LogicEvent::Pushed(el), ctx);
                     let follow_up = self.down_receive(LogicEvent::Stopped, ctx);
@@ -199,7 +199,7 @@ where
                 }
 
                 // @TODO reason
-                StreamContextAction::Action(Action::Complete(_reason)) => {
+                StreamContextAction::Action(Action::Stop(_reason)) => {
                     self.down_receive(LogicEvent::Stopped, ctx)
                 }
 
