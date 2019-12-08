@@ -44,8 +44,8 @@ where
         Self::new(iterator::Iterator::new(iterator))
     }
 
-    pub fn queue(capacity: usize) -> queue::SourceQueue<A> {
-        queue::SourceQueue::new(capacity)
+    pub fn queue() -> queue::SourceQueue<A> {
+        queue::SourceQueue::new()
     }
 
     pub fn repeat(element: A) -> Self
@@ -117,6 +117,18 @@ where
         F: 'static + Send,
     {
         self.via(Flow::from_logic(flow::Map::new(map_fn)))
+    }
+
+    pub fn map_concat<B, I: Iterator<Item = B>, F: FnMut(A) -> I + Send>(
+        self,
+        map_concat: F,
+    ) -> Source<B>
+    where
+        B: 'static + Send,
+        F: 'static + Send,
+        I: 'static + Send,
+    {
+        self.via(Flow::from_logic(flow::MapConcat::new(map_concat)))
     }
 
     pub fn merge(self, source: Source<A>) -> Self {

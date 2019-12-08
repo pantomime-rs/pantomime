@@ -9,6 +9,7 @@ mod filter_map;
 mod fused;
 mod identity;
 mod map;
+mod map_concat;
 mod scan;
 mod take_while;
 
@@ -17,6 +18,7 @@ pub use self::filter::Filter;
 pub use self::filter_map::FilterMap;
 pub use self::identity::Identity;
 pub use self::map::Map;
+pub use self::map_concat::MapConcat;
 pub use self::scan::Scan;
 pub use self::take_while::TakeWhile;
 
@@ -157,6 +159,18 @@ where
         F: 'static + Send,
     {
         self.via(Flow::from_logic(Map::new(map_fn)))
+    }
+
+    pub fn map_concat<C, I: Iterator<Item = C>, F: FnMut(B) -> I + Send>(
+        self,
+        map_concat: F,
+    ) -> Flow<A, C>
+    where
+        C: 'static + Send,
+        F: 'static + Send,
+        I: 'static + Send,
+    {
+        self.via(Flow::from_logic(MapConcat::new(map_concat)))
     }
 }
 

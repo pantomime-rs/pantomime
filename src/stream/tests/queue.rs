@@ -38,7 +38,7 @@ fn test_basic() {
                     });
                 }
 
-                let (queue_ref, queue_src) = ctx.spawn(Source::queue(16));
+                let (queue_ref, queue_src) = ctx.spawn(Source::queue());
 
                 // @TODO test dropping behavior
                 queue_ref.push(10, ActorRef::empty());
@@ -95,8 +95,8 @@ fn test_drop_newest() {
                     });
                 }
 
-                let (queue_ref, queue_src) = ctx
-                    .spawn(Source::queue(16).with_overflow_strategy(OverflowStrategy::DropNewest));
+                let (queue_ref, queue_src) =
+                    ctx.spawn(Source::queue().with_overflow_strategy(OverflowStrategy::DropNewest));
 
                 // @TODO test dropping behavior
                 queue_ref.push(10, ActorRef::empty());

@@ -157,17 +157,31 @@ impl<A> SourceQueue<A>
 where
     A: 'static + Send,
 {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new() -> Self {
         SourceQueue {
-            capacity,
+            capacity: 16,
             overflow_strategy: OverflowStrategy::DropOldest,
             phantom: PhantomData,
         }
     }
 
+    pub fn with_capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
     pub fn with_overflow_strategy(mut self, strategy: OverflowStrategy) -> Self {
         self.overflow_strategy = strategy;
         self
+    }
+}
+
+impl<A> Default for SourceQueue<A>
+where
+    A: 'static + Send,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
