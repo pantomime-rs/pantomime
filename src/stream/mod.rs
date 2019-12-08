@@ -22,10 +22,10 @@ mod tests;
 
 pub enum Action<A, Msg> {
     Cancel,
-    Complete(Option<FailureReason>),
+    Stop(Option<FailureReason>),
     Pull,
     Push(A),
-    PushAndComplete(A, Option<FailureReason>),
+    PushAndStop(A, Option<FailureReason>),
     Forward(Msg),
     None,
 }

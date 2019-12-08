@@ -33,9 +33,9 @@ impl Udp {
 
     fn complete(&self) -> Action<(), SubscriptionEvent> {
         if self.pulled {
-            Action::PushAndComplete((), None)
+            Action::PushAndStop((), None)
         } else {
-            Action::Complete(None)
+            Action::Stop(None)
         }
     }
 

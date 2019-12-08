@@ -67,16 +67,16 @@ impl<A: Send> Logic<A, A> for Delay {
                     Action::None
                 }
 
-                State::Waiting => Action::Complete(None),
+                State::Waiting => Action::Stop(None),
 
-                State::Stopping => Action::Complete(None),
+                State::Stopping => Action::Stop(None),
             },
 
             LogicEvent::Cancelled => Action::Cancel,
 
             LogicEvent::Forwarded(DelayMsg::Ready(element)) => {
                 if let State::Stopping = self.state {
-                    Action::PushAndComplete(element, None)
+                    Action::PushAndStop(element, None)
                 } else {
                     self.state = State::Waiting;
 

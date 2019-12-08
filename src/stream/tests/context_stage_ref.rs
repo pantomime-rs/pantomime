@@ -59,18 +59,18 @@ impl<A: Send> Logic<A, A> for TestLogic {
                     Action::None
                 }
 
-                State::Waiting => Action::Complete(None),
+                State::Waiting => Action::Stop(None),
 
                 State::Stopping => Action::None,
             },
 
-            LogicEvent::Cancelled => Action::Complete(None),
+            LogicEvent::Cancelled => Action::Stop(None),
 
             LogicEvent::Forwarded(DelayMsg::Ready(element)) => {
                 self.state = State::Waiting;
 
                 if let State::Stopping = self.state {
-                    Action::PushAndComplete(element, None)
+                    Action::PushAndStop(element, None)
                 } else {
                     Action::Push(element)
                 }

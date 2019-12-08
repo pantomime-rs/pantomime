@@ -105,11 +105,11 @@ where
                     Self::convert_action(self.logic.receive(LogicEvent::Cancelled, &mut stream_ctx))
                 }
 
-                StreamContextAction::Action(Action::PushAndComplete(el, reason)) => {
-                    Action::PushAndComplete(el, reason)
+                StreamContextAction::Action(Action::PushAndStop(el, reason)) => {
+                    Action::PushAndStop(el, reason)
                 }
 
-                StreamContextAction::Action(Action::Complete(reason)) => Action::Complete(reason),
+                StreamContextAction::Action(Action::Stop(reason)) => Action::Stop(reason),
 
                 StreamContextAction::ScheduleDelivery(name, duration, msg) => {
                     ctx.schedule_delivery(name, duration, Box::new(msg)); // @TODO namespace name
@@ -134,8 +134,8 @@ where
             Action::None => Action::None,
             Action::Forward(msg) => Action::Forward(Box::new(msg)),
             Action::Cancel => Action::Cancel,
-            Action::PushAndComplete(el, reason) => Action::PushAndComplete(el, reason),
-            Action::Complete(reason) => Action::Complete(reason),
+            Action::PushAndStop(el, reason) => Action::PushAndStop(el, reason),
+            Action::Stop(reason) => Action::Stop(reason),
         }
     }
 }
@@ -447,8 +447,8 @@ where
                 }
             }
 
-            Action::Complete(reason) => {
-                //println!("{} Action::Complete", self.logic.name());
+            Action::Stop(reason) => {
+                //println!("{} Action::Stop", self.logic.name());
                 self.downstream.tell(DownstreamStageMsg::Complete(reason));
 
                 self.midstream_stopped = true;
@@ -456,10 +456,10 @@ where
                 ctx.stop();
             }
 
-            Action::PushAndComplete(el, reason) => {
-                //println!("{} Action::PushAndComplete", self.logic.name());
+            Action::PushAndStop(el, reason) => {
+                //println!("{} Action::PushAndStop", self.logic.name());
                 self.receive_action(Action::Push(el), ctx);
-                self.receive_action(Action::Complete(reason), ctx);
+                self.receive_action(Action::Stop(reason), ctx);
             }
 
             Action::None => {}

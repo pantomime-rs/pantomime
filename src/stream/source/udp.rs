@@ -146,7 +146,7 @@ impl Logic<(), Datagram> for Udp {
                     self.token = 0;
                 }
 
-                Action::Complete(None)
+                Action::Stop(None)
             }
 
             LogicEvent::Pushed(()) => Action::None,

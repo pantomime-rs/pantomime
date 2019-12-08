@@ -30,7 +30,7 @@ impl<A: Send, B: Send, F: FnMut(A) -> Option<B> + Send> Logic<A, B> for FilterMa
 
             LogicEvent::Pulled => Action::Pull,
             LogicEvent::Cancelled => Action::Cancel,
-            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Stopped => Action::Stop(None),
             LogicEvent::Started => Action::None,
             LogicEvent::Forwarded(()) => Action::None,
         }

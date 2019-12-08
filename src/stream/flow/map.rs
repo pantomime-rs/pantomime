@@ -29,7 +29,7 @@ impl<A: Send, B: Send, F: FnMut(A) -> B + Send> Logic<A, B> for Map<F> {
             LogicEvent::Pulled => Action::Pull,
             LogicEvent::Pushed(element) => Action::Push((self.map)(element)),
             LogicEvent::Cancelled => Action::Cancel,
-            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Stopped => Action::Stop(None),
             LogicEvent::Started => Action::None,
             LogicEvent::Forwarded(()) => Action::None,
         }

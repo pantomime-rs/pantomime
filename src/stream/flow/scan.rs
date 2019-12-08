@@ -56,7 +56,7 @@ impl<A: Send, B: Clone + Send, F: FnMut(B, A) -> B + Send> Logic<A, B> for Scan<
             }
 
             LogicEvent::Cancelled => Action::Cancel,
-            LogicEvent::Stopped => Action::Complete(None),
+            LogicEvent::Stopped => Action::Stop(None),
             LogicEvent::Started => Action::None,
             LogicEvent::Forwarded(()) => Action::None,
         }

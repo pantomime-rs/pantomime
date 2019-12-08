@@ -35,10 +35,10 @@ where
     ) -> Action<A, Self::Ctl> {
         match msg {
             LogicEvent::Pulled => {
-                Action::PushAndComplete(self.element.take().expect("Single::element is None"), None)
+                Action::PushAndStop(self.element.take().expect("Single::element is None"), None)
             }
 
-            LogicEvent::Cancelled => Action::Complete(None),
+            LogicEvent::Cancelled => Action::Stop(None),
 
             LogicEvent::Pushed(())
             | LogicEvent::Stopped
