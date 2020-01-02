@@ -9,6 +9,7 @@ use std::time::Duration;
 pub mod flow;
 pub mod sink;
 pub mod source;
+pub mod tcp;
 
 pub use crate::stream::flow::Flow;
 pub use crate::stream::sink::Sink;
