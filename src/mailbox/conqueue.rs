@@ -59,6 +59,7 @@ impl<M: 'static + Send> MailboxLogic<M> for ConqueueMailboxLogic<M> {
 }
 
 #[cfg(test)]
+#[allow(clippy::redundant_clone)]
 mod tests {
     use crate::mailbox::{ConqueueMailboxLogic, Mailbox};
     use std::thread;

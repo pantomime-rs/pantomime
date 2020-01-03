@@ -120,7 +120,7 @@ impl Logic<(), Datagram> for Udp {
             }
 
             LogicEvent::Started => {
-                let actor_ref = ctx.stage_ref().actor_ref.clone();
+                let actor_ref = ctx.stage_ref().actor_ref;
 
                 ctx.subscribe(actor_ref);
 

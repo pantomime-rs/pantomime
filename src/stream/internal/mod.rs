@@ -649,7 +649,7 @@ where
             logic_actions: VecDeque::with_capacity(2),
             logic_pulled: false,
             buffer: VecDeque::with_capacity(buffer_size),
-            downstream: downstream.clone(),
+            downstream,
             state: StageState::Waiting(None),
             pulled: false,
             upstream_stopped: false,

@@ -53,6 +53,7 @@ impl<M: 'static + Send> MailboxLogic<M> for CrossbeamSegQueueMailboxLogic<M> {
 }
 
 #[cfg(test)]
+#[allow(clippy::redundant_clone)]
 mod tests {
     use super::super::Mailbox;
     use super::*;

@@ -66,6 +66,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::redundant_clone)]
 mod tests {
     use super::super::Mailbox;
     use super::*;

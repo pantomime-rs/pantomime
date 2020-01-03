@@ -54,6 +54,7 @@ impl<M: Send + Sync + 'static> MailboxLogic<M> for NoopMailboxLogic<M> {
 }
 
 #[cfg(test)]
+#[allow(clippy::redundant_clone)]
 mod tests {
     use crate::mailbox::{Mailbox, NoopMailboxLogic};
 
