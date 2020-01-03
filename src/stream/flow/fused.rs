@@ -6,6 +6,9 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
+const EXECUTION_STATE_ACTIVE: u8 = 0;
+const EXECUTION_STATE_UPSTREAM_STOPPED: u8 = 1;
+const EXECUTION_STATE_UPSTREAM_AND_DOWNSTREAM_STOPPED: u8 = 2;
 const MAX_CALLS: usize = 10;
 
 pub(in crate::stream) enum FusedMsg<A, B> {
@@ -21,6 +24,7 @@ where
     B: 'static + Send,
     C: 'static + Send,
 {
+    execution_state: u8,
     up: Box<dyn ContainedLogic<A, B> + Send>,
     up_actions: VecDeque<StreamContextAction<B, Box<dyn Any + Send>>>,
     up_ref: StageRef<Box<dyn Any + Send>>,
@@ -41,6 +45,7 @@ where
         downstream: Box<dyn ContainedLogic<B, C> + Send>,
     ) -> Self {
         Fused {
+            execution_state: EXECUTION_STATE_ACTIVE,
             up: upstream,
             up_actions: VecDeque::new(),
             up_ref: StageRef::empty(),
@@ -58,6 +63,10 @@ where
     ) -> Action<C, FusedMsg<A, B>> {
         if let LogicEvent::Started = event {
             self.down_ref = ctx.stage_ref().convert(FusedMsg::ForwardDown);
+        }
+
+        if self.execution_state == EXECUTION_STATE_UPSTREAM_AND_DOWNSTREAM_STOPPED {
+            return Action::None;
         }
 
         ctx.calls += 1;
@@ -124,6 +133,14 @@ where
             }
         }
 
+        match result {
+            Action::Stop(_) | Action::PushAndStop(_, _) => {
+                self.execution_state = EXECUTION_STATE_UPSTREAM_AND_DOWNSTREAM_STOPPED;
+            }
+
+            _ => {}
+        }
+
         result
     }
 
@@ -134,6 +151,10 @@ where
     ) -> Action<C, FusedMsg<A, B>> {
         if let LogicEvent::Started = event {
             self.up_ref = ctx.stage_ref().convert(FusedMsg::ForwardUp);
+        }
+
+        if self.execution_state > EXECUTION_STATE_ACTIVE {
+            return Action::None;
         }
 
         ctx.calls += 1;
@@ -214,6 +235,14 @@ where
             } else {
                 ctx.tell(next_result);
             }
+        }
+
+        match result {
+            Action::Stop(_) | Action::PushAndStop(_, _) => {
+                self.execution_state = EXECUTION_STATE_UPSTREAM_STOPPED;
+            }
+
+            _ => {}
         }
 
         result

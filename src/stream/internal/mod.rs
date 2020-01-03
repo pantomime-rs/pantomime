@@ -459,6 +459,7 @@ where
             Action::PushAndStop(el, reason) => {
                 //println!("{} Action::PushAndStop", self.logic.name());
                 self.receive_action(Action::Push(el), ctx);
+                //println!("did push");
                 self.receive_action(Action::Stop(reason), ctx);
             }
 
