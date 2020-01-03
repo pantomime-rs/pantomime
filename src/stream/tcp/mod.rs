@@ -5,22 +5,31 @@ use std::io::{ErrorKind as IoErrorKind, Read, Result as IoResult, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-struct TcpConnection {
-    source: Source<Vec<u8>>,
-    sink: Sink<Vec<u8>, ()>
+pub struct TcpConnection {
+    pub source: Source<Vec<u8>>,
+    pub sink: Sink<Vec<u8>, ()>
 }
 
-struct Tcp;
+pub struct Tcp;
 
 impl Tcp {
-    fn bind(addr: &SocketAddr) -> Source<TcpConnection> {
-        addr.clone();
-        //TcpStream::connect(addr)
+    pub fn bind(addr: &SocketAddr) -> Source<TcpConnection> {
         unimplemented!()
     }
 
-    fn connect(addr: &SocketAddr) -> TcpConnection {
-        unimplemented!()
+    pub fn connect(addr: &SocketAddr) -> (Source<Vec<u8>>, Sink<Vec<u8>, ()>) {
+        match TcpStream::connect(addr) {
+            Ok(socket) => {
+                (
+                    Source::new(TcpSource::new(&socket)),
+                    Sink::new(TcpSink::new(&socket))
+                )
+            }
+
+            Err(err) => {
+                panic!("TODO");
+            }
+        }
     }
 }
 
@@ -34,6 +43,17 @@ struct TcpSource {
 }
 
 impl TcpSource {
+    fn new(socket: &TcpStream) -> Self {
+        Self {
+            socket: socket.try_clone(),
+            buffer: vec![0; 8192], // @TODO
+            ready: false,
+            waiting: false,
+            poll: None,
+            token: 0,
+        }
+    }
+
     fn try_read(&mut self) -> Action<Vec<u8>, SubscriptionEvent> {
         match self.socket {
             Ok(ref mut s) if self.ready && self.waiting => {
@@ -176,6 +196,18 @@ struct TcpSink {
 }
 
 impl TcpSink {
+    fn new(socket: &TcpStream) -> Self {
+        Self {
+            socket: socket.try_clone(),
+            chunk: None,
+            ready: false,
+            poll: None,
+            token: 0,
+            pulled: false,
+            stopped: false,
+        }
+    }
+
     fn complete(&self) -> Action<(), SubscriptionEvent> {
         if self.pulled {
             Action::PushAndStop((), None)
