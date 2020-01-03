@@ -1,6 +1,6 @@
 use crate::actor::SubscriptionEvent;
 use crate::stream::{Action, Logic, LogicEvent, Source, Sink, StreamContext};
-use mio::{net::TcpStream, Poll, PollOpt, Ready, Token};
+use mio::{net::{TcpListener, TcpStream}, Poll, PollOpt, Ready, Token};
 use std::io::{ErrorKind as IoErrorKind, Read, Result as IoResult, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,21 +14,167 @@ pub struct Tcp;
 
 impl Tcp {
     pub fn bind(addr: &SocketAddr) -> Source<TcpConnection> {
-        unimplemented!()
+        Source::new(TcpConnectionSource {
+            socket: TcpListener::bind(addr),
+            poll: None,
+            waiting: false,
+            ready: false,
+            token: 0
+        })
     }
 
-    pub fn connect(addr: &SocketAddr) -> (Source<Vec<u8>>, Sink<Vec<u8>, ()>) {
+    pub fn connect(addr: &SocketAddr) -> TcpConnection {
         match TcpStream::connect(addr) {
             Ok(socket) => {
                 (
-                    Source::new(TcpSource::new(&socket)),
-                    Sink::new(TcpSink::new(&socket))
+                    TcpConnection {
+                        source: Source::new(TcpSource::new(&socket)),
+                        sink: Sink::new(TcpSink::new(&socket))
+                    }
                 )
             }
 
             Err(err) => {
                 panic!("TODO");
             }
+        }
+    }
+}
+
+struct TcpConnectionSource {
+    socket: IoResult<TcpListener>,
+    poll: Option<Arc<Poll>>,
+    waiting: bool,
+    ready: bool,
+    token: usize
+}
+
+impl TcpConnectionSource {
+    fn try_accept(&mut self) -> Action<TcpConnection, SubscriptionEvent> {
+        match self.socket {
+            Ok(ref mut s) if self.ready && self.waiting => {
+                match s.accept() {
+                    Ok((tcp_stream, socket_addr)) => {
+                        // @TODO socket_addr
+
+                        self.waiting = false;
+
+                        Action::Push(TcpConnection {
+                            source: Source::new(TcpSource::new(&tcp_stream)),
+                            sink: Sink::new(TcpSink::new(&tcp_stream))
+                        })
+                    }
+
+                    Err(ref e) if e.kind() == IoErrorKind::WouldBlock => {
+                        self.ready = false;
+
+                        Action::None
+                    }
+
+                    Err(_e) => {
+                        // @TODO
+                        unimplemented!()
+                    }
+                }
+            }
+
+            _ => Action::None,
+        }
+    }
+}
+
+impl Logic<(), TcpConnection> for TcpConnectionSource {
+    type Ctl = SubscriptionEvent;
+
+    fn name(&self) -> &'static str {
+        "pantomime::stream::tcp::TcpConnectionSource"
+    }
+
+    fn buffer_size(&self) -> Option<usize> {
+        Some(0)
+    }
+
+    fn fusible(&self) -> bool {
+        false
+    }
+
+    fn receive(
+        &mut self,
+        msg: LogicEvent<(), Self::Ctl>,
+        ctx: &mut StreamContext<(), TcpConnection, Self::Ctl>,
+    ) -> Action<TcpConnection, Self::Ctl> {
+        match msg {
+            LogicEvent::Pulled => {
+                self.waiting = true;
+                self.try_accept();
+
+                Action::None
+            }
+
+            LogicEvent::Forwarded(SubscriptionEvent::MioEvent(event)) => {
+                if event.readiness().is_readable() {
+                    self.ready = true;
+                    self.try_accept()
+                } else {
+                    Action::None
+                }
+            }
+
+            LogicEvent::Forwarded(SubscriptionEvent::Ready(poll, token)) => {
+                //println!("source got a ready");
+                match self.socket {
+                    Ok(ref socket) => {
+                        // @TODO expect doesn't seem appropriate
+                        poll.register(socket, Token(token), Ready::readable(), PollOpt::edge())
+                            .expect("pantomime bug: failed to register socket");
+
+                        self.poll = Some(poll);
+                        self.token = token;
+
+                        self.try_accept()
+                    }
+
+                    Err(ref _e) => {
+                        // shouldn't happen
+
+                        ctx.unsubscribe(token);
+
+                        Action::None
+                    }
+                }
+            }
+
+            LogicEvent::Started => {
+                let actor_ref = ctx.stage_ref().actor_ref.clone();
+
+                ctx.subscribe(actor_ref);
+
+                Action::None
+            }
+
+            LogicEvent::Stopped => Action::None,
+
+            LogicEvent::Cancelled => {
+                //println!(" SOURCE CANCELLED!");
+                if let Some(poll) = self.poll.take() {
+                    if let Ok(ref socket) = self.socket {
+                        // @TODO expect doesn't seem appropriate
+
+                        poll.deregister(socket)
+                            .expect("pantomime bug: failed to deregister socket");
+                    }
+                }
+
+                if self.token > 0 {
+                    ctx.unsubscribe(self.token);
+
+                    self.token = 0;
+                }
+
+                Action::Stop(None)
+            }
+
+            LogicEvent::Pushed(()) => Action::None,
         }
     }
 }
