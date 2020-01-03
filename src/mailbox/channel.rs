@@ -75,6 +75,7 @@ impl<M: 'static + Send> MailboxLogic<M> for CrossbeamChannelMailboxLogic<M> {
 }
 
 #[cfg(test)]
+#[allow(clippy::redundant_clone)]
 mod tests {
     use crate::mailbox::{CrossbeamChannelMailboxLogic, Mailbox};
     use std::thread;

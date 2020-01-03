@@ -28,7 +28,7 @@ impl Config {
             let mut map = HashMap::new();
 
             for (key, value) in defaults.iter() {
-                map.insert(key.to_string(), value.to_string());
+                map.insert((*key).to_string(), (*value).to_string());
             }
 
             map

@@ -459,6 +459,7 @@ where
             Action::PushAndStop(el, reason) => {
                 //println!("{} Action::PushAndStop", self.logic.name());
                 self.receive_action(Action::Push(el), ctx);
+                //println!("did push");
                 self.receive_action(Action::Stop(reason), ctx);
             }
 
@@ -648,7 +649,7 @@ where
             logic_actions: VecDeque::with_capacity(2),
             logic_pulled: false,
             buffer: VecDeque::with_capacity(buffer_size),
-            downstream: downstream.clone(),
+            downstream,
             state: StageState::Waiting(None),
             pulled: false,
             upstream_stopped: false,

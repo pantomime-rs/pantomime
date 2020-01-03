@@ -6,6 +6,7 @@ use std::cell::RefCell;
 mod delay;
 mod filter;
 mod filter_map;
+mod fold;
 mod fused;
 mod identity;
 mod map;
@@ -16,6 +17,7 @@ mod take_while;
 pub use self::delay::Delay;
 pub use self::filter::Filter;
 pub use self::filter_map::FilterMap;
+pub use self::fold::Fold;
 pub use self::identity::Identity;
 pub use self::map::Map;
 pub use self::map_concat::MapConcat;
@@ -151,6 +153,14 @@ where
         F: 'static + Send,
     {
         self.via(Flow::from_logic(FilterMap::new(filter_map)))
+    }
+
+    pub fn fold<C, F: FnMut(C, B) -> C>(self, zero: C, fold_fn: F) -> Flow<A, C>
+    where
+        F: 'static + Send,
+        C: 'static + Clone + Send,
+    {
+        self.via(Flow::from_logic(Fold::new(zero, fold_fn)))
     }
 
     pub fn map<C, F: FnMut(B) -> C>(self, map_fn: F) -> Flow<A, C>

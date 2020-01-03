@@ -171,7 +171,7 @@ impl Logic<Datagram, ()> for Udp {
             }
 
             LogicEvent::Started => {
-                let actor_ref = ctx.stage_ref().actor_ref.clone();
+                let actor_ref = ctx.stage_ref().actor_ref;
 
                 //println!("sink subscribing for id={}", actor_ref.id());
 
