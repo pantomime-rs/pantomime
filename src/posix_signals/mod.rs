@@ -1,5 +1,6 @@
 use crate::actor::{ActorContext, Watchable};
 
+#[derive(Debug)]
 pub enum PosixSignal {
     SIGHUP = 1,
     SIGINT = 2,

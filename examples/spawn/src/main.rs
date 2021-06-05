@@ -13,7 +13,9 @@ enum WorkerMsg {
     Ready(ActorRef<()>),
 }
 
-impl Actor<WorkerMsg> for Worker {
+impl Actor for Worker {
+    type Msg = WorkerMsg;
+
     fn receive(&mut self, msg: WorkerMsg, _: &mut ActorContext<WorkerMsg>) {
         match msg {
             WorkerMsg::Ready(reply_to) => {
@@ -33,7 +35,9 @@ impl Reaper {
     }
 }
 
-impl Actor<()> for Reaper {
+impl Actor for Reaper {
+    type Msg = ();
+
     fn receive(&mut self, _: (), _: &mut ActorContext<()>) {
         self.ready += 1;
 

@@ -6,21 +6,30 @@
 extern crate pantomime;
 
 use pantomime::prelude::*;
+use pantomime::posix_signals::{PosixSignal, PosixSignals};
 use std::io;
 
 struct MyActor;
 
-impl Actor<()> for MyActor {
-    fn receive(&mut self, _message: (), _context: &mut ActorContext<()>) {}
+enum MyMsg {
+    Sig(PosixSignal)
+}
 
-    fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<()>) {
+impl Actor for MyActor {
+    type Msg = MyMsg;
+
+    fn receive(&mut self, message: Self::Msg, _context: &mut ActorContext<Self::Msg>) {
+        match message {
+            MyMsg::Sig(value) => {
+                println!("received {:?}", value);
+            }
+        }
+    }
+
+    fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<Self::Msg>) {
         match signal {
             Signal::Started => {
-                context.watch_posix_signals();
-            }
-
-            Signal::PosixSignal(value) => {
-                println!("received {}", value);
+                context.watch(PosixSignals, MyMsg::Sig);
             }
 
             _ => {}

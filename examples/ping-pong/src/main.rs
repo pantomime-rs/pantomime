@@ -16,7 +16,9 @@ impl Finisher {
     }
 }
 
-impl Actor<()> for Finisher {
+impl Actor for Finisher {
+    type Msg = ();
+
     fn receive(&mut self, _message: (), _context: &mut ActorContext<()>) {
         self.count += 1;
 
@@ -50,7 +52,9 @@ enum PingerMessage {
     },
 }
 
-impl Actor<PingerMessage> for Pinger {
+impl Actor for Pinger {
+    type Msg = PingerMessage;
+
     fn receive(&mut self, message: PingerMessage, context: &mut ActorContext<PingerMessage>) {
         match message {
             PingerMessage::Message { count, reply_to } => {
@@ -79,7 +83,9 @@ impl Actor<PingerMessage> for Pinger {
 
 struct Reaper;
 
-impl Actor<()> for Reaper {
+impl Actor for Reaper {
+    type Msg = ();
+
     fn receive(&mut self, _: (), _: &mut ActorContext<()>) {}
 
     fn receive_signal(&mut self, signal: Signal, ctx: &mut ActorContext<()>) {
