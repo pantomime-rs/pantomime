@@ -49,7 +49,9 @@ impl MyActor {
     }
 }
 
-impl Actor<Msg> for MyActor {
+impl Actor for MyActor {
+    type Msg = Msg;
+
     fn receive(&mut self, message: Msg, context: &mut ActorContext<Msg>) {
         match self.state {
             State::A => {
@@ -64,10 +66,10 @@ impl Actor<Msg> for MyActor {
 
     fn receive_signal(&mut self, signal: Signal, context: &mut ActorContext<Msg>) {
         if let Signal::Started = signal {
-            context.schedule_periodic_delivery("transition", Duration::from_millis(2000), || {
+            context.schedule_periodic_delivery("transition", Duration::from_millis(2000), Duration::from_millis(2000), || {
                 Msg::Transition
             });
-            context.schedule_periodic_delivery("tick", Duration::from_millis(100), || Msg::Tick);
+            context.schedule_periodic_delivery("tick", Duration::from_millis(100), Duration::from_millis(100), || Msg::Tick);
         }
     }
 }

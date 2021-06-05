@@ -180,7 +180,7 @@ impl ActorSystemContext {
                 "crossbeam-channel" => Box::new(CrossbeamChannelMailboxLogic::new()),
                 "vecdeque" => Box::new(VecDequeMailboxLogic::new()),
                 other => {
-                    panic!(format!("pantomime bug: unknown mailbox logic {}", other));
+                    panic!("pantomime bug: unknown mailbox logic {}", other);
                 }
             };
 
@@ -606,7 +606,7 @@ impl ActorSystem {
                 "single-threaded" => Box::new(SingleThreadedDispatcher::new()),
 
                 other => {
-                    panic!(format!("pantomime bug: unknown dispatcher logic {}", other));
+                    panic!("pantomime bug: unknown dispatcher logic {}", other);
                 }
             };
 

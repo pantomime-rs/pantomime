@@ -5,4 +5,4 @@ authors = ["Jason Longshore <hello@jasonlongshore.com>"]
 edition = "2018"
 
 [dependencies]
-pantomime = { path = "../../" }
+pantomime = { path = "../../", features = ["posix-signals-support"] }
