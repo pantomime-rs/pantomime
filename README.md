@@ -2,7 +2,8 @@
 
 ## Overview
 
-Pantomime is an [actor-based](https://en.wikipedia.org/wiki/Actor_model) library for the [Rust](https://www.rust-lang.org/) programming language that empowers you to build event-driven, stream-oriented programs with ease.
+Pantomime is an [actor-based](https://en.wikipedia.org/wiki/Actor_model) library and programming model for 
+the [Rust](https://www.rust-lang.org/) programming language.
 
 ## Documentation
 
