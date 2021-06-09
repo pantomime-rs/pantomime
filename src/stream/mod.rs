@@ -9,11 +9,13 @@ use std::time::Duration;
 pub mod flow;
 pub mod sink;
 pub mod source;
+pub mod tcp;
 
 pub use crate::stream::flow::Flow;
 pub use crate::stream::sink::Sink;
 pub use crate::stream::source::queue::QueueRef;
 pub use crate::stream::source::Source;
+pub use crate::stream::tcp::{Tcp, TcpConnection};
 
 mod internal;
 
